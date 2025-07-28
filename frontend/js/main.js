@@ -52,11 +52,11 @@ async function getInitialJointPositions() {
 const manager = new THREE.LoadingManager();
 const loader = new URDFLoader(manager);
 loader.packages = {
-    trossen_arm_description: '/static/trossen_arm_description'
+    trossen_arm_description: 'assets/trossen_arm_description'
 };
 
 loader.load(
-  '/static/wxai_base.urdf',
+  'assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf',
   robot => {
     console.log("Robot loaded successfully:", robot);
     scene.add(robot);
