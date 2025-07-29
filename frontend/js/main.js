@@ -36,7 +36,9 @@ scene.add(axesHelper);
 
 async function getInitialJointPositions() {
   try {
-    const response = await fetch('http://127.0.0.1:5000/get_initial_joint_positions');
+    // ---- THIS IS THE FIX ----
+    const response = await fetch('http://127.0.0.1:9000/api/get-current-pose');
+    // -------------------------
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -65,23 +67,30 @@ loader.load(
     robot.rotation.x = - Math.PI / 2;
 
     getInitialJointPositions().then(initialPositions => {
-      console.log('Initial positions to be applied:', initialPositions);
-      // We will apply these in the next step.
+      if (!initialPositions) {
+        console.error("Cannot set robot pose, initial positions failed to load.");
+        return;
+    }
+
+    console.log('Applying initial positions to the 3D model...');
+
+      // --- FIX 2: Loop through the fetched positions and apply them ---
+      for (const jointName in initialPositions) {
+        robot.setJointValue(jointName, initialPositions[jointName]);
+      }
+      // -----------------------------------------------------------------
+
+      console.log("Initial robot pose has been set.");
     });
   }
 );
 
-/* ---- render loop ---- */
+/* ---- render loop and resize listener ---- */
 (function animate(){
   requestAnimationFrame(animate);
-
-  // ---- CHANGE 5: Update controls in the render loop ----
   controls.update();
-
   renderer.render(scene, camera);
 })();
-
-// ---- CHANGE 6: Add a resize listener ----
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();

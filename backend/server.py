@@ -1,40 +1,45 @@
-import time
-import json
+# In server.py
+
+from collections import deque
+
 from flask import Flask, jsonify
 from flask_cors import CORS
+import numpy as np
 
-# --- This function is our "Robot Hardware Driver" ---
-# In the REAL system, this would use the trossen_arm library to get live data.
-# For this example, we simulate it to return dynamic, non-hardcoded values.
+states = deque() # queue for storing states for data collection 
+# {images, joint_positions, gripper_position} -> goal_poses
+
 def get_current_robot_joint_positions():
     """
     SIMULATED: Reads the current joint angles from the physical robot hardware.
-    
-    IN A REAL SCENARIO, this would contain:
-    # positions = driver.get_all_positions() 
-    # return { f"joint_{i}": positions[i] for i in range(len(positions)) }
+    The keys in this dictionary MUST match the <joint name="..."> in the URDF file.
     """
     print("Reading 'live' joint positions from the (simulated) robot...")
     
-    # We use the current time to generate slightly different values on each run
-    # to prove the data is being fetched dynamically.
-    base_angle = time.time() % 3.0  # A value that changes over time
-    
-    # Names must EXACTLY match the joint names in your URDF file
-    simulated_positions = {
-        "joint_0": 0.0,
-        "joint_1": base_angle / 2.0,  # e.g., 0.7 rad
-        "joint_2": base_angle,        # e.g., 1.4 rad
-        "joint_3": -base_angle / 2.0, # e.g., -0.7 rad
-        "joint_4": 0.0,
-        "joint_5": 0.0,
-        "joint_6": 0.0
+    simulated_positions_numpy = {
+        "joint_0": 0.0 * np.pi / 180.0,
+        "joint_1": 61.0 * np.pi / 180.0,
+        "joint_2": 73.0 * np.pi / 180.0,
+        "joint_3": 61.0 * np.pi / 180.0,
+        "joint_4": 0.0 * np.pi / 180.0,
+        "joint_5": 0.0 * np.pi / 180.0
     }
-    return simulated_positions
 
-# --- Standard Flask Server Setup ---
+    # --- THIS IS THE FIX ---
+    # Create a new dictionary, converting every NumPy value to a standard Python float.
+    simulated_positions_python = {
+        key: float(value) for key, value in simulated_positions_numpy.items()
+    }
+    # -----------------------
+
+    return simulated_positions_python
+
 app = Flask(__name__)
-CORS(app) # Enable Cross-Origin requests
+CORS(app)
+
+# @app.route('/')
+# def index():
+#     return "Flask Server is running!"
 
 @app.route('/api/get-current-pose')
 def get_current_pose():
@@ -43,5 +48,4 @@ def get_current_pose():
     return jsonify(current_positions)
 
 if __name__ == '__main__':
-    # Runs the backend server
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=9000)
