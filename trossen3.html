@@ -33,18 +33,15 @@ import {
 
 import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
 
-async function getInitialJointPositions() {
+async function getInitialState() {
   try {
     const response = await fetch('http://127.0.0.1:9000/api/get-state');
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    const data = await response.json();
-    const jointPositions = data.joint_positions ?? {};
-    console.log("Successfully fetched initial joint positions:", jointPositions);
-    return jointPositions;
+    return await response.json();
   } catch (error) {
-    console.error("Could not fetch initial joint positions:", error);
+    console.error("Could not fetch initial state:", error);
     return {};
   }
 }
@@ -58,8 +55,22 @@ const dir = new THREE.DirectionalLight(0xffffff, 1.2);
 dir.position.set(2, 4, 2);
 scene.add(dir);
 
+/* ---------- floor / workspace visual -------------------- */
+// light, neutral grid on the ground (y = 0)
+const grid = new THREE.GridHelper(
+  2.0,   // size in meters
+  20,    // subdivisions
+  0x888888, // center line
+  0xb0b0b0  // grid lines
+);
+grid.position.y = 0;          // align with ground plane
+scene.add(grid);
+
+const axes = new THREE.AxesHelper(0.3);
+scene.add(axes);
+
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(1.5, 0, 0);
+camera.position.set(1.5, 1.5, 1.5);
 
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
@@ -67,7 +78,9 @@ renderer.setPixelRatio(devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
 const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.target.set(0, 0, 0); orbit.update();
+orbit.target.set(0, 0, 0)
+orbit.update();
+orbit.saveState();
 
 /* ---------- load URDF ---------- */
 const loader = new URDFLoader();
@@ -86,10 +99,13 @@ loader.load(
 
     ikRoot.clearDoF()
 
-    const initialJointPositions = await getInitialJointPositions();
+    const state = await getInitialState();
+    const initialJointPositions = state.joint_positions ?? {};
     for (const [name, val] of Object.entries(initialJointPositions)) {
       robot.setJointValue(name, val);
     }
+
+    const camPoses = state.camera_poses ?? {}
 
     setIKFromUrdf(ikRoot, robot);
     ikRoot.updateMatrixWorld(true);
@@ -149,6 +165,66 @@ loader.load(
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
       marker.quaternion.copy(quat);
     }
+
+    /* ---------- camera-view buttons --------------------------- */
+    function poseToMatrix(mat){
+      return new THREE.Matrix4().set(
+        mat[0][0], mat[0][1], mat[0][2], mat[0][3],
+        mat[1][0], mat[1][1], mat[1][2], mat[1][3],
+        mat[2][0], mat[2][1], mat[2][2], mat[2][3],
+        mat[3][0], mat[3][1], mat[3][2], mat[3][3],
+      );
+    }
+
+    function switchCamera (key){
+      if (key === 'orbit') {
+        orbit.enabled = true;
+        orbit.reset();
+        return;
+      }
+      if (!camPoses[key]) return;
+      const m = poseToMatrix( camPoses[key] );
+      const pos   = new THREE.Vector3();
+      const quat  = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      m.decompose( pos, quat, scale );
+      camera.position.copy( pos );
+      camera.quaternion.copy( quat );
+      camera.updateMatrixWorld();
+      orbit.enabled = false;
+    }
+
+    const btnBar   = document.createElement('div');
+    btnBar.style.position = 'fixed';
+    btnBar.style.top = '8px';
+    btnBar.style.left = '8px';
+    btnBar.style.zIndex = 10;
+    btnBar.style.display = 'flex';
+    btnBar.style.gap = '4px';
+    document.body.appendChild( btnBar );
+
+    Object.keys(camPoses).forEach(key=>{
+      const b       = document.createElement('button');
+      b.textContent = key.split('_')[0]; // "left", "right", …
+      b.onclick     = ()=> switchCamera(key);
+      btnBar.appendChild( b );
+    });
+
+    /* add orbit button */
+    const orbitBtn = document.createElement('button');
+    orbitBtn.textContent = 'orbit';
+    orbitBtn.onclick = ()=> switchCamera('orbit');
+    btnBar.appendChild(orbitBtn);
+
+    /* --- visualise camera frusta ------------------------------ */
+    Object.entries(camPoses).forEach(([key, mat])=>{
+      const dummy = new THREE.PerspectiveCamera(56, 1, 0.1, 1000);
+      dummy.matrix = poseToMatrix(mat);
+      dummy.matrixAutoUpdate = false;
+      dummy.updateMatrixWorld(true);
+      const helper = new THREE.CameraHelper(dummy);
+      scene.add(helper);
+    });
 
     const gui = new GUI();
     gui.add(params, 'x', 0.0, 0.60).onChange(updateGoal);

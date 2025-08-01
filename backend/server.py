@@ -4,6 +4,7 @@ import numpy as np
 from flask import Flask, jsonify
 from flask_cors import CORS
 import random
+from math import cos, sin
 
 app = Flask(__name__)
 CORS(app)
@@ -33,30 +34,37 @@ def make_views() -> dict[str, list]:
     return {name: img.tolist()
             for name in ("left", "right", "front", "perspective")}
 
+def euler_pose(x: float, y: float, z: float,
+               roll: float, pitch: float, yaw: float) -> list[list[float]]:
+    """
+    Build a 4×4 **world** matrix (row-major list-of-lists) from
+    T = Trans(x,y,z) · Rz(yaw) · Ry(pitch) · Rx(roll)
+    """
+    cr, sr = cos(roll),  sin(roll)
+    cp, sp = cos(pitch), sin(pitch)
+    cy, sy = cos(yaw),   sin(yaw)
 
-def random_se3() -> list[list[float]]:
-    """Return a random 4×4 homogeneous transform as nested Python lists."""
-    # random rotation via axis-angle
-    axis = np.random.randn(3)
-    axis /= np.linalg.norm(axis)
-    theta = random.uniform(-np.pi, np.pi)
-    K = np.array([[    0, -axis[2],  axis[1]],
-                  [ axis[2],      0, -axis[0]],
-                  [-axis[1], axis[0],     0]])
-    R = np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * K @ K
-
-    # random translation in a 1 m cube
-    t = np.random.uniform(-0.5, 0.5, 3)
+    # column-major rotation
+    Rrow = np.array([
+        [ cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
+        [ sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
+        [   -sp,              cp*sr,              cp*cr]
+    ])
 
     T = np.eye(4)
-    T[:3, :3] = R
-    T[:3,  3] = t
+    T[:3, :3] = Rrow.T
+    T[:3,  3] = [x, y, z]
     return T.tolist()
 
 
 def make_camera_poses() -> dict[str, list]:
-    return {name + "_pose": random_se3()
-            for name in ("left", "right", "front", "perspective")}
+    return {
+        #           x     y     z     roll   pitch   yaw
+        "front_pose":       euler_pose(0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+        # "left_pose":        euler_pose(0.0, -2.0, 1.0, 0.0, 0.0, np.pi/2),
+        # "right_pose":       euler_pose(0.0,  2.0, 1.0, 0.0, 0.0,-np.pi/2),
+        # "perspective_pose": euler_pose(2.0,  2.0, 2.0, -0.4, -0.3, 0.8),
+    }
 
 
 def choose_axis() -> str:
