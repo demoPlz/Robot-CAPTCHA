@@ -22,12 +22,15 @@ def make_joint_positions() -> dict[str, float]:
         "joint_3": deg(  61.0),
         "joint_4": deg(   0.0),
         "joint_5": deg(   0.0),
-        "left_carriage_joint": 0.020, # 0 = fully closed, 0.044 m = fully open
+        "left_carriage_joint": 0.0, # 0 = fully closed, 0.044 m = fully open
     }
+
+def gripper_motion() -> int:
+    return -1
 
 
 def make_views() -> dict[str, list]:
-    """Four N×M×3 pink RGB images (here 64 × 64 × 3)."""
+    """Four NxMx3 pink RGB images (here 64 x 64 x 3)."""
     H, W = 64, 64
     pink = np.array([255, 105, 180], dtype=np.uint8)  # hot-pink [R,G,B]
     img  = np.broadcast_to(pink, (H, W, 3)).copy()    # (64,64,3)
@@ -38,7 +41,7 @@ def make_views() -> dict[str, list]:
 def euler_pose(x: float, y: float, z: float,
                roll: float, pitch: float, yaw: float) -> list[list[float]]:
     """
-    Build a 4×4 **world** matrix (row-major list-of-lists) from
+    Build a 4x4 **world** matrix (row-major list-of-lists) from
     T = Trans(x,y,z) · Rz(yaw) · Ry(pitch) · Rx(roll)
     """
     cr, sr = cos(roll),  sin(roll)
@@ -83,6 +86,7 @@ def get_state():
         "views":           make_views(),
         "camera_poses":    make_camera_poses(),
         "axis":            choose_axis(),
+        "gripper":         gripper_motion()
     }
     return jsonify(state)
 

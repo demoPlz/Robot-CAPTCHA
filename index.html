@@ -105,6 +105,60 @@ loader.load(
       robot.setJointValue(name, val);
     }
 
+    /* ---------- gripper-motion arrows ---------------------------------- */
+    const gripperMotion = state.gripper ?? 0;          // +1 open, –1 close, 0 none
+    if (gripperMotion) {
+      const colour = gripperMotion > 0 ? 0x00ff00 : 0xff0000;  // green ↔ red
+      const len    = 0.08;       // arrow length  (m)
+      const headLen   = 0.04;       // head length   (m)
+      const shaftLen = len - headLen; // length of the shaft
+      const shaftRad = 0.01;
+      const offset = 0.00;       // how far the arrow sits from finger centre
+
+      /** add one arrow to the given finger link.
+       *  `outward` is +1 for left finger ( +Y ), −1 for right finger ( −Y ) */
+      function addArrow(linkName, outward) {
+        const link = robot.getObjectByName(linkName);
+        if (!link) return;
+
+        // direction in the *link’s local frame*
+        const dirLocal    = new THREE.Vector3(0, gripperMotion * outward, 0).normalize();
+        
+        const tipX = 0.04; // Distance from tip of end-effector
+
+        const baseDist = gripperMotion > 0 ? offset
+                                           : offset + len
+        const originLocal = new THREE.Vector3(tipX, outward * baseDist, 0);  // sit outside
+
+        const arrow = new THREE.ArrowHelper(dirLocal, originLocal, len, colour,
+                                            headLen, headLen * 0.6);
+        /* build custom arrow so shaft thickness is under our control ---- */
+        const grp  = new THREE.Group();
+
+        // shaft (cylinder)
+        const shaftGeo = new THREE.CylinderGeometry(shaftRad, shaftRad,
+                                                    shaftLen, 8, 1, true);
+        const mat      = new THREE.MeshBasicMaterial({ color: colour });
+        const shaft    = new THREE.Mesh(shaftGeo, mat);
+        shaft.position.y = shaftLen / 2;      // centre along +Y
+        grp.add(shaft);
+
+        // head (cone)
+        const coneGeo  = new THREE.ConeGeometry(headLen * 0.6, headLen, 8);
+        const cone     = new THREE.Mesh(coneGeo, mat);
+        cone.position.y = shaftLen + headLen / 2;
+        grp.add(cone);
+
+        // orient whole arrow & attach to finger link
+        grp.position.copy(originLocal);
+        grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirLocal);
+        link.add(grp);
+      }
+
+      addArrow('gripper_left',  +1);   // left finger (+Y)
+      addArrow('gripper_right', -1);   // right finger (−Y)
+    }
+
     const camPoses = state.camera_poses ?? {}
 
     setIKFromUrdf(ikRoot, robot);
@@ -136,13 +190,13 @@ loader.load(
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
     /* ---- red sphere exactly at that pose ---------------------- */
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry( 0.02, 16, 16 ),
-      new THREE.MeshStandardMaterial( { color: 0xff0000 } )
-    );
-    marker.position.copy    ( startPos  );
-    marker.quaternion.copy  ( startQuat );
-    scene.add( marker );
+    // const marker = new THREE.Mesh(
+    //   new THREE.SphereGeometry( 0.02, 16, 16 ),
+    //   new THREE.MeshStandardMaterial( { color: 0xff0000 } )
+    // );
+    // marker.position.copy    ( startPos  );
+    // marker.quaternion.copy  ( startQuat );
+    // scene.add( marker );
 
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
@@ -156,14 +210,14 @@ loader.load(
     function updateGoal() {
       /* position */
       goal.setPosition(params.x, params.y, params.z);
-      marker.position.set(params.x, params.y, params.z);
+      // marker.position.set(params.x, params.y, params.z);
 
       /* orientation */
       const quat = new THREE.Quaternion().setFromEuler(
         new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
       );
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
-      marker.quaternion.copy(quat);
+      // marker.quaternion.copy(quat);
     }
 
     /* ---------- camera-view buttons --------------------------- */
