@@ -1,11 +1,35 @@
 {
   "dependencies": {
+    "closed-chain-ik": "^0.0.3",
+    "gl-matrix": "^3.4.3",
+    "lil-gui": "^0.20.0",
+    "linear-solve": "^1.2.1",
+    "svd-js": "^1.1.1",
+    "three": "^0.145.0",
+    "three-mesh-bvh": "^0.9.1",
     "urdf-loader": "^0.12.6"
   },
   "devDependencies": {
     "vite": "^7.0.6"
   },
   "scripts": {
-    "dev": "vite"
-  }
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "name": "crowdsourcing-ui",
+  "version": "1.0.0",
+  "main": "vite.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/demoPlz/crowdsourcing-ui.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/demoPlz/crowdsourcing-ui/issues"
+  },
+  "homepage": "https://github.com/demoPlz/crowdsourcing-ui#readme",
+  "description": ""
 }

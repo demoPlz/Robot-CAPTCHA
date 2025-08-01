@@ -1,18 +1,8 @@
 let _context;
 
-/**
- * Manages the global audio context in the engine.
- *
- * @hideconstructor
- */
-class AudioContext {
+const AudioContext = {
 
-	/**
-	 * Returns the global native audio context.
-	 *
-	 * @return {AudioContext} The native audio context.
-	 */
-	static getContext() {
+	getContext: function () {
 
 		if ( _context === undefined ) {
 
@@ -22,19 +12,14 @@ class AudioContext {
 
 		return _context;
 
-	}
+	},
 
-	/**
-	 * Allows to set the global native audio context from outside.
-	 *
-	 * @param {AudioContext} value - The native context to set.
-	 */
-	static setContext( value ) {
+	setContext: function ( value ) {
 
 		_context = value;
 
 	}
 
-}
+};
 
 export { AudioContext };
