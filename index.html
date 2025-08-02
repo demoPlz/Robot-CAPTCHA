@@ -63,14 +63,15 @@ const grid = new THREE.GridHelper(
   0x888888, // center line
   0xb0b0b0  // grid lines
 );
-grid.position.y = 0;          // align with ground plane
+grid.position.y = 0;          // lie on y = 0
+grid.rotation.x = Math.PI / 2;
 scene.add(grid);
 
 const axes = new THREE.AxesHelper(0.3);
 scene.add(axes);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(1.5, 1.5, 1.5);
+camera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math.PI);
 
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
@@ -107,57 +108,57 @@ loader.load(
     }
 
     /* ---------- gripper-motion arrows ---------------------------------- */
-    const gripperMotion = state.gripper ?? 0;          // +1 open, –1 close, 0 none
-    if (gripperMotion) {
-      const colour = gripperMotion > 0 ? 0x00ff00 : 0xff0000;  // green ↔ red
-      const len    = 0.08;       // arrow length  (m)
-      const headLen   = 0.04;       // head length   (m)
-      const shaftLen = len - headLen; // length of the shaft
-      const shaftRad = 0.01;
-      const offset = 0.00;       // how far the arrow sits from finger centre
+    let gripArrows = [];                       // keeps currently-shown arrow meshes
 
-      /** add one arrow to the given finger link.
-       *  `outward` is +1 for left finger ( +Y ), −1 for right finger ( −Y ) */
+    function drawGripArrows(dir /* +1 open | –1 close */) {
+      /* remove previous arrows */
+      gripArrows.forEach(a => a.parent?.remove(a));
+      gripArrows.length = 0;
+
+      if (!dir) return;                        // nothing to draw
+
+      const colour   = dir > 0 ? 0x00ff00 : 0xff0000;
+      const len      = 0.08, headLen = 0.04;
+      const shaftLen = len - headLen, shaftRad = 0.01, offset = 0.00;
+      const tipX     = 0.04;
+
       function addArrow(linkName, outward) {
-        const link = robot.getObjectByName(linkName);
-        if (!link) return;
+        const link = robot.getObjectByName(linkName); if (!link) return;
+        const dirLocal    = new THREE.Vector3(0, dir * outward, 0).normalize();
+        const baseDist    = dir > 0 ? offset : offset + len;
+        const originLocal = new THREE.Vector3(tipX, outward * baseDist, 0);
 
-        // direction in the *link’s local frame*
-        const dirLocal    = new THREE.Vector3(0, gripperMotion * outward, 0).normalize();
-        
-        const tipX = 0.04; // Distance from tip of end-effector
+        /* geometry ---------------------------------------------------- */
+        const mat       = new THREE.MeshBasicMaterial({ color: colour });
+        const grp       = new THREE.Group();
 
-        const baseDist = gripperMotion > 0 ? offset
-                                           : offset + len
-        const originLocal = new THREE.Vector3(tipX, outward * baseDist, 0);  // sit outside
-
-        const arrow = new THREE.ArrowHelper(dirLocal, originLocal, len, colour,
-                                            headLen, headLen * 0.6);
-        /* build custom arrow so shaft thickness is under our control ---- */
-        const grp  = new THREE.Group();
-
-        // shaft (cylinder)
-        const shaftGeo = new THREE.CylinderGeometry(shaftRad, shaftRad,
-                                                    shaftLen, 8, 1, true);
-        const mat      = new THREE.MeshBasicMaterial({ color: colour });
-        const shaft    = new THREE.Mesh(shaftGeo, mat);
-        shaft.position.y = shaftLen / 2;      // centre along +Y
+        const shaftGeo  = new THREE.CylinderGeometry(shaftRad, shaftRad,
+                                                     shaftLen, 8, 1, true);
+        const shaft     = new THREE.Mesh(shaftGeo, mat);
+        shaft.position.y = shaftLen / 2;
         grp.add(shaft);
 
-        // head (cone)
-        const coneGeo  = new THREE.ConeGeometry(headLen * 0.6, headLen, 8);
-        const cone     = new THREE.Mesh(coneGeo, mat);
+        const coneGeo   = new THREE.ConeGeometry(headLen * 0.6, headLen, 8);
+        const cone      = new THREE.Mesh(coneGeo, mat);
         cone.position.y = shaftLen + headLen / 2;
         grp.add(cone);
 
-        // orient whole arrow & attach to finger link
         grp.position.copy(originLocal);
         grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirLocal);
         link.add(grp);
+        gripArrows.push(grp);
       }
+      addArrow('gripper_left',  +1);
+      addArrow('gripper_right', -1);
+    }
 
-      addArrow('gripper_left',  +1);   // left finger (+Y)
-      addArrow('gripper_right', -1);   // right finger (−Y)
+    drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
+
+    const gui = new GUI();
+    if (activeControls.includes('gripper')) {
+      const gf = gui.addFolder('gripper');      // tiny sub-folder
+      gf.add({ open : () => drawGripArrows(+1) }, 'open');
+      gf.add({ close: () => drawGripArrows(-1) }, 'close');
     }
 
     const camPoses = state.camera_poses ?? {}
@@ -189,6 +190,19 @@ loader.load(
 
     goal.setPosition   ( startPos.x, startPos.y, startPos.z );
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
+
+    /* ---------- semi-transparent alignment line -------------------- */
+    const lineLen = 0.80;      // metres      ← tune if needed
+    const lineRad = 0.002;     // thickness   ← tune if needed
+    const lineMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff00, transparent: true, opacity: 0.4
+    });
+    const line    = new THREE.Mesh(
+      new THREE.CylinderGeometry(lineRad, lineRad, lineLen, 8, 1, true),
+      lineMat
+    );
+    line.rotation.x = Math.PI / 2;   // cylinder-Y → world Z
+    scene.add(line);
 
     /* ---- red sphere exactly at that pose ---------------------- */
     // const marker = new THREE.Mesh(
@@ -281,11 +295,10 @@ loader.load(
       scene.add(helper);
     });
 
-    const gui = new GUI();
     const spanDefs = [
-      ['x',     0.30],   // meters
-      ['y',     0.30],
-      ['z',     0.30],
+      ['x',     0.20],   // meters
+      ['y',     0.20],
+      ['z',     0.20],
       ['roll',  0.61],   // radians
       ['pitch', 0.61],
       ['yaw',   0.61],
@@ -311,6 +324,7 @@ loader.load(
       solver.solve();                 // run DLS IK
       setUrdfFromIK(robot, ikRoot);   // IK ➜ URDF                                         :contentReference[oaicite:2]{index=2}
 
+      eeVis.getWorldPosition(line.position);
       renderer.render(scene, camera);
     }
     animate();

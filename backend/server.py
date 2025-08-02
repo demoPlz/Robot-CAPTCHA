@@ -64,21 +64,16 @@ def euler_pose(x: float, y: float, z: float,
 def make_camera_poses() -> dict[str, list]:
     return {
         #           x     y     z     roll   pitch   yaw
-        "front_pose":       euler_pose(0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
-        # "left_pose":        euler_pose(0.0, -2.0, 1.0, 0.0, 0.0, np.pi/2),
-        # "right_pose":       euler_pose(0.0,  2.0, 1.0, 0.0, 0.0,-np.pi/2),
-        # "perspective_pose": euler_pose(2.0,  2.0, 2.0, -0.4, -0.3, 0.8),
+        "front_pose":       euler_pose(1.0, 0.0, 0.15, 0.0, -np.pi/2 - 0.1, -np.pi/2),
+        "left_pose":        euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
+        "right_pose":       euler_pose(0.2,  1.0, 0.15, np.pi/2, 0.0, np.pi),
+        "perspective_pose": euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
     }
 
 
-def choose_axis() -> str:
-    """Pick one of the control axes at random (placeholder)."""
-    return random.choice(["x", "y", "z", "roll", "pitch", "yaw", "gripper"])
-
-
 def make_controls() -> list[str]:
-    # any subset of ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
-    return ['x','y','z','roll','pitch','yaw']
+    # any subset of ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
+    return ['x','y','z','roll','pitch','yaw', "gripper"]
 
 # --------------------------------------------------------------------------- #
 #  API endpoint                                                               #
