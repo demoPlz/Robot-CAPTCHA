@@ -109,13 +109,15 @@ loader.load(
 
     /* ---------- gripper-motion arrows ---------------------------------- */
     let gripArrows = [];                       // keeps currently-shown arrow meshes
+    let gripDir    = state.gripper ?? 0;
 
     function drawGripArrows(dir /* +1 open | –1 close */) {
       /* remove previous arrows */
       gripArrows.forEach(a => a.parent?.remove(a));
       gripArrows.length = 0;
 
-      if (!dir) return;                        // nothing to draw
+      gripDir = dir || 0;     // remember last request
+      if (!dir) return;        // nothing to draw
 
       const colour   = dir > 0 ? 0x00ff00 : 0xff0000;
       const len      = 0.08, headLen = 0.04;
@@ -285,6 +287,49 @@ loader.load(
     orbitBtn.textContent = 'orbit';
     orbitBtn.onclick = ()=> switchCamera('orbit');
     btnBar.appendChild(orbitBtn);
+
+    /* ---------- confirm button (lower-right corner) ------------------- */
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent   = 'confirm';
+  confirmBtn.style.position = 'fixed';
+  confirmBtn.style.right    = '8px';
+  confirmBtn.style.bottom   = '8px';
+  confirmBtn.style.zIndex   = 10;
+  document.body.appendChild(confirmBtn);
+
+  confirmBtn.onclick = async () => {
+    /* gather current joint values (radians / metres) */
+    const jointMap = {};
+    Object.entries(robot.joints).forEach(([name, joint]) => {
+      jointMap[name] = joint.jointValue;
+    });
+
+    /* gather current end-effector pose (world frame) */
+    robot.updateMatrixWorld(true);             // ensure transforms are fresh
+    const eePos  = new THREE.Vector3();
+    const eeQuat = new THREE.Quaternion();
+    eeVis.getWorldPosition   (eePos);
+    eeVis.getWorldQuaternion (eeQuat);
+    const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
+
+    try {
+      await fetch('http://127.0.0.1:9000/api/submit-goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          joint_positions: jointMap,
+          gripper:         gripDir,                // -1 / +1 / 0
+          ee_pose: {                               // added  ⤵
+            position:   [eePos.x,  eePos.y,  eePos.z],
+            rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
+          }
+        })
+      });
+      console.log('✅ goal sent');
+    } catch (err) {
+      console.error('❌ failed to send goal', err);
+    }
+  };
 
     /* --- visualise camera frusta ------------------------------ */
     Object.entries(camPoses).forEach(([key, mat])=>{

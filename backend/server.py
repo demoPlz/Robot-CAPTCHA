@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from flask import Flask, jsonify
 from flask_cors import CORS
+from flask import request
 import random
 from math import cos, sin
 
@@ -73,7 +74,7 @@ def make_camera_poses() -> dict[str, list]:
 
 def make_controls() -> list[str]:
     # any subset of ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
-    return ["gripper"]
+    return ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
 
 # --------------------------------------------------------------------------- #
 #  API endpoint                                                               #
@@ -88,6 +89,23 @@ def get_state():
         'controls':        make_controls()
     }
     return jsonify(state)
+
+@app.route("/api/submit-goal", methods=["POST"])
+def submit_goal():
+    '''
+    {
+        "joint_positions": { "joint_0": 0.12, … },
+        "gripper": -1,        # -1 close, +1 open, 0 unchanged
+        "ee_pose": {
+            "position":   [x, y, z],
+            "quaternion": [qx, qy, qz, qw]
+        }
+    }
+    '''
+    
+    data = request.get_json(force=True, silent=True) or {}
+    print("🔔 Confirmed goal received:", data, flush=True)
+    return jsonify({"status": "ok"})
 
 
 # --------------------------------------------------------------------------- #
