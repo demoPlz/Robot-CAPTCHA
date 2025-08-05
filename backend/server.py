@@ -73,7 +73,7 @@ def make_camera_poses() -> dict[str, list]:
 
 def make_controls() -> list[str]:
     # any subset of ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
-    return ['x','y','z','roll','pitch','yaw', "gripper"]
+    return ["gripper"]
 
 # --------------------------------------------------------------------------- #
 #  API endpoint                                                               #
