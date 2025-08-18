@@ -2,10 +2,10 @@ from __future__ import annotations
 
 
 CAM_IDS = {
-    "front":       0,   # change indices / paths as needed
-    "left":        1,
-    "right":       2,
-    "perspective": 3,
+    "front":       14,   # change indices / paths as needed
+    "left":        16,
+    "right":       18,
+    "perspective": 12,
 }
 
 JOINT_NAMES = [
@@ -28,7 +28,38 @@ from math import cos, sin
 
 import argparse
 
+_REALSENSE_BLOCKLIST = (
+    "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
+)
+
 ### HELPERS
+
+def _v4l2_node_name(idx: int) -> str:
+    """Fast sysfs read of V4L2 device name; '' if unknown."""
+    try:
+        with open(f"/sys/class/video4linux/video{idx}/name", "r", encoding="utf-8") as f:
+            return f.read().strip().lower()
+    except Exception:
+        return ""
+
+def _is_webcam_idx(idx: int) -> bool:
+    """True if /dev/video{idx} looks like a regular webcam, not a RealSense node."""
+    name = _v4l2_node_name(idx)
+    if not name:
+        # If we can't read the name, allow it and let open/read decide.
+        return True
+    return not any(term in name for term in _REALSENSE_BLOCKLIST)
+
+def _prep_capture(cap: cv2.VideoCapture, width=640, height=480, fps=None, mjpg=True):
+    """Apply low-latency, webcam-friendly settings once at open."""
+    # Keep the buffer tiny to minimize latency
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    # Many webcams unlock higher modes with MJPG
+    if mjpg:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    if width:  cap.set(cv2.CAP_PROP_FRAME_WIDTH,  int(width))
+    if height: cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+    if fps:    cap.set(cv2.CAP_PROP_FPS,          float(fps))
 
 class CrowdInterface():
     '''
@@ -59,44 +90,77 @@ class CrowdInterface():
 
 
     ### ---Camera Management---
-
     def init_cameras(self):
-        """Open all cameras once; skip any that fail."""
+        """Open only *webcams* (skip RealSense nodes) once; skip any that fail."""
+        self.cams = getattr(self, "cams", {})
         for name, idx in CAM_IDS.items():
-            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
-            if cap.isOpened():
-                self.cams[name] = cap
-            #     print(f"✓ Camera '{name}' opened successfully")
-            # else:
-            #     print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
+            # Only attempt indices that look like webcams
+            if not _is_webcam_idx(idx):
+                print(f"⏭️  skipping '{name}' (/dev/video{idx}) — not a webcam")
+                continue
+
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
+                continue
+
+            # One-time efficiency settings
+            _prep_capture(cap, width=640, height=480, fps=None, mjpg=True)
+
+            # Verify we can actually read one frame
+            ok, _ = cap.read()
+            if not ok:
+                cap.release()
+                print(f"⚠️  camera “{name}” (id {idx}) opens but won't deliver frames")
+                continue
+
+            self.cams[name] = cap
+            print(f"✓ Camera '{name}' opened successfully (/dev/video{idx})")
+
 
     def cleanup_cameras(self):
         """Close all cameras"""
-        for cap in self.cams.values():
-            cap.release()
-        self.cams.clear()
-    
+        for cap in getattr(self, "cams", {}).values():
+            try:
+                cap.release()
+            except Exception:
+                pass
+        self.cams = {}
+
+
     def get_views(self) -> dict[str, list]:
-        """Return a 64x64 RGB image dict from available webcams."""
-        H, W = 64, 64
-        pink = np.broadcast_to([255, 255, 255], (H, W, 3)).astype(np.uint8)
+        """Return an RGB image dict from available webcams.
+        Uses grab() → retrieve() pattern for near-simultaneous multi-cam capture."""
+        if not hasattr(self, "cams"):
+            self.cams = {}
 
-        views = {}
-        for name in ("left", "right", "front", "perspective"):
-            # if name in cams:
-            #     frame = _grab_frame(cams[name])
-            #     views[name] = (frame if frame is not None else pink).tolist()
-            # else:
-                # views[name] = pink.tolist()
+        order = ("left", "right", "front", "perspective")
+        # 1) grab from all first (non-blocking dequeue)
+        for name in order:
+            if name in self.cams:
+                self.cams[name].grab()
 
-            views[name] = pink.tolist()
+        # 2) retrieve, convert, downscale
+        views: dict[str, list] = {}
+        for name in order:
+            if name not in self.cams:
+                continue
+            frame = self._grab_frame(self.cams[name], size=(640, 480))
+            if frame is not None:
+                views[name] = frame.tolist()
         return views
-    
-    def _grab_frame(cap, size=(64, 64)) -> np.ndarray | None:
-        ok, frame = cap.read()
-        if not ok:
-            return None
-        frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)   # WxH
+
+
+    def _grab_frame(self, cap, size=(64, 64)) -> np.ndarray | None:
+        # retrieve() after grab(); falls back to read() if needed
+        ok, frame = cap.retrieve()
+        if not ok or frame is None:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return None
+        # Resize then convert to RGB; INTER_AREA is efficient for downscale
+        if size is not None:
+            frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return frame
     
@@ -110,7 +174,7 @@ class CrowdInterface():
 
         self.states.append({
             "joint_positions": jp,
-            "views": self._blank_views,       # reuse precomputed JSON-serializable views
+            "views": self.get_views(),       # reuse precomputed JSON-serializable views
             "camera_poses": self._camera_poses,  # reuse precomputed poses
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
