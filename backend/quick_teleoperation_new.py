@@ -4,7 +4,7 @@ from crowd_interface import CrowdInterface, create_flask_app, JOINT_NAMES
 import trossen_arm
 import numpy as np
 
-from test import dummy
+from utility.display_cam_id import dummy
 
 import time
 
