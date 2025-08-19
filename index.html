@@ -2,7 +2,13 @@
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8" />
 <title>WidowX AI — position IK only</title>
-<style>html,body{margin:0;height:100%;overflow:hidden}</style>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden}
+  /* Center the canvas and prevent stretching; letterbox/pillarbox with black */
+  #viewport{position:fixed;inset:0;background:#000;display:grid;place-items:center}
+  canvas{display:block}
+  /* (no width/height forcing on canvas; renderer controls it) */
+ </style>
 
 <!-- Polyfill so the import-map works everywhere -->
 <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2/dist/es-module-shims.js"></script>
@@ -17,6 +23,8 @@
   }
 }
 </script></head><body>
+  <!-- Centering mount for the WebGL canvas; avoids CSS stretching -->
+  <div id="viewport"></div>
 <script type="module">
 /* ---------- imports ---------- */
 import * as THREE                    from 'three';
@@ -77,7 +85,8 @@ camera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
-document.body.appendChild(renderer.domElement);
+const mount = document.getElementById('viewport');
+mount.appendChild(renderer.domElement);
 
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.target.set(0, 0, 0)
@@ -200,7 +209,7 @@ loader.load(
 
       // Scale intrinsics to current viewport (CSS) size
       const sz = new THREE.Vector2();
-      renderer.getSize(sz);
+      renderer.getDrawingBufferSize(sz);
       const vw = sz.x, vh = sz.y;
       const sx = vw / W, sy = vh / H;
 
@@ -225,6 +234,21 @@ loader.load(
       camera.fov = 45;
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();
+    }
+
+    // Fit the renderer to the camera image while preserving its aspect ratio
+    function fitRendererToImage(name){
+      const model = cameraModels?.[name];
+      const tex   = viewTextures[name];
+      if (!model || !tex) return false;
+      const W = model.width|0, H = model.height|0;
+      // Fit inside window with letterbox/pillarbox; keep aspect = W/H
+      const winW = innerWidth, winH = innerHeight;
+      const s = Math.min(winW / W, winH / H);
+      const vw = Math.round(W * s), vh = Math.round(H * s);
+      renderer.setSize(vw, vh);         // updates buffer & CSS size together
+      applyProjectionFromK(name);       // rebuild frustum for this viewport
+      return true;
     }
 
     setIKFromUrdf(ikRoot, robot);
@@ -321,6 +345,9 @@ loader.load(
         orbit.enabled = true;
         orbit.reset();
         scene.background = defaultBg; // reset background
+        currentCamName = null;
+        renderer.setSize(innerWidth, innerHeight);
+        applyDefaultPerspective();
         return;
       }
       if (!camPoses[key]) return;
@@ -336,11 +363,12 @@ loader.load(
       /* ---------- set matching webcam frame as background ---------- */
       const name = key.replace('_pose', '');   // 'front_pose' → 'front'
       scene.background = viewTextures[name] ?? defaultBg;
-      // Match projection to calibrated intrinsics if available
-      if (applyProjectionFromK(name)) {
+      // Resize renderer to preserve image aspect; then apply calibrated frustum
+      if (fitRendererToImage(name)) {
         currentCamName = name;
       } else {
         currentCamName = null;
+        renderer.setSize(innerWidth, innerHeight);
         applyDefaultPerspective();
       }
     }
@@ -460,12 +488,12 @@ loader.load(
 /* ---------- responsive canvas ---------- */
 addEventListener('resize', () => {
   if (currentCamName) {
-    // Recompute frustum from Knew for new viewport size
-    applyProjectionFromK(currentCamName);
+    // Keep the camera image undistorted on window resizes
+    fitRendererToImage(currentCamName);
   } else {
+    renderer.setSize(innerWidth, innerHeight);
     camera.aspect = innerWidth/innerHeight;
     camera.updateProjectionMatrix();
   }
-  renderer.setSize(innerWidth, innerHeight);
 });
 </script></body></html>
