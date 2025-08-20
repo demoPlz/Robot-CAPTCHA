@@ -2,10 +2,10 @@ from __future__ import annotations
 
 
 CAM_IDS = {
-    "front":       14,   # change indices / paths as needed
-    "left":        12,
-    "right":       17,
-    "perspective": 18,
+    "front":       18,   # change indices / paths as needed
+    "left":        4,
+    "right":       0,
+    "perspective": 2,
 }
 
 JOINT_NAMES = [
@@ -21,7 +21,10 @@ CALIB_PATHS = {
         "intr": "calib/intrinsics_front_1_640x480.npz",
         "extr": "calib/extrinsics_front_1.npz",
     },
-    "left":        {"intr": None, "extr": None},
+    "left": {
+        "intr": "calib/intrinsics_left_2_640x480.npz",
+        "extr": "calib/extrinsics_left_2.npz",
+    },
     "right":       {"intr": None, "extr": None},
     "perspective": {"intr": None, "extr": None},
 }
@@ -33,9 +36,11 @@ import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask import request
+from pathlib import Path
 from threading import Thread, Lock
 from collections import deque
 from math import cos, sin
+import json
 
 _REALSENSE_BLOCKLIST = (
     "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
@@ -269,6 +274,10 @@ class CrowdInterface():
         self._undistort_maps = {}
         self._camera_models = {}
 
+        # Base directory for optional manual overrides: ../calib/manual_calibration_{name}.json
+        base_dir = Path(__file__).resolve().parent
+        manual_dir = (base_dir / ".." / "calib").resolve()
+
         for name, paths in CALIB_PATHS.items():
             if not paths:
                 continue
@@ -326,6 +335,33 @@ class CrowdInterface():
                 except Exception as e:
                     print(f"⚠️  failed to load intrinsics for '{name}' ({intr}): {e}")
 
+            # ---- Manual override (JSON) if present ----
+            # File: ../calib/manual_calibration_{name}.json
+            try:
+                manual_path = manual_dir / f"manual_calibration_{name}.json"
+                if manual_path.exists():
+                    with open(manual_path, "r", encoding="utf-8") as f:
+                        mcal = json.load(f)
+                    intr_m = (mcal or {}).get("intrinsics") or {}
+                    extr_m = (mcal or {}).get("extrinsics") or {}
+                    # Validate presence of fields we expect
+                    if "T_three" in extr_m and isinstance(extr_m["T_three"], list):
+                        poses[f"{name}_pose"] = extr_m["T_three"]
+                        print(f"✓ applied MANUAL extrinsics for '{name}' from {manual_path}")
+                    if all(k in intr_m for k in ("width", "height", "Knew")):
+                        # Preserve existing 'rectified' flag if any, otherwise False
+                        prev_rect = self._camera_models.get(name, {}).get("rectified", False)
+                        self._camera_models[name] = {
+                            "model": "pinhole",
+                            "rectified": prev_rect,
+                            "width": int(intr_m["width"]),
+                            "height": int(intr_m["height"]),
+                            "Knew": intr_m["Knew"],
+                        }
+                        print(f"✓ applied MANUAL intrinsics for '{name}' from {manual_path}")
+            except Exception as e:
+                print(f"⚠️  failed to apply manual calibration for '{name}': {e}")
+
         return poses
     
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
@@ -359,5 +395,70 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         data = request.get_json(force=True, silent=True) or {}
         crowd_interface.submit_goal(data)
         return jsonify({"status": "ok"})
+    
+    @app.route("/api/save-calibration", methods=["POST"])
+    def save_calibration():
+        """
+        Save manual calibration to ../calib/manual_calibration_{camera}.json
+        Also updates the in-memory camera models/poses so the user immediately sees results.
+        Expected JSON:
+        {
+          "camera": "front",
+          "intrinsics": {"width": W, "height": H, "Knew": [[fx,0,cx],[0,fy,cy],[0,0,1]]},
+          "extrinsics": {"T_three": [[...4x4...]]}
+        }
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        cam = data.get("camera")
+        intr = data.get("intrinsics") or {}
+        extr = data.get("extrinsics") or {}
+        if not cam:
+            return jsonify({"error": "missing 'camera'"}), 400
+        if "Knew" not in intr or "width" not in intr or "height" not in intr:
+            return jsonify({"error": "intrinsics must include width, height, Knew"}), 400
+        if "T_three" not in extr:
+            return jsonify({"error": "extrinsics must include T_three (4x4)"}), 400
+
+        # Resolve ../calib path relative to this file
+        base_dir = Path(__file__).resolve().parent
+        calib_dir = (base_dir / ".." / "calib").resolve()
+        calib_dir.mkdir(parents=True, exist_ok=True)
+        out_path = calib_dir / f"manual_calibration_{cam}.json"
+
+        # Write JSON file
+        to_write = {
+            "camera": cam,
+            "intrinsics": {
+                "width":  int(intr["width"]),
+                "height": int(intr["height"]),
+                "Knew":   intr["Knew"],
+            },
+            "extrinsics": {
+                "T_three": extr["T_three"]
+            }
+        }
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(to_write, f, indent=2)
+        except Exception as e:
+            return jsonify({"error": f"failed to write calibration: {e}"}), 500
+
+        # Update in-memory models so the next /api/get-state reflects it immediately
+        try:
+            # intrinsics
+            crowd_interface._camera_models[cam] = {
+                "model": "pinhole",
+                "rectified": crowd_interface._camera_models.get(cam, {}).get("rectified", False),
+                "width":  int(intr["width"]),
+                "height": int(intr["height"]),
+                "Knew":   intr["Knew"],
+            }
+            # extrinsics (pose)
+            crowd_interface._camera_poses[f"{cam}_pose"] = extr["T_three"]
+        except Exception:
+            # Non-fatal; file already saved
+            pass
+
+        return jsonify({"status": "ok", "path": str(out_path)})
     
     return app

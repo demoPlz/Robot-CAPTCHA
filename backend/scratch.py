@@ -159,6 +159,10 @@ def control_robot(cfg: ControlPipelineConfig):
     if robot.is_connected:
         robot.disconnect()
 
+    while True:
+        time.sleep(1)
+        print("ctrl-C to stop")
+
 
 
 if __name__ == "__main__":

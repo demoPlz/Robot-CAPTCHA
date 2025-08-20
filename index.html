@@ -93,6 +93,11 @@ orbit.target.set(0, 0, 0)
 orbit.update();
 orbit.saveState();
 let currentCamName = null;  // track which calibrated cam is active (null = orbit/free)
+/** Calibration mode (UI & per-camera params) */
+let calibrationMode = false;
+let calibGUI = null;                       // lil-gui instance for calibration
+const calibState = {};                     // name -> {tx,ty,tz,rx,ry,rz,fx,fy,cx,cy}
+const calibDefaults = {};                  // snapshot at calibration start (per camera)
 
 /* ---------- load URDF ---------- */
 const loader = new URDFLoader();
@@ -253,6 +258,184 @@ loader.load(
       return true;
     }
 
+    /* ---------- calibration helpers (intrinsics & extrinsics) ------- */
+    function poseKeyForName(name) {
+      // camPoses keys look like "front_pose", "left_pose", ...
+      for (const k of Object.keys(camPoses)) if (k.startsWith(name)) return k;
+      return null;
+    }
+
+    function ensureCalibStateFor(name) {
+      if (calibState[name]) return;
+      // Seed from current camera transform & model K
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      camera.updateMatrixWorld();
+      camera.getWorldPosition(pos);
+      camera.getWorldQuaternion(quat);
+      const eul = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
+      const model = cameraModels?.[name];
+      const K = model?.Knew;
+      calibState[name] = {
+        tx: pos.x, ty: pos.y, tz: pos.z,
+        rx: eul.x, ry: eul.y, rz: eul.z,
+        fx: K ? K[0][0] : 800,
+        fy: K ? K[1][1] : 800,
+        cx: K ? K[0][2] : (model?.width ?? 640) / 2,
+        cy: K ? K[1][2] : (model?.height ?? 480) / 2,
+        zoom: 1.0,  // multiplicative scale for fx, fy
+      };
+    }
+
+    function destroyCalibGUI() { if (calibGUI) { calibGUI.destroy(); calibGUI = null; } }
+
+    function applyExtrinsicsFromParams(name) {
+      const s = calibState[name]; if (!s) return;
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rx, s.ry, s.rz, 'XYZ'));
+      camera.position.set(s.tx, s.ty, s.tz);
+      camera.quaternion.copy(q);
+      camera.updateMatrixWorld(true);
+      // Update camPoses so switching away/back keeps edited pose
+      const key = poseKeyForName(name);
+      if (key) {
+        const m = new THREE.Matrix4().compose(camera.position.clone(), camera.quaternion.clone(), new THREE.Vector3(1,1,1));
+        const e = m.elements; // row-major in Three (column-major storage)
+        camPoses[key] = [
+          [e[0], e[4], e[8],  e[12]],
+          [e[1], e[5], e[9],  e[13]],
+          [e[2], e[6], e[10], e[14]],
+          [e[3], e[7], e[11], e[15]],
+        ];
+      }
+    }
+
+    function applyIntrinsicsFromParams(name) {
+      const s = calibState[name]; if (!s) return;
+      const model = cameraModels?.[name]; if (!model) return;
+      const z = (s.zoom ?? 1.0);
+      const fx_eff = s.fx * z;
+      const fy_eff = s.fy * z;
+      model.Knew = [
+        [fx_eff, 0,     s.cx],
+        [0,      fy_eff, s.cy],
+        [0,    0,    1   ],
+      ];
+      applyProjectionFromK(name);
+    }
+
+    // tiny helper: add a slider **and** a matching "revert" button for it
+    function addParamWithRevert(folder, stateObj, key, range, step, label, onChange, camName){
+      const [min, max] = range;
+      const ctrl = folder.add(stateObj, key, min, max, step).name(label).onChange(()=>onChange(camName));
+      const revertObj = {};
+      const revertLabel = `revert ${label}`;
+      revertObj[revertLabel] = () => {
+        // restore from snapshot taken when entering calibration
+        stateObj[key] = calibDefaults[camName][key];
+        ctrl.updateDisplay();
+        onChange(camName);
+      };
+      folder.add(revertObj, revertLabel);
+      return ctrl;
+    }
+
+    function enterCalibration() {
+      if (!currentCamName) { console.warn('Pick a camera view before calibrating.'); return; }
+      calibrationMode = true;
+      destroyCalibGUI();
+      ensureCalibStateFor(currentCamName);
+      const s = calibState[currentCamName];
+      calibDefaults[currentCamName] = { ...s };
+      calibGUI = new GUI();
+      // Position panel top-right
+      calibGUI.domElement.style.position = 'fixed';
+      calibGUI.domElement.style.top = '8px';
+      calibGUI.domElement.style.right = '8px';
+      calibGUI.domElement.style.zIndex = 20;
+      // Intrinsics folder
+      const model = cameraModels[currentCamName];
+      const W = model?.width  ?? 640;
+      const H = model?.height ?? 480;
+      const fin = calibGUI.addFolder('Intrinsics (K)');
+      addParamWithRevert(fin, s, 'zoom', [0.1, 5.0], 0.001, 'zoom', applyIntrinsicsFromParams, currentCamName);
+      addParamWithRevert(fin, s, 'fx', [50, 8000], 1,   'fx', applyIntrinsicsFromParams, currentCamName);
+      addParamWithRevert(fin, s, 'fy', [50, 8000], 1,   'fy', applyIntrinsicsFromParams, currentCamName);
+      addParamWithRevert(fin, s, 'cx', [0, W],     0.1, 'cx', applyIntrinsicsFromParams, currentCamName);
+      addParamWithRevert(fin, s, 'cy', [0, H],     0.1, 'cy', applyIntrinsicsFromParams, currentCamName);
+      // Extrinsics folder
+      const fex = calibGUI.addFolder('Extrinsics (pose)');
+      addParamWithRevert(fex, s, 'tx', [s.tx - 0.25, s.tx + 0.25], 0.0005, 'tx (m)',   applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(fex, s, 'ty', [s.ty - 0.25, s.ty + 0.25], 0.0005, 'ty (m)',   applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(fex, s, 'tz', [s.tz - 0.25, s.tz + 0.25], 0.0005, 'tz (m)',   applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(fex, s, 'rx', [s.rx - 1.0,  s.rx + 1.0 ], 0.0005, 'roll rx',  applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(fex, s, 'ry', [s.ry - 1.0,  s.ry + 1.0 ], 0.0005, 'pitch ry', applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(fex, s, 'rz', [s.rz - 1.0,  s.rz + 1.0 ], 0.0005, 'yaw rz',   applyExtrinsicsFromParams, currentCamName);
+      
+      // ---- Save calibration action (writes to backend) ----
+      const actions = {
+        async save_calibration() {
+          try {
+            // build 4x4 from current cam pose (tx,ty,tz + rx,ry,rz)
+            const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rx, s.ry, s.rz, 'XYZ'));
+            const Tm = new THREE.Matrix4().compose(
+              new THREE.Vector3(s.tx, s.ty, s.tz),
+              q,
+              new THREE.Vector3(1,1,1)
+            );
+            // convert to row-major list-of-lists like the rest of the app
+            const e = Tm.elements;
+            const T_three = [
+              [e[0], e[4], e[8],  e[12]],
+              [e[1], e[5], e[9],  e[13]],
+              [e[2], e[6], e[10], e[14]],
+              [e[3], e[7], e[11], e[15]],
+            ];
+            const model = cameraModels[currentCamName];
+            // Use effective fx/fy that include zoom
+            const z = (s.zoom ?? 1.0);
+            const fx_eff = s.fx * z;
+            const fy_eff = s.fy * z;
+            const payload = {
+              camera: currentCamName,
+              intrinsics: {
+                width:  model?.width  ?? 640,
+                height: model?.height ?? 480,
+                Knew: [
+                  [fx_eff, 0,    s.cx],
+                  [0,    fy_eff, s.cy],
+                  [0,    0,    1   ],
+                ],
+                zoom: z
+              },
+              extrinsics: { T_three }
+            };
+            const resp = await fetch('http://127.0.0.1:9000/api/save-calibration', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const out = await resp.json();
+            if (!resp.ok) throw new Error(out?.error || 'save failed');
+            console.log('✅ saved calibration:', out);
+            alert(`Saved calibration for '${currentCamName}' to ${out.path}`);
+          } catch (err) {
+            console.error('❌ save calibration failed', err);
+            alert('Save calibration failed. See console for details.');
+          }
+        }
+      };
+      calibGUI.add(actions, 'save_calibration').name('Save calibration');
+
+      // Initial apply so the matrices reflect slider defaults
+      applyIntrinsicsFromParams(currentCamName);
+      applyExtrinsicsFromParams(currentCamName);
+    }
+
+    function exitCalibration() {
+      destroyCalibGUI();
+      calibrationMode = false;
+    }
+
     setIKFromUrdf(ikRoot, robot);
     ikRoot.updateMatrixWorld(true);
 
@@ -375,10 +558,15 @@ loader.load(
       // Resize renderer to preserve image aspect; then apply calibrated frustum
       if (fitRendererToImage(name)) {
         currentCamName = name;
+        if (calibrationMode) {                 // rebuild UI for the new camera
+          destroyCalibGUI();
+          enterCalibration();
+        }
       } else {
         currentCamName = null;
         renderer.setSize(innerWidth, innerHeight);
         applyDefaultPerspective();
+        if (calibrationMode) exitCalibration();
       }
     }
 
@@ -403,6 +591,21 @@ loader.load(
     orbitBtn.textContent = 'orbit';
     orbitBtn.onclick = ()=> switchCamera('orbit');
     btnBar.appendChild(orbitBtn);
+
+    /* add calibrate toggle button */
+    const calibrateBtn = document.createElement('button');
+    calibrateBtn.textContent = 'calibrate';
+    calibrateBtn.onclick = () => {
+      if (!calibrationMode) {
+        if (!currentCamName) { alert('Pick a camera view first (front/left/right/...).'); return; }
+        enterCalibration();
+        calibrateBtn.textContent = 'exit calibration';
+      } else {
+        exitCalibration();
+        calibrateBtn.textContent = 'calibrate';
+      }
+    };
+    btnBar.appendChild(calibrateBtn);
 
     /* add hide/show robot model button (bottom-left corner) */
     const toggleRobotBtn = document.createElement('button');
