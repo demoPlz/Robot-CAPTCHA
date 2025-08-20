@@ -66,18 +66,6 @@ scene.add(dir);
 
 /* ---------- floor / workspace visual -------------------- */
 // light, neutral grid on the ground (y = 0)
-const grid = new THREE.GridHelper(
-  2.0,   // size in meters
-  20,    // subdivisions
-  0x888888, // center line
-  0xb0b0b0  // grid lines
-);
-grid.position.y = 0;          // lie on y = 0
-grid.rotation.x = Math.PI / 2;
-scene.add(grid);
-
-const axes = new THREE.AxesHelper(0.3);
-scene.add(axes);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
 camera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math.PI);
@@ -192,13 +180,13 @@ loader.load(
       addArrow('gripper_right', -1);
     }
 
-    drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
+    // drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
 
     const gui = new GUI();
     if (activeControls.includes('gripper')) {
       const gf = gui.addFolder('gripper');      // tiny sub-folder
-      gf.add({ open : () => drawGripArrows(+1) }, 'open');
-      gf.add({ close: () => drawGripArrows(-1) }, 'close');
+      // gf.add({ open : () => drawGripArrows(+1) }, 'open');
+      // gf.add({ close: () => drawGripArrows(-1) }, 'close');
     }
 
     const camPoses = state.camera_poses ?? {}
@@ -666,16 +654,6 @@ loader.load(
       console.error('❌ failed to send goal', err);
     }
   };
-
-    /* --- visualise camera frusta ------------------------------ */
-    Object.entries(camPoses).forEach(([key, mat])=>{
-      const dummy = new THREE.PerspectiveCamera(56, 1, 0.1, 1000);
-      dummy.matrix = poseToMatrix(mat);
-      dummy.matrixAutoUpdate = false;
-      dummy.updateMatrixWorld(true);
-      const helper = new THREE.CameraHelper(dummy);
-      scene.add(helper);
-    });
 
     const spanDefs = [
       ['x',     0.20],   // meters
