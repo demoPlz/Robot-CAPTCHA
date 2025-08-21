@@ -123,8 +123,11 @@ scene.add(dir);
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
 camera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math.PI);
 
+// Render everything at half-size (both width and height)
+const VIEW_SCALE = 0.5;
+
 const renderer = new THREE.WebGLRenderer({ antialias:true });
-renderer.setSize(innerWidth, innerHeight);
+renderer.setSize(innerWidth * VIEW_SCALE, innerHeight * VIEW_SCALE);
 renderer.setPixelRatio(devicePixelRatio);
 const mount = document.getElementById('viewport');
 mount.appendChild(renderer.domElement);
@@ -151,7 +154,7 @@ function showServerNotStarted(){
 }
 
 // ================================ devMode ===================================
-const devMode = false;
+const devMode = true;
 // ================================ devMode ===================================
 
 
@@ -308,7 +311,7 @@ loader.load(
       if (!model || !tex) return false;
       const W = model.width|0, H = model.height|0;
       // Fit inside window with letterbox/pillarbox; keep aspect = W/H
-      const winW = innerWidth, winH = innerHeight;
+      const winW = innerWidth * VIEW_SCALE, winH = innerHeight * VIEW_SCALE;
       const s = Math.min(winW / W, winH / H);
       const vw = Math.round(W * s), vh = Math.round(H * s);
       renderer.setSize(vw, vh);         // updates buffer & CSS size together
