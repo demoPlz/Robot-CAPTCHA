@@ -25,8 +25,14 @@ CALIB_PATHS = {
         "intr": "calib/intrinsics_left_2_640x480.npz",
         "extr": "calib/extrinsics_left_2.npz",
     },
-    "right":       {"intr": None, "extr": None},
-    "perspective": {"intr": None, "extr": None},
+    "right": {
+        "intr": "calib/intrinsics_right_3_640x480.npz",
+        "extr": "calib/extrinsics_right_3.npz",
+    },
+    "perspective": {
+        "intr": "calib/intrinsics_perspective_4_640x480.npz",
+        "extr": "calib/extrinsics_perspective_4.npz",
+    },
 }
 
 import cv2
