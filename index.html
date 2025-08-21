@@ -8,7 +8,33 @@
   #viewport{position:fixed;inset:0;background:#000;display:grid;place-items:center}
   canvas{display:block}
   /* (no width/height forcing on canvas; renderer controls it) */
- </style>
+ /* --- nice full-screen status overlay + spinner --- */
+  #statusOverlay{
+    position:fixed; inset:0; display:none; place-items:center;
+    background: radial-gradient(1200px 800px at 50% 30%, #111827 0%, #0b0d12 60%, #000 100%);
+    color:#e5e7eb; padding:24px; text-align:center;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+  }
+  #statusOverlay .card{
+    max-width: 720px; width: min(92vw, 720px);
+    background: rgba(17,24,39,0.55);
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+    border-radius: 20px; padding: 26px 28px;
+    backdrop-filter: blur(8px);
+  }
+  #statusOverlay .title{ font-size:20px; letter-spacing:.02em; margin:0 0 8px }
+  #statusOverlay .msg  { font-size:16px; line-height:1.5; opacity:.9; margin:0 }
+  #statusOverlay .row  { display:flex; align-items:center; gap:14px; justify-content:center; margin-bottom:10px }
+  #statusOverlay .spinner{
+    width:22px; height:22px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.25);
+    border-top-color:#60a5fa; border-right-color:#93c5fd;
+    animation: spin 1s linear infinite;
+    box-shadow: 0 0 20px rgba(96,165,250,.35);
+  }
+  @keyframes spin{ to { transform: rotate(360deg); } }
+</style>
 
 <!-- Polyfill so the import-map works everywhere -->
 <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2/dist/es-module-shims.js"></script>
@@ -50,6 +76,12 @@ async function getInitialState() {
     return await response.json();
   } catch (error) {
     console.error("Could not fetch initial state:", error);
+    showServerNotStarted();
+    // Hide interactive UI when server is not running
+    const uiElems = document.querySelectorAll("button, .lil-gui, #viewport canvas");
+    uiElems.forEach(el=>{
+      el.style.display = "none";
+    });
     return {};
   }
 }
@@ -97,6 +129,32 @@ renderer.setPixelRatio(devicePixelRatio);
 const mount = document.getElementById('viewport');
 mount.appendChild(renderer.domElement);
 
+
+// --- status overlay (initially hidden) ---
+const statusOverlay = document.createElement('div');
+statusOverlay.id = 'statusOverlay';
+document.body.appendChild(statusOverlay);
+
+function showServerNotStarted(){
+  statusOverlay.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div class="spinner" aria-hidden="true"></div>
+        <h2 class="title">Connecting to data collection server…</h2>
+      </div>
+      <p class="msg">
+        Data collection server hasn't started yet.<br/>
+        Please wait for further communications.
+      </p>
+    </div>`;
+  statusOverlay.style.display = 'grid';
+}
+
+// ================================ devMode ===================================
+const devMode = false;
+// ================================ devMode ===================================
+
+
 let currentCamName = null;  // track which calibrated cam is active
 let calibrationMode = false; // Calibration mode (UI & per-camera params)
 let calibGUI = null;                       // lil-gui instance for calibration
@@ -126,6 +184,12 @@ loader.load(
 
     const state = await getInitialState();
     const cameraModels = state.camera_models ?? {};
+    // If the data collection server isn't available, stop building UI
+    if (!state || Object.keys(state).length === 0 || !cameraModels) {
+      // Ensure the status overlay is visible and abort UI construction
+      showServerNotStarted();
+      return; // ← prevents creating sliders/buttons and starting animation
+    }
 
     /* ---------- build textures from JPEG base64 views --------------- */
     const viewTextures = {}; // 'front' → THREE.Texture
@@ -577,20 +641,22 @@ loader.load(
       btnBar.appendChild( b );
     });
 
-    /* add calibrate toggle button */
-    const calibrateBtn = document.createElement('button');
-    calibrateBtn.textContent = 'calibrate';
-    calibrateBtn.onclick = () => {
-      if (!calibrationMode) {
-        if (!currentCamName) { alert('Pick a camera view first (front/left/right/...).'); return; }
-        enterCalibration();
-        calibrateBtn.textContent = 'exit calibration';
-      } else {
-        exitCalibration();
-        calibrateBtn.textContent = 'calibrate';
-      }
-    };
-    btnBar.appendChild(calibrateBtn);
+    /* add calibrate toggle button (only if devMode enabled) */
+    if (devMode) {
+      const calibrateBtn = document.createElement('button');
+      calibrateBtn.textContent = 'calibrate';
+      calibrateBtn.onclick = () => {
+        if (!calibrationMode) {
+          if (!currentCamName) { alert('Pick a camera view first (front/left/right/...).'); return; }
+          enterCalibration();
+          calibrateBtn.textContent = 'exit calibration';
+        } else {
+          exitCalibration();
+          calibrateBtn.textContent = 'calibrate';
+        }
+      };
+      btnBar.appendChild(calibrateBtn);
+    }
 
     /* add hide/show robot model button (bottom-left corner) */
     toggleRobotBtn = document.createElement('button');
