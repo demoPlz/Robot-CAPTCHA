@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+REQUIRED_RESPONSES_PER_STATE = 3
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -38,6 +39,7 @@ CALIB_PATHS = {
 import cv2
 import numpy as np
 import os
+import time
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -47,7 +49,6 @@ from threading import Thread, Lock
 from collections import deque
 from math import cos, sin
 import json
-import time
 import base64
 
 _REALSENSE_BLOCKLIST = (
@@ -87,13 +88,21 @@ class CrowdInterface():
     '''
     Sits between the frontend and the backend
     '''
-    def __init__(self):
+    def __init__(self, required_responses_per_state= REQUIRED_RESPONSES_PER_STATE):
 
         self.states = deque(maxlen=4)
         self.cams = {}
         self.latest_goal = None
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
+
+        self.robot_is_moving = False
+        
+        # N responses pattern
+        self.required_responses_per_state = required_responses_per_state
+        self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
+        self.next_state_id = 0
+        self.state_lock = Lock()  # Protects pending_states and next_state_id
 
         # Background capture state
         self._cap_threads: dict[str, Thread] = {}
@@ -368,32 +377,108 @@ class CrowdInterface():
         # Cheap, explicit cast of the 7 scalars to built-in floats
         jp = {k: float(v) for k, v in joint_positions.items()}
 
-        self.states.append({
+        state = {
             "joint_positions": jp,
             "views": self._snapshot_latest_views(),
             "camera_poses": self._camera_poses,  # reuse precomputed poses
             "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
-        })
-        # print(f"🟢 State added. Total states: {len(self.states)}")
+        }
+        
+        # Add to both old system (for backward compatibility) and new N responses system
+        self.states.append(state)
+        
+        # Add to pending states for N responses pattern
+        with self.state_lock:
+            state_id = self.next_state_id
+            self.next_state_id += 1
+            self.pending_states[state_id] = {
+                "state": state.copy(),  # Make a copy to avoid mutation
+                "responses_received": 0,
+                "timestamp": time.time()
+            }
+        
+        print(f"🟢 State {state_id} added. Pending states: {len(self.pending_states)}")
         # print(f"🟢 Joint positions: {joint_positions}")
         # print(f"🟢 Gripper: {self._gripper_motion}")
     
     def get_latest_state(self) -> dict:
-        """Get the latest state (pops from queue)"""
-        # print(f"🔍 get_latest_state called - states length: {len(self.states)}")
-        if not self.states:
-            # print("🔍 No states available, returning empty dict")
-            return {}
-        latest = self.states[-1]
-        # print(f"🔍 Returning latest state with keys: {list(latest.keys())}")
-        return latest
+        """
+        Get a state that needs responses with movement-aware prioritization:
+        - When robot is NOT moving: prioritize LATEST state for immediate execution
+        - When robot is moving: prioritize OLDEST state for systematic collection
+        """
+        with self.state_lock:
+            if not self.pending_states:
+                return {}
+            
+            if self.robot_is_moving is False:
+                # Robot not moving - prioritize LATEST state for immediate execution
+                latest_state_id = max(self.pending_states.keys(), 
+                                    key=lambda sid: self.pending_states[sid]["timestamp"])
+                state = self.pending_states[latest_state_id]["state"]
+                
+                print(f"🎯 Robot stationary - serving LATEST state {latest_state_id} for immediate execution")
+                return state
+            else:
+                # Robot moving - prioritize OLDEST state for systematic data collection
+                oldest_state_id = min(self.pending_states.keys(), 
+                                    key=lambda sid: self.pending_states[sid]["timestamp"])
+                state = self.pending_states[oldest_state_id]["state"]
+                
+                print(f"🔍 Robot moving - serving OLDEST state {oldest_state_id} for data collection")
+                return state
+    
+    def record_response(self, response_data: dict) -> bool:
+        """
+        Record a response for the most recently served state.
+        Returns True if this completes the required responses for a state.
+        For now, we don't save the actual response data carefully.
+        """
+        with self.state_lock:
+            if not self.pending_states:
+                return False
+            
+            # For simplicity, assume the response is for the oldest pending state
+            # In a more sophisticated system, we'd include state_id in the response
+            oldest_state_id = min(self.pending_states.keys(), 
+                                key=lambda sid: self.pending_states[sid]["timestamp"])
+            
+            pending_info = self.pending_states[oldest_state_id]
+            pending_info["responses_received"] += 1
+            
+            # print(f"🔔 Response recorded for state {oldest_state_id} ({pending_info['responses_received']}/{self.required_responses_per_state})")
+            
+            # Check if we've received enough responses
+            if pending_info["responses_received"] >= self.required_responses_per_state:
+                del self.pending_states[oldest_state_id]
+                # print(f"✅ State {oldest_state_id} completed, removed from pending. Remaining: {len(self.pending_states)}")
+                return True
+            
+            return False
+    
+    def get_pending_states_info(self) -> dict:
+        """Get information about pending states for debugging/monitoring"""
+        with self.state_lock:
+            return {
+                "total_pending": len(self.pending_states),
+                "required_responses_per_state": self.required_responses_per_state,
+                "states_info": {
+                    state_id: {
+                        "responses_received": info["responses_received"],
+                        "responses_needed": self.required_responses_per_state - info["responses_received"],
+                        "age_seconds": time.time() - info["timestamp"]
+                    }
+                    for state_id, info in self.pending_states.items()
+                }
+            }
     
     # --- Goal Management ---
     def submit_goal(self, goal_data: dict):
         """Submit a new goal from the frontend"""
-        self.latest_goal = goal_data
+        if not self.robot_is_moving:
+            self.latest_goal = goal_data
         # print(f"🔔 Goal received: {goal_data}")
     
     def get_latest_goal(self) -> dict | None:
@@ -545,14 +630,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/get-state")
     def get_state():
-        import time
         current_time = time.time()
         state = crowd_interface.get_latest_state()
         # print(f"🔍 Flask route /api/get-state called at {current_time}")
-        # print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
-        # if len(crowd_interface.states) > 0:
-        #     print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
-        #     print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
+        # print(f"🔍 Pending states: {len(crowd_interface.pending_states)}")
         payload = crowd_interface._state_to_json(state)
         
         # Add hardcoded prompt text
@@ -573,7 +654,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     def submit_goal():
         data = request.get_json(force=True, silent=True) or {}
         crowd_interface.submit_goal(data)
+        
+        # Record this as a response to the current state
+        crowd_interface.record_response(data)
+        
         return jsonify({"status": "ok"})
+    
+    @app.route("/api/pending-states-info")
+    def pending_states_info():
+        """Debug endpoint to see pending states information"""
+        info = crowd_interface.get_pending_states_info()
+        return jsonify(info)
     
     @app.route("/api/save-calibration", methods=["POST"])
     def save_calibration():
