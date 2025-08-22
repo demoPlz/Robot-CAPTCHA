@@ -132,6 +132,9 @@ def record(
         log_say("Still recording from users", cfg.play_sounds, blocking=True)
         time.sleep(1)
 
+    crowd_interface.cleanup_cameras()
+    crowd_interface.dataset.save_episode()
+
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
         crowd_interface.dataset.push_to_hub(tags=cfg.tags, private=cfg.private)

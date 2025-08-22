@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 REQUIRED_RESPONSES_PER_STATE = 3
 
@@ -176,11 +177,41 @@ class CrowdInterface():
             )
 
         self.task = cfg.single_task
+        
+        # Update dataset action shape to accommodate crowd responses
+        self._update_dataset_action_shape()
+    
+    def _update_dataset_action_shape(self):
+        """Update the dataset's action feature shape to include crowd responses dimension"""
+        if self.dataset is not None and "action" in self.dataset.features:
+            import datasets
+            from datasets import Sequence, Value, Features
+            from lerobot.common.datasets.utils import get_hf_features_from_features
+            
+            original_action_dim = self.dataset.features["action"]["shape"][-1]  # Get the last dimension (joint count)
+            new_action_shape = (self.required_responses_per_state * original_action_dim,)
+            
+            # Update both the dataset features and metadata
+            self.dataset.features["action"]["shape"] = new_action_shape
+            self.dataset.meta.features["action"]["shape"] = new_action_shape
+            
+            # Recreate the HF dataset with updated features
+            if self.dataset.hf_dataset is not None:
+                # Get new HF features from the updated self.features
+                new_hf_features = get_hf_features_from_features(self.dataset.features)
+                
+                # Create a new empty dataset with the correct features
+                ft_dict = {col: [] for col in new_hf_features}
+                new_hf_dataset = datasets.Dataset.from_dict(ft_dict, features=new_hf_features, split="train")
+                
+                # Apply the same transform
+                from lerobot.common.datasets.utils import hf_transform_to_torch
+                new_hf_dataset.set_transform(hf_transform_to_torch)
+                
+                # Replace the old dataset
+                self.dataset.hf_dataset = new_hf_dataset
 
-    def set_dataset_reference(self, dataset, task: str):
-        """Set the dataset reference and task for completed state recording"""
-        self.dataset = dataset
-        self.task = task
+            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_state}, joints={original_action_dim})")
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -551,11 +582,11 @@ class CrowdInterface():
             
             # Check if we've received enough responses
             if pending_info["responses_received"] >= self.required_responses_per_state:
-                # Stack all action responses into final action tensor
-                # This will have shape [REQUIRED_RESPONSES_PER_STATE, action_dim]
-                all_actions = torch.stack(pending_info["actions"], dim=0)
-                
-                # Create the complete frame for dataset.add_frame() 
+                # Concatenate all action responses into a 1D tensor
+                # This will have shape [REQUIRED_RESPONSES_PER_STATE * action_dim]
+                all_actions = torch.cat(pending_info["actions"][:self.required_responses_per_state], dim=0)
+
+                # Create the complete frame for dataset.add_frame()
                 # Format matches exactly what teleop_step_crowd produces
                 completed_state = {
                     **pending_info["observations"],  # observations dict
