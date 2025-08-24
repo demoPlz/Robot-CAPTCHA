@@ -43,6 +43,7 @@ import os
 import time
 import torch
 import base64
+import random
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -495,7 +496,8 @@ class CrowdInterface():
                 "observations": obs_dict_deep_copy,  # Keep observations for dataset creation
                 "actions": [],  # Will collect action responses here
                 "responses_received": 0,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "served_during_stationary": None  # Track if this state was served when robot was stationary
             }
         
         print(f"🟢 State {state_id} added. Pending states: {len(self.pending_states)}")
@@ -506,7 +508,7 @@ class CrowdInterface():
         """
         Get a state that needs responses with movement-aware prioritization:
         - When robot is NOT moving: prioritize LATEST state for immediate execution
-        - When robot is moving: prioritize OLDEST state for systematic collection
+        - When robot is moving: prioritize RANDOM state for diverse data collection
         
         Args:
             session_id: Unique identifier for the user session (for tracking which state was served)
@@ -521,6 +523,10 @@ class CrowdInterface():
                                     key=lambda sid: self.pending_states[sid]["timestamp"])
                 state = self.pending_states[latest_state_id]["state"].copy()
                 
+                # Mark this state as served during stationary mode if not already marked
+                if self.pending_states[latest_state_id]["served_during_stationary"] is None:
+                    self.pending_states[latest_state_id]["served_during_stationary"] = True
+                
                 # Track which state was served to this session
                 self.served_states[session_id] = latest_state_id
                 
@@ -530,18 +536,21 @@ class CrowdInterface():
                 print(f"🎯 Robot stationary - serving LATEST state {latest_state_id} to session {session_id} for immediate execution")
                 return state
             else:
-                # Robot moving - prioritize OLDEST state for systematic data collection
-                oldest_state_id = min(self.pending_states.keys(), 
-                                    key=lambda sid: self.pending_states[sid]["timestamp"])
-                state = self.pending_states[oldest_state_id]["state"].copy()
+                # Robot moving - select random state for diverse data collection
+                random_state_id = random.choice(list(self.pending_states.keys()))
+                state = self.pending_states[random_state_id]["state"].copy()
+                
+                # Mark this state as served during moving mode if not already marked
+                if self.pending_states[random_state_id]["served_during_stationary"] is None:
+                    self.pending_states[random_state_id]["served_during_stationary"] = False
                 
                 # Track which state was served to this session
-                self.served_states[session_id] = oldest_state_id
+                self.served_states[session_id] = random_state_id
                 
                 # Include state_id in the response so frontend can send it back
-                state["state_id"] = oldest_state_id
+                state["state_id"] = random_state_id
                 
-                print(f"🔍 Robot moving - serving OLDEST state {oldest_state_id} to session {session_id} for data collection")
+                print(f"🎲 Robot moving - serving RANDOM state {random_state_id} to session {session_id}")
                 return state
     
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
@@ -569,6 +578,15 @@ class CrowdInterface():
                 return False
             
             pending_info = self.pending_states[state_id]
+            
+            # Check if this is the first response to a state that was served during stationary mode
+            if (pending_info["responses_received"] == 0 and 
+                pending_info["served_during_stationary"] is True):
+                # This is the first response to a state served when robot was stationary
+                # Set it as the latest goal for immediate execution
+                self.latest_goal = response_data
+                print(f"🎯 Setting goal for immediate execution - first response to stationary-served state {state_id}")
+            
             pending_info["responses_received"] += 1
             
             # Extract joint positions and gripper action from response
@@ -638,10 +656,10 @@ class CrowdInterface():
     
     # --- Goal Management ---
     def submit_goal(self, goal_data: dict):
-        """Submit a new goal from the frontend"""
-        if not self.robot_is_moving:
-            self.latest_goal = goal_data
-        # print(f"🔔 Goal received: {goal_data}")
+        """Submit a new goal from the frontend - goal setting now handled in record_response"""
+        # Goal setting logic has been moved to record_response method
+        # This method is kept for API compatibility but does nothing
+        pass
     
     def get_latest_goal(self) -> dict | None:
         """Get and clear the latest goal (for robot loop to consume)"""
@@ -652,6 +670,18 @@ class CrowdInterface():
     def has_pending_goal(self) -> bool:
         """Check if there's a pending goal"""
         return self.latest_goal is not None
+    
+    # --- Robot Movement State Management ---
+    def set_robot_moving(self, is_moving: bool = True):
+        """Set the robot movement state"""
+        self.robot_is_moving = is_moving
+        status = "MOVING" if is_moving else "STATIONARY"
+        emoji = "🏃" if is_moving else "🛑"
+        print(f"{emoji} Robot state set to: {status}")
+    
+    def is_robot_moving(self) -> bool:
+        """Get current robot movement state"""
+        return self.robot_is_moving
     
     # --- Helper Methods ---
 
@@ -826,8 +856,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         payload = crowd_interface._state_to_json(state)
         
         # Add hardcoded prompt text
-        payload["prompt"] = "Pick up the red block."
-        
+        payload["prompt"] = f"Task: {crowd_interface.task} What should the arm do next?"
+
         response = jsonify(payload)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'

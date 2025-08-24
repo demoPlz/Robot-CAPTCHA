@@ -123,7 +123,8 @@ def record(
 
         if events["stop_recording"]:
             break
-
+    
+    crowd_interface.set_robot_moving(True)  # Continue serving random states for diverse data collection
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     stop_recording(robot, listener, cfg.display_cameras)
 

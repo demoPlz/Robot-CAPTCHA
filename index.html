@@ -239,6 +239,34 @@
     flex: 1;
   }
 
+  /* Inactive gripper button states */
+  .controls-container .gripper-buttons button.open-btn.inactive {
+    background: #e5e7eb;
+    color: #6b7280;
+    border: 2px solid #d1d5db;
+  }
+
+  .controls-container .gripper-buttons button.close-btn.inactive {
+    background: #e5e7eb;
+    color: #6b7280;
+    border: 2px solid #d1d5db;
+  }
+
+  /* Active gripper button states (enhanced) */
+  .controls-container .gripper-buttons button.open-btn.active {
+    background: #10b981;
+    color: white;
+    border: 2px solid #059669;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+  }
+
+  .controls-container .gripper-buttons button.close-btn.active {
+    background: #ef4444;
+    color: white;
+    border: 2px solid #dc2626;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+  }
+
   .controls-container .confirm-button {
     background: #3b82f6;
     color: white;
@@ -578,20 +606,6 @@ function showServerNotStarted(){
   statusOverlay.style.display = 'grid';
 }
 
-function showActionReceived(){
-  statusOverlay.innerHTML = `
-    <div class="card">
-      <div class="row">
-        <h2 class="title">✅ Action received</h2>
-      </div>
-      <p class="msg">
-        Your response has been successfully submitted.<br/>
-        <strong>Refresh to label more.</strong>
-      </p>
-    </div>`;
-  statusOverlay.style.display = 'grid';
-}
-
 // ================================ devMode ===================================
 const devMode = false;
 // Apply dev-mode class to body if devMode is enabled
@@ -732,6 +746,28 @@ loader.load(
     
     // Create gripper controls container (will be added after sliders)
     let gripperButtonsContainer = null;
+    let openBtn = null, closeBtn = null; // Store button references for state updates
+    
+    function updateGripperButtonStates() {
+      if (!openBtn || !closeBtn) return;
+      
+      // Remove all state classes first
+      openBtn.classList.remove('active', 'inactive');
+      closeBtn.classList.remove('active', 'inactive');
+      
+      // Apply states based on current gripper direction
+      if (gripDir > 0) { // Open
+        openBtn.classList.add('active');
+        closeBtn.classList.add('inactive');
+      } else if (gripDir < 0) { // Close
+        openBtn.classList.add('inactive');
+        closeBtn.classList.add('active');
+      } else { // Neutral/Default - both inactive
+        openBtn.classList.add('inactive');
+        closeBtn.classList.add('inactive');
+      }
+    }
+    
     if (activeControls.includes('gripper')) {
       gripperButtonsContainer = document.createElement('div');
       gripperButtonsContainer.className = 'gripper-section';
@@ -744,20 +780,22 @@ loader.load(
       const buttonsContainer = document.createElement('div');
       buttonsContainer.className = 'gripper-buttons';
       
-      const openBtn = document.createElement('button');
+      openBtn = document.createElement('button');
       openBtn.textContent = 'Open';
       openBtn.className = 'open-btn';
       openBtn.onclick = () => {
         drawGripArrows(+1);
         updateGripArrowVisibility();
+        updateGripperButtonStates();
       };
       
-      const closeBtn = document.createElement('button');
+      closeBtn = document.createElement('button');
       closeBtn.textContent = 'Close';
       closeBtn.className = 'close-btn';
       closeBtn.onclick = () => {
         drawGripArrows(-1);
         updateGripArrowVisibility();
+        updateGripperButtonStates();
       };
       
       buttonsContainer.appendChild(openBtn);
@@ -1302,7 +1340,9 @@ loader.load(
         
         if (response.ok) {
           console.log('✅ goal sent');
-          showActionReceived(); // Show confirmation page
+          // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
+          // This forces a bypass of all caches
+          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
         }
@@ -1330,6 +1370,7 @@ loader.load(
     // Add gripper buttons after sliders
     if (gripperButtonsContainer) {
       controlsContainer.appendChild(gripperButtonsContainer);
+      updateGripperButtonStates(); // Set initial button states
     }
 
     // Add confirm button at the bottom
