@@ -563,29 +563,57 @@
     </div>
 
     <script>
-        // Simple API Configuration - use direct ngrok URL
+        // Simple API Configuration - use appropriate proxy based on environment
         async function getCurrentNgrokUrl() {
             try {
-                // Always use the direct ngrok URL
-                return 'https://fae7822f2b6a.ngrok-free.app';
+                // For production (Netlify), always use the function proxy to avoid CORS issues
+                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    return '/.netlify/functions/api';
+                }
+                
+                // For local development, try to get the actual ngrok URL from Netlify function
+                // This only works if running netlify dev, otherwise fallback to hardcoded URL
+                try {
+                    const response = await fetch('/.netlify/functions/get-backend-url');
+                    if (response.ok) {
+                        const data = await response.json();
+                        return data.backend_url;
+                    }
+                } catch (netlifyError) {
+                    // Netlify functions not available (running on pure Vite dev server)
+                    console.log('Netlify functions not available, using fallback ngrok URL');
+                }
+                
+                // Fallback to hardcoded ngrok URL for local development
+                return 'https://45c7d157915b.ngrok-free.app';
             } catch (error) {
-                console.error('Error in getCurrentNgrokUrl:', error);
-                return 'https://fae7822f2b6a.ngrok-free.app'; // Fallback to direct ngrok
+                console.error('Error getting backend URL:', error);
+                // Fallback based on environment
+                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    return '/.netlify/functions/api'; // Use proxy for production
+                }
+                return 'https://2111c9e8a60f.ngrok-free.app'; // Direct for local dev
             }
         }
 
-        // Initialize API_BASE_URL dynamically
-        let API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app'; // Use direct ngrok URL
+        // Initialize API_BASE_URL - will be set dynamically
+        let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
 
-        // For local development, check if we're running on Vite dev server
-        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-            if (location.port === '5173' || location.port === '5174') {
-                // Running on Vite dev server - use direct ngrok URL
-                API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app';
-                console.log('[DEBUG] Monitor using direct ngrok URL for Vite dev server:', API_BASE_URL);
+        // Set API_BASE_URL dynamically based on environment
+        async function initializeApiUrl() {
+            if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+                if (location.port === '5173' || location.port === '5174') {
+                    // Running on Vite dev server - get direct ngrok URL
+                    API_BASE_URL = await getCurrentNgrokUrl();
+                    console.log('[DEBUG] Monitor using direct ngrok URL for Vite dev server:', API_BASE_URL);
+                } else {
+                    // Running on production build locally
+                    API_BASE_URL = 'http://127.0.0.1:9000';
+                }
             } else {
-                // Running on production build locally
-                API_BASE_URL = 'http://127.0.0.1:9000';
+                // Running on deployed Netlify - use function proxy to avoid CORS
+                API_BASE_URL = '/.netlify/functions/api';
+                console.log('[DEBUG] Monitor using Netlify function proxy for production:', API_BASE_URL);
             }
         }
 
@@ -1000,8 +1028,9 @@
         stopBtn.addEventListener('click', handleStop);
         
         // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             console.log('Data Collection Monitor initialized');
+            await initializeApiUrl(); // Initialize API URL first
             fetchLatestState(); // Initial fetch
             startAutoRefresh(); // Start auto-refresh immediately
         });
