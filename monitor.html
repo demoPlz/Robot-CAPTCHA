@@ -379,15 +379,17 @@
         
         .chart-bars {
             display: flex;
-            height: calc(100% - 10px);
+            height: calc(100% - 26px);
             align-items: end;
-            padding: 0px 8px 16px 24px;
+            padding: 0px 8px 16px 8px;
             gap: 1px;
-            overflow: hidden;
-            width: calc(100% - 24px);
+            overflow-x: auto;
+            overflow-y: hidden;
+            width: calc(100% - 40px);
             position: absolute;
             top: 10px;
-            left: 10px;
+            left: 32px;
+            scrollbar-width: thin;
         }
         
         .state-bar-container {
@@ -430,7 +432,7 @@
             left: 0;
             top: 10px;
             bottom: 16px;
-            width: 24px;
+            width: 32px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -448,8 +450,8 @@
         .chart-x-axis {
             position: absolute;
             bottom: 0;
-            left: 24px;
-            right: 0;
+            left: 32px;
+            right: 8px;
             height: 16px;
             display: flex;
             align-items: center;
@@ -458,6 +460,25 @@
             border-top: 1px solid #e2e8f0;
             font-size: 10px;
             color: #64748b;
+        }
+        
+        /* Scrollbar styling for chart bars */
+        .chart-bars::-webkit-scrollbar {
+            height: 4px;
+        }
+        
+        .chart-bars::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 2px;
+        }
+        
+        .chart-bars::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 2px;
+        }
+        
+        .chart-bars::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
         }
         
         /* Scrollbar styling */
@@ -585,14 +606,14 @@
                 }
                 
                 // Fallback to hardcoded ngrok URL for local development
-                return 'https://45c7d157915b.ngrok-free.app';
+                return 'https://bc89403b5663.ngrok-free.app';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
                 // Fallback based on environment
                 if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                     return '/.netlify/functions/api'; // Use proxy for production
                 }
-                return 'https://45c7d157915b.ngrok-free.app'; // Direct for local dev
+                return 'https://bc89403b5663.ngrok-free.app'; // Direct for local dev
             }
         }
 
@@ -746,6 +767,8 @@
             episode.states[stateId] = responsesReceived;
             episode.maxStates = Math.max(episode.maxStates, Object.keys(episode.states).length);
             
+            console.log(`📊 Updating chart for episode ${episodeIndex}, state ${stateId}, responses: ${responsesReceived}`);
+            
             // Get the bars container
             const barsContainer = document.getElementById(`episode-${episodeIndex}-bars`);
             if (!barsContainer) return;
@@ -829,6 +852,7 @@
             
             // Process pending states info to update charts
             if (data.states_info) {
+                console.log(`📈 Processing states info:`, data.states_info);
                 const currentEpisode = episodes[currentEpisodeIndex];
                 
                 Object.entries(data.states_info).forEach(([stateIdStr, stateInfo]) => {
@@ -838,10 +862,15 @@
                     // Only process states that belong to the current episode
                     // (states with ID >= the episode's start state ID)
                     if (stateId >= currentEpisode.startStateId) {
+                        console.log(`📊 Processing state ${stateId} for episode ${currentEpisodeIndex} (responses: ${responsesReceived})`);
                         updateEpisodeChart(currentEpisodeIndex, stateId, responsesReceived);
                         lastProcessedStateId = Math.max(lastProcessedStateId, stateId);
+                    } else {
+                        console.log(`⏭️  Skipping state ${stateId} (belongs to previous episode, current episode starts at ${currentEpisode.startStateId})`);
                     }
                 });
+            } else {
+                console.log(`⚠️  No states_info in data:`, data);
             }
         }
         
@@ -889,9 +918,6 @@
                     }
                 }
                 
-                // Fetch pending states info for episode charts
-                await fetchPendingStatesInfo();
-                
             } catch (error) {
                 console.error('Error fetching latest state:', error);
                 updateServerStatus(false);
@@ -917,7 +943,10 @@
         
         // Auto-refresh function (always enabled at 30 FPS)
         function startAutoRefresh() {
-            autoRefreshInterval = setInterval(fetchLatestState, 33); // 33ms = 30 FPS
+            autoRefreshInterval = setInterval(async () => {
+                await fetchLatestState();
+                await fetchPendingStatesInfo(); // Ensure chart updates happen every frame
+            }, 33); // 33ms = 30 FPS
             console.log('Auto-refresh started (30 FPS)');
         }
         
