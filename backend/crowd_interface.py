@@ -1183,7 +1183,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     return jsonify({"error": f"State {state_id} not found or already completed"}), 404
                 
                 original_state = crowd_interface.pending_states[state_id]["state"]
-                original_joints = original_state.get("joint_positions", {})
+                original_joints = original_state.get("joint_positions", {}).copy()
                 for joint_name in original_joints.keys():
                     original_joints[joint_name] = [original_joints[joint_name]]
                 original_gripper = original_state.get("gripper", 0)
