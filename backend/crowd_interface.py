@@ -563,18 +563,21 @@ class CrowdInterface():
                 print(f"🎲 Robot moving - serving RANDOM state {random_state_id} to session {session_id}")
                 return state
     
-    def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, threshold: float = 0.01) -> bool:
+    def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, submitted_gripper: int = None, original_gripper: int = None, threshold: float = 0.01) -> bool:
         """
-        Check if the submitted joint positions are meaningfully different from the original state.
+        Check if the submitted joint positions or gripper action are meaningfully different from the original state.
         
         Args:
             submitted_joints: Joint positions from user submission
             original_joints: Original joint positions from the state
+            submitted_gripper: Gripper action from user submission (optional)
+            original_gripper: Original gripper action from the state (optional)
             threshold: Minimum difference threshold (in radians/meters)
         
         Returns:
             True if the submission is meaningful, False if it's too similar to original
         """
+        # Check joint positions
         total_diff = 0.0
         joint_count = 0
         
@@ -593,13 +596,23 @@ class CrowdInterface():
                 total_diff += diff
                 joint_count += 1
         
-        if joint_count == 0:
-            return False  # No valid joints to compare
+        # Check if joints have meaningful change
+        joints_meaningful = False
+        if joint_count > 0:
+            avg_diff = total_diff / joint_count
+            joints_meaningful = avg_diff > threshold
         
-        avg_diff = total_diff / joint_count
-        is_meaningful = avg_diff > threshold
+        # Check if gripper action has changed
+        gripper_meaningful = False
+        if submitted_gripper is not None and original_gripper is not None:
+            # Convert to standardized values (1 for open, -1 for close)
+            submitted_gripper_norm = 1 if submitted_gripper > 0 else -1
+            original_gripper_norm = 1 if original_gripper > 0 else -1
+            gripper_meaningful = submitted_gripper_norm != original_gripper_norm
         
-        print(f"📏 Joint submission check: avg_diff={avg_diff:.4f}, threshold={threshold}, meaningful={is_meaningful}")
+        is_meaningful = joints_meaningful or gripper_meaningful
+        
+        print(f"📏 Submission check: joints_diff={total_diff/max(joint_count,1):.4f}, joints_meaningful={joints_meaningful}, gripper_changed={gripper_meaningful}, overall_meaningful={is_meaningful}")
         return is_meaningful
 
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
@@ -633,10 +646,15 @@ class CrowdInterface():
             gripper_action = response_data.get("gripper", 0)
             
             # Check if the submission is meaningful (not too close to original state)
-            original_joints = pending_info["state"].get("joint_positions", {})
-            if not self._is_submission_meaningful(joint_positions, original_joints):
-                print(f"⚠️  Ignoring submission from session {session_id} for state {state_id}: too similar to original position")
-                return False
+            # Skip this check for "task already completed" submissions since they're explicitly meaningful
+            if not response_data.get("task_already_completed", False):
+                original_joints = pending_info["state"].get("joint_positions", {})
+                original_gripper = pending_info["state"].get("gripper", 0)
+                if not self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper):
+                    print(f"⚠️  Ignoring submission from session {session_id} for state {state_id}: too similar to original position")
+                    return False
+            else:
+                print(f"✅ Task already completed submission from session {session_id} for state {state_id} - bypassing meaningfulness check")
             
             # Check if this is the first response to a state that was served during stationary mode
             if (pending_info["responses_received"] == 0 and 
@@ -652,7 +670,12 @@ class CrowdInterface():
             # Convert joint positions dict to ordered list matching JOINT_NAMES
             goal_positions = []
             for joint_name in JOINT_NAMES:
-                goal_positions.append(float(joint_positions.get(joint_name, 0.0)[0]))
+                joint_value = joint_positions.get(joint_name, 0.0)
+                # Handle both float values and lists/arrays (for backward compatibility)
+                if isinstance(joint_value, (list, tuple)) and len(joint_value) > 0:
+                    goal_positions.append(float(joint_value[0]))
+                else:
+                    goal_positions.append(float(joint_value))
             
             # Handle gripper like in teleop_step_crowd: set to 0.044 or 0.0 based on sign
             goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
@@ -1131,5 +1154,61 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             pass
 
         return jsonify({"status": "ok", "path": str(out_path)})
+    
+    @app.route("/api/task-already-completed", methods=["POST"])
+    def task_already_completed():
+        """Handle 'Task Already Completed' submissions by recording original state as goal"""
+        try:
+            # Try to get JSON data with force=True to bypass Content-Type check
+            try:
+                data = request.get_json(force=True) or {}
+            except Exception:
+                # Fallback to manual JSON parsing if that fails
+                try:
+                    import json
+                    data = json.loads(request.get_data(as_text=True)) if request.get_data() else {}
+                except Exception:
+                    data = {}
+            
+            session_id = request.headers.get("X-Session-ID", "default")
+            
+            # Get the state_id from request
+            state_id = data.get("state_id")
+            if state_id is None:
+                return jsonify({"error": "state_id is required"}), 400
+            
+            # Get the original state to use its joint positions as the goal
+            with crowd_interface.state_lock:
+                if state_id not in crowd_interface.pending_states:
+                    return jsonify({"error": f"State {state_id} not found or already completed"}), 404
+                
+                original_state = crowd_interface.pending_states[state_id]["state"]
+                original_joints = original_state.get("joint_positions", {})
+                for joint_name in original_joints.keys():
+                    original_joints[joint_name] = [original_joints[joint_name]]
+                original_gripper = original_state.get("gripper", 0)
+            
+            # Create response data using original joint positions as the goal
+            # This is equivalent to the user clicking "Confirm" without moving any sliders
+            response_data = {
+                "state_id": state_id,
+                "joint_positions": original_joints,  # Use original positions as goal
+                "gripper": original_gripper,          # Use original gripper state as goal
+                "task_already_completed": True        # Flag to indicate this was a "no change needed" submission
+            }
+            
+            # Reuse existing response recording infrastructure
+            completion_status = crowd_interface.record_response(response_data, session_id)
+            
+            if completion_status:
+                return jsonify({"status": "success", "message": "Task already completed response recorded and state completed"})
+            else:
+                return jsonify({"status": "success", "message": "Task already completed response recorded"})
+                
+        except Exception as e:
+            print(f"❌ Error in task-already-completed: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
     
     return app

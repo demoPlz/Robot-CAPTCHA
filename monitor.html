@@ -563,8 +563,37 @@
     </div>
 
     <script>
+        // Simple API Configuration - use Netlify Functions proxy
+        async function getCurrentNgrokUrl() {
+            try {
+                // Use the direct Netlify function URL since redirects aren't working
+                return '/.netlify/functions/api'; // Direct function path
+            } catch (error) {
+                console.error('Error in getCurrentNgrokUrl:', error);
+                return '/.netlify/functions/api'; // Fallback to direct function
+            }
+        }
+
+        // Initialize API_BASE_URL dynamically
+        let API_BASE_URL = 'http://127.0.0.1:9000'; // Default fallback
+
+        // For local development, check if we're running on Vite dev server
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+            if (location.port === '5173' || location.port === '5174') {
+                // Running on Vite dev server - use direct ngrok URL
+                API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app';
+                console.log('[DEBUG] Monitor using direct ngrok URL for Vite dev server:', API_BASE_URL);
+            } else {
+                // Running on production build locally
+                API_BASE_URL = 'http://127.0.0.1:9000';
+            }
+        } else {
+            // Running on deployed Netlify - use function proxy
+            API_BASE_URL = '/.netlify/functions/api';
+            console.log('[DEBUG] Monitor using Netlify function proxy:', API_BASE_URL);
+        }
+
         // Configuration
-        const API_BASE_URL = 'http://127.0.0.1:9000'; // Same as main app
         let autoRefreshInterval = null;
         
         // DOM elements
@@ -796,7 +825,11 @@
         async function fetchLatestState() {
             try {
                 console.log('Fetching latest state from:', `${API_BASE_URL}/api/monitor/latest-state`);
-                const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`);
+                const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, {
+                    headers: {
+                        'ngrok-skip-browser-warning': 'true'
+                    }
+                });
                 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -844,7 +877,11 @@
         // Fetch pending states info for episode tracking
         async function fetchPendingStatesInfo() {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`);
+                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, {
+                    headers: {
+                        'ngrok-skip-browser-warning': 'true'
+                    }
+                });
                 if (response.ok) {
                     const data = await response.json();
                     processMonitoringData(data);

@@ -1,7 +1,7 @@
 // Netlify Function to proxy API requests to your local backend
 // This allows you to update the backend URL in one place
 
-const BACKEND_URL = process.env.BACKEND_URL || 'https://f3b96af8b7bb.ngrok-free.app';
+const BACKEND_URL = process.env.BACKEND_URL || 'https://fae7822f2b6a.ngrok-free.app';
 
 exports.handler = async (event, context) => {
   // Allow CORS

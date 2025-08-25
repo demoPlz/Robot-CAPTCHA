@@ -80,6 +80,19 @@
     align-items: center;
   }
 
+  /* Position task completed container in multiple slider layout */
+  #viewport.multiple-sliders .task-completed-container {
+    margin-top: 12px;
+    align-self: flex-start;
+  }
+
+  /* Position task completed container in single slider layout */
+  #viewport.single-slider .task-completed-container {
+    align-self: center;
+    max-width: 400px;
+    margin-top: 12px;
+  }
+
   /* Style the lil-gui within controls container */
   .controls-container .lil-gui {
     --background-color: transparent;
@@ -276,6 +289,40 @@
     padding: 12px 16px;
   }
 
+  /* Task Already Completed button styling */
+  .task-completed-container {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    min-width: 200px;
+    align-self: flex-start;
+  }
+
+  .task-completed-button {
+    background: #f59e0b;
+    color: white;
+    width: 100%;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .task-completed-button:hover {
+    background: #d97706;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  }
+
+  .task-completed-button:active {
+    transform: translateY(0);
+  }
+
   .controls-container button:hover {
     transform: translateY(-1px);
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
@@ -354,25 +401,25 @@ import {
 
 import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
 
-// Simple API Configuration - use Netlify Functions proxy
+// Simple API Configuration - use direct ngrok URL
 async function getCurrentNgrokUrl() {
   try {
-    // Use the direct Netlify function URL since redirects aren't working
-    return '/.netlify/functions/api'; // Direct function path
+    // Always use the direct ngrok URL
+    return 'https://fae7822f2b6a.ngrok-free.app';
   } catch (error) {
     console.error('Error in getCurrentNgrokUrl:', error);
-    return '/.netlify/functions/api'; // Fallback to direct function
+    return 'https://fae7822f2b6a.ngrok-free.app'; // Fallback to direct ngrok
   }
 }
 
 // Initialize API_BASE_URL dynamically
-let API_BASE_URL = 'http://127.0.0.1:9000'; // Default fallback
+let API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app'; // Use direct ngrok URL
 
 // For local development, check if we're running on Vite dev server
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   if (location.port === '5173' || location.port === '5174') {
     // Running on Vite dev server - use direct ngrok URL
-    API_BASE_URL = 'https://f3b96af8b7bb.ngrok-free.app';
+    API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app';
     console.log('[DEBUG] Using direct ngrok URL for Vite dev server:', API_BASE_URL);
   } else {
     // Running on production build locally
@@ -474,11 +521,18 @@ const viewsGrid = document.createElement('div');
 viewsGrid.className = 'views-grid';
 contentContainer.appendChild(viewsGrid);
 
+// Create a wrapper for controls and task completed button
+const controlsWrapper = document.createElement('div');
+controlsWrapper.style.display = 'flex';
+controlsWrapper.style.flexDirection = 'column';
+controlsWrapper.style.gap = '0px';
+contentContainer.appendChild(controlsWrapper);
+
 // Create the controls container for sliders
 const controlsContainer = document.createElement('div');
 controlsContainer.className = 'controls-container';
 controlsContainer.style.display = 'none'; // Hidden initially
-contentContainer.appendChild(controlsContainer);
+controlsWrapper.appendChild(controlsContainer);
 
 // Multi-view grid layout helper
 function calculateGridLayout(numViews) {
@@ -629,8 +683,6 @@ loader.load(
   'assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf',
   async robot => {
 
-    // Initialize API_BASE_URL dynamically
-    API_BASE_URL = await getCurrentNgrokUrl();
     console.log('Using API Base URL:', API_BASE_URL);
 
     scene.add(robot);
@@ -1376,6 +1428,57 @@ loader.load(
     // Add confirm button at the bottom
     controlsContainer.appendChild(confirmBtn);
 
+    // Create "Task Already Completed" button in a separate container
+    const taskCompletedContainer = document.createElement('div');
+    taskCompletedContainer.className = 'task-completed-container';
+
+    // Add title/label above the button
+    const taskCompletedTitle = document.createElement('div');
+    taskCompletedTitle.textContent = 'In fact, no need to move because...';
+    taskCompletedTitle.style.fontSize = '14px';
+    taskCompletedTitle.style.fontWeight = '500';
+    taskCompletedTitle.style.color = '#374151';
+    taskCompletedTitle.style.marginBottom = '8px';
+    taskCompletedTitle.style.textAlign = 'left';
+    taskCompletedTitle.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans"';
+
+    const taskCompletedBtn = document.createElement('button');
+    taskCompletedBtn.textContent = 'Task Already Completed';
+    taskCompletedBtn.className = 'task-completed-button';
+
+    taskCompletedBtn.onclick = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/task-already-completed`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
+          },
+          body: JSON.stringify({
+            state_id: state.state_id  // Send the current state_id
+          })
+        });
+        
+        if (response.ok) {
+          console.log('✅ Task already completed response sent');
+          // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
+          // This forces a bypass of all caches
+          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+        } else {
+          const errorData = await response.json();
+          console.error('❌ Failed to send task already completed response:', errorData);
+          alert('Failed to submit response. Please try again.');
+        }
+      } catch (err) {
+        console.error('❌ Failed to send task already completed response', err);
+        alert('Failed to submit response. Please try again.');
+      }
+    };
+
+    taskCompletedContainer.appendChild(taskCompletedTitle);
+    taskCompletedContainer.appendChild(taskCompletedBtn);
+    controlsWrapper.appendChild(taskCompletedContainer);
+
     // Update layout based on number of active controls
     function updateControlsLayout() {
       const numSliders = activeControls.filter(ctrl => ['x', 'y', 'z', 'roll', 'pitch', 'yaw'].includes(ctrl)).length;
@@ -1384,6 +1487,8 @@ loader.load(
       
       if (totalControls > 1) { // Always show if we have sliders + confirm
         controlsContainer.style.display = 'block';
+        controlsWrapper.style.display = 'flex';
+        taskCompletedContainer.style.display = 'block';
         
         if (totalControls === 2 && numSliders === 1) { // 1 slider + confirm
           mount.className = 'single-slider';
@@ -1392,6 +1497,8 @@ loader.load(
         }
       } else {
         controlsContainer.style.display = 'none';
+        controlsWrapper.style.display = 'none';
+        taskCompletedContainer.style.display = 'none';
         mount.className = '';
       }
     }
