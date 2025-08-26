@@ -566,18 +566,19 @@ class CrowdInterface():
     def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, submitted_gripper: int = None, original_gripper: int = None, threshold: float = 0.01) -> bool:
         """
         Check if the submitted joint positions or gripper action are meaningfully different from the original state.
+        Now allows small movements and no-change actions as they can be meaningful (e.g., "stay in place", "fine adjustments").
         
         Args:
             submitted_joints: Joint positions from user submission
             original_joints: Original joint positions from the state
             submitted_gripper: Gripper action from user submission (optional)
             original_gripper: Original gripper action from the state (optional)
-            threshold: Minimum difference threshold (in radians/meters)
+            threshold: Minimum difference threshold (in radians/meters) - now only used for logging
         
         Returns:
-            True if the submission is meaningful, False if it's too similar to original
+            True (always accepts submissions now - small/no movements are valid actions)
         """
-        # Check joint positions
+        # Check joint positions for logging purposes
         total_diff = 0.0
         joint_count = 0
         
@@ -596,24 +597,22 @@ class CrowdInterface():
                 total_diff += diff
                 joint_count += 1
         
-        # Check if joints have meaningful change
-        joints_meaningful = False
-        if joint_count > 0:
-            avg_diff = total_diff / joint_count
-            joints_meaningful = avg_diff > threshold
-        
-        # Check if gripper action has changed
-        gripper_meaningful = False
+        # Check if gripper action has changed (for logging)
+        gripper_changed = False
         if submitted_gripper is not None and original_gripper is not None:
             # Convert to standardized values (1 for open, -1 for close)
             submitted_gripper_norm = 1 if submitted_gripper > 0 else -1
             original_gripper_norm = 1 if original_gripper > 0 else -1
-            gripper_meaningful = submitted_gripper_norm != original_gripper_norm
+            gripper_changed = submitted_gripper_norm != original_gripper_norm
         
-        is_meaningful = joints_meaningful or gripper_meaningful
+        avg_diff = total_diff / max(joint_count, 1)
+        movement_type = "no_change" if avg_diff < 0.001 else ("small_movement" if avg_diff < threshold else "large_movement")
         
-        print(f"📏 Submission check: joints_diff={total_diff/max(joint_count,1):.4f}, joints_meaningful={joints_meaningful}, gripper_changed={gripper_meaningful}, overall_meaningful={is_meaningful}")
-        return is_meaningful
+        print(f"📏 Submission accepted: joints_diff={avg_diff:.4f}, gripper_changed={gripper_changed}, movement_type={movement_type}")
+        
+        # Always return True - all submissions are now considered meaningful
+        # Small movements and no-change actions are valid responses in crowdsourcing
+        return True
 
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
         """
@@ -645,14 +644,13 @@ class CrowdInterface():
             joint_positions = response_data.get("joint_positions", {})
             gripper_action = response_data.get("gripper", 0)
             
-            # Check if the submission is meaningful (not too close to original state)
+            # Check if the submission is meaningful (now always returns True, but provides useful logging)
             # Skip this check for "task already completed" submissions since they're explicitly meaningful
             if not response_data.get("task_already_completed", False):
                 original_joints = pending_info["state"].get("joint_positions", {})
                 original_gripper = pending_info["state"].get("gripper", 0)
-                if not self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper):
-                    print(f"⚠️  Ignoring submission from session {session_id} for state {state_id}: too similar to original position")
-                    return False
+                # Always meaningful now, but still log the movement analysis
+                self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
             else:
                 print(f"✅ Task already completed submission from session {session_id} for state {state_id} - bypassing meaningfulness check")
             

@@ -1,7 +1,7 @@
 // Simple function to return the current backend URL
 // This allows the frontend to get the URL dynamically
 
-const BACKEND_URL = process.env.BACKEND_URL || 'https://45c7d157915b.ngrok-free.app';
+const BACKEND_URL = process.env.BACKEND_URL || 'https://ztclab-1.tail503d36.ts.net';
 
 exports.handler = async (event, context) => {
   // Allow CORS

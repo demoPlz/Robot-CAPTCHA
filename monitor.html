@@ -585,14 +585,14 @@
 
     <script>
         // Simple API Configuration - use appropriate proxy based on environment
-        async function getCurrentNgrokUrl() {
+        async function getCurrentCloudflaredUrl() {
             try {
                 // For production (Netlify), always use the function proxy to avoid CORS issues
                 if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                     return '/.netlify/functions/api';
                 }
                 
-                // For local development, try to get the actual ngrok URL from Netlify function
+                // For local development, try to get the actual cloudflared URL from Netlify function
                 // This only works if running netlify dev, otherwise fallback to hardcoded URL
                 try {
                     const response = await fetch('/.netlify/functions/get-backend-url');
@@ -602,18 +602,18 @@
                     }
                 } catch (netlifyError) {
                     // Netlify functions not available (running on pure Vite dev server)
-                    console.log('Netlify functions not available, using fallback ngrok URL');
+                    console.log('Netlify functions not available, using fallback Tailscale URL');
                 }
                 
-                // Fallback to hardcoded ngrok URL for local development
-                return 'https://bc89403b5663.ngrok-free.app';
+                // Fallback to hardcoded Tailscale URL for local development
+                return 'https://ztclab-1.tail503d36.ts.net';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
                 // Fallback based on environment
                 if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                     return '/.netlify/functions/api'; // Use proxy for production
                 }
-                return 'https://bc89403b5663.ngrok-free.app'; // Direct for local dev
+                return 'https://reconstruction-parker-put-push.trycloudflare.com'; // Direct for local dev
             }
         }
 
@@ -624,9 +624,9 @@
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
-                    // Running on Vite dev server - get direct ngrok URL
-                    API_BASE_URL = await getCurrentNgrokUrl();
-                    console.log('[DEBUG] Monitor using direct ngrok URL for Vite dev server:', API_BASE_URL);
+                    // Running on Vite dev server - get direct cloudflared URL
+                    API_BASE_URL = await getCurrentCloudflaredUrl();
+                    console.log('[DEBUG] Monitor using direct cloudflared URL for Vite dev server:', API_BASE_URL);
                 } else {
                     // Running on production build locally
                     API_BASE_URL = 'http://127.0.0.1:9000';
@@ -878,13 +878,11 @@
         async function fetchLatestState() {
             try {
                 console.log('Fetching latest state from:', `${API_BASE_URL}/api/monitor/latest-state`);
-                const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, {
-                    headers: {
-                        'ngrok-skip-browser-warning': 'true'
-                    }
-                });
-                
-                if (!response.ok) {
+                    const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, {
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    });                if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
                 
@@ -929,7 +927,7 @@
             try {
                 const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, {
                     headers: {
-                        'ngrok-skip-browser-warning': 'true'
+                        'Accept': 'application/json'
                     }
                 });
                 if (response.ok) {
@@ -969,8 +967,7 @@
                 const response = await fetch(`${API_BASE_URL}/api/control/next-episode`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'ngrok-skip-browser-warning': 'true'
+                        'Content-Type': 'application/json'
                     }
                 });
                 
@@ -1003,8 +1000,7 @@
                 const response = await fetch(`${API_BASE_URL}/api/control/rerecord`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'ngrok-skip-browser-warning': 'true'
+                        'Content-Type': 'application/json'
                     }
                 });
                 
@@ -1032,8 +1028,7 @@
                 const response = await fetch(`${API_BASE_URL}/api/control/stop`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'ngrok-skip-browser-warning': 'true'
+                        'Content-Type': 'application/json'
                     }
                 });
                 
