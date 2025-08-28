@@ -102,7 +102,6 @@ class CrowdInterface():
                  required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
                  required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE):
 
-        self.states = deque(maxlen=4)
         self.cams = {}
         self.latest_goal = None
         self.goal_lock = Lock()
@@ -117,6 +116,7 @@ class CrowdInterface():
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_important_state = required_responses_per_important_state
         self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
+        self.episode_id = 0
         self.next_state_id = 0
         self.state_lock = Lock()  # Protects pending_states and next_state_id
         
@@ -622,7 +622,11 @@ class CrowdInterface():
         return f"data:image/jpeg;base64,{b64}"
     
     # --- State Management ---
-    def add_state(self, joint_positions: dict, gripper_motion: int = None, obs_dict: dict[str, torch.Tensor] = None):
+    def add_state(self, 
+                  joint_positions: dict, 
+                  gripper_motion: int = None, 
+                  obs_dict: dict[str, torch.Tensor] = None,
+                  episode_id: str = None):
         if gripper_motion is not None:
             self._gripper_motion = int(gripper_motion)
 
@@ -638,9 +642,6 @@ class CrowdInterface():
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         }
-        
-        # Add to both old system (for backward compatibility) and new N responses system
-        self.states.append(frontend_state)
         
         # Add to pending states for N responses pattern
         with self.state_lock:
@@ -858,7 +859,7 @@ class CrowdInterface():
             # Store this action response in the same format as teleop_step_crowd
             pending_info["actions"].append(goal_positions)
 
-            print(f"🔔 Response recorded for state {state_id} from session {session_id} ({pending_info['responses_received']}/{self.required_responses_per_state})")
+            print(f"🔔 Response recorded for state {state_id} from session {session_id} ({pending_info['responses_received']}/{required_responses_this_state})")
             
             # Check if we've received enough responses
             if pending_info["responses_received"] >= required_responses_this_state:

@@ -101,7 +101,8 @@ def record(
             policy=policy,
             fps=cfg.fps,
             single_task=cfg.single_task,
-            crowd_interface=crowd_interface
+            crowd_interface=crowd_interface,
+            episode_id = recorded_episodes
         )
 
         # Execute a few seconds without recording to give time to manually reset the environment
