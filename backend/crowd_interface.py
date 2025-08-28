@@ -1,12 +1,33 @@
 from __future__ import annotations
 import os
+import cv2
+import numpy as np
+import time
+import torch
+import base64
+import random
+import queue
+import json
+import traceback
+import datasets
+
+from flask import Flask, jsonify
+from flask_cors import CORS
+from flask import request, make_response
+from pathlib import Path
+from threading import Thread, Lock
+from collections import deque
+from math import cos, sin
+
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
 REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       4,   # change indices / paths as needed
-    "left":        19,
+    "left":        18,
     "right":       0,
     "perspective": 2,
 }
@@ -37,29 +58,6 @@ CALIB_PATHS = {
         "extr": "calib/extrinsics_perspective_4.npz",
     },
 }
-
-import cv2
-import numpy as np
-import os
-import time
-import torch
-import base64
-import random
-
-from flask import Flask, jsonify
-from flask_cors import CORS
-from flask import request, make_response
-from pathlib import Path
-from threading import Thread, Lock
-from collections import deque
-import queue
-from math import cos, sin
-from math import cos, sin
-import json
-import base64
-
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
 _REALSENSE_BLOCKLIST = (
     "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
@@ -115,16 +113,16 @@ class CrowdInterface():
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_important_state = required_responses_per_important_state
-        self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
-        self.episode_id = 0
+        
+        # Episode-based state management
+        self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int, timestamp: float}}
+        self.completed_states_by_episode = {}  # episode_id -> {state_id -> {responses_received: int, completion_time: float}}
+        self.served_states_by_episode = {}  # episode_id -> {session_id -> state_id}
+        self.current_serving_episode = None  # The episode currently being served to users
+        self.episodes_completed = set()  # Set of episode_ids that are fully completed
+        
         self.next_state_id = 0
-        self.state_lock = Lock()  # Protects pending_states and next_state_id
-        
-        # Track which state was served to which user session
-        self.served_states = {}  # session_id -> state_id (most recently served state to this session)
-        
-        # Recently completed states cache for monitoring
-        self.completed_states = {}  # state_id -> {responses_received: int, completion_time: float}
+        self.state_lock = Lock()  # Protects all episode-based state management
 
         # Auto-labeling queue and worker thread
         self.auto_label_queue = queue.Queue()
@@ -209,24 +207,59 @@ class CrowdInterface():
                 continue
             except Exception as e:
                 print(f"❌ Error in auto-labeling worker: {e}")
-                import traceback
                 traceback.print_exc()
     
     def _process_auto_labeling(self, important_state_id):
-        """Process auto-labeling for states before the given important state ID"""
+        """Process auto-labeling for states before the given important state ID (episode-aware)"""
         try:
             with self.state_lock:
-                # Find the earliest pending state to get its first response as the template
-                if not self.pending_states:
+                # Find which episode the important state belongs to
+                target_episode_id = None
+                for episode_id, episode_states in self.pending_states_by_episode.items():
+                    if important_state_id in episode_states:
+                        target_episode_id = episode_id
+                        break
+                
+                if target_episode_id is None:
+                    print(f"⚠️  Important state {important_state_id} not found in any episode")
                     return
                 
-                earliest_state_id = min(self.pending_states.keys())
-                earliest_state = self.pending_states.get(earliest_state_id)
+                episode_states = self.pending_states_by_episode[target_episode_id]
                 
-                if not earliest_state or not earliest_state.get("actions"):
-                    # No actions available to use as template - convert joint positions to tensor
-                    joint_positions = earliest_state['state']['joint_positions']
-                    gripper_action = earliest_state['state'].get('gripper', 0)
+                # Find the PREVIOUS important state to get its action as template
+                template_action = None
+                previous_important_states = []
+                
+                # Check pending states in this episode
+                for state_id, state_info in episode_states.items():
+                    if (state_id < important_state_id and 
+                        state_info.get("important", False) and 
+                        state_info.get("actions")):
+                        previous_important_states.append((state_id, state_info))
+                
+                # Check completed states in this episode
+                if target_episode_id in self.completed_states_by_episode:
+                    for state_id in self.completed_states_by_episode[target_episode_id]:
+                        if state_id < important_state_id:
+                            # Need to find the original state info - it might be in a separate storage
+                            # For now, we'll only use pending states as completed ones don't have actions stored
+                            pass
+                
+                if previous_important_states:
+                    # Use the most recent previous important state's first action as template
+                    latest_important_state_id = max(previous_important_states, key=lambda x: x[0])
+                    template_action = latest_important_state_id[1]["actions"][0]
+                    print(f"🎯 Using template from previous important state {latest_important_state_id[0]}")
+                else:
+                    # No previous important state - convert FIRST state's joint positions to tensor
+                    if not episode_states:
+                        return
+                    
+                    first_state_id = min(episode_states.keys())
+                    first_state = episode_states[first_state_id]
+                    
+                    joint_positions = first_state['state']['joint_positions']
+                    gripper_action = first_state['state'].get('gripper', 0)
                     
                     # Convert to tensor format like in record_response
                     goal_positions = []
@@ -240,23 +273,21 @@ class CrowdInterface():
                     # Handle gripper like in record_response
                     goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
                     template_action = torch.tensor(goal_positions, dtype=torch.float32)
-                else:
-                    # Get the first action as template (already a tensor)
-                    template_action = earliest_state["actions"][0]
+                    print(f"🎯 Using template from first state {first_state_id} joint positions")
                 
-                # Find all unimportant states that are earlier than the important state
+                # Find all unimportant states in this episode that are earlier than the important state
                 states_to_label = []
-                for state_id, state_info in self.pending_states.items():
+                for state_id, state_info in episode_states.items():
                     if (state_id < important_state_id and 
                         not state_info.get("important", False) and 
                         state_info["responses_received"] < self.required_responses_per_state):
                         states_to_label.append(state_id)
                 
-                print(f"🏷️  Auto-labeling {len(states_to_label)} unimportant states before important state {important_state_id}")
+                print(f"🏷️  Auto-labeling {len(states_to_label)} unimportant states in episode {target_episode_id} before important state {important_state_id}")
                 
                 # Label each unimportant state with the template action
                 for state_id in states_to_label:
-                    state_info = self.pending_states[state_id]
+                    state_info = episode_states[state_id]
                     
                     # Add template actions until we reach required responses
                     while state_info["responses_received"] < self.required_responses_per_state:
@@ -286,21 +317,24 @@ class CrowdInterface():
                         if self.dataset is not None:
                             self.dataset.add_frame(completed_state)
                         
-                        # Move to recently completed
-                        self.completed_states[state_id] = {
+                        # Move to episode-based completed states
+                        if target_episode_id not in self.completed_states_by_episode:
+                            self.completed_states_by_episode[target_episode_id] = {}
+                        
+                        self.completed_states_by_episode[target_episode_id][state_id] = {
                             "responses_received": state_info["responses_received"],
                             "completion_time": time.time()
                         }
                         
-                        print(f"🏷️  Auto-labeled and completed state {state_id}")
+                        print(f"🏷️  Auto-labeled and completed state {state_id} in episode {target_episode_id}")
                 
-                # Remove auto-labeled states from pending
+                # Remove auto-labeled states from pending (episode-aware)
                 for state_id in states_to_label:
-                    if state_id in self.pending_states:
-                        del self.pending_states[state_id]
+                    if state_id in episode_states:
+                        del episode_states[state_id]
                 
                 if states_to_label:
-                    print(f"🗑️  Removed {len(states_to_label)} auto-labeled states from pending. Remaining: {len(self.pending_states)}")
+                    print(f"🗑️  Removed {len(states_to_label)} auto-labeled states from episode {target_episode_id}. Remaining: {len(episode_states)}")
                     
         except Exception as e:
             print(f"❌ Error in _process_auto_labeling: {e}")
@@ -347,7 +381,6 @@ class CrowdInterface():
     def _update_dataset_action_shape(self):
         """Update the dataset's action feature shape to include crowd responses dimension"""
         if self.dataset is not None and "action" in self.dataset.features:
-            import datasets
             from datasets import Sequence, Value, Features
             from lerobot.common.datasets.utils import get_hf_features_from_features
             
@@ -627,6 +660,10 @@ class CrowdInterface():
                   gripper_motion: int = None, 
                   obs_dict: dict[str, torch.Tensor] = None,
                   episode_id: str = None):
+        # Fix: Ensure episode_id is never None to prevent None key in dictionary
+        if episode_id is None:
+            episode_id = "0"  # Default episode ID
+            
         if gripper_motion is not None:
             self._gripper_motion = int(gripper_motion)
 
@@ -643,37 +680,74 @@ class CrowdInterface():
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         }
         
-        # Add to pending states for N responses pattern
-        with self.state_lock:
-            state_id = self.next_state_id
-            self.next_state_id += 1
-            
-            # Deep copy obs_dict tensors to avoid memory conflicts with camera operations
-            obs_dict_deep_copy = {}
-            for key, value in obs_dict.items():
-                if isinstance(value, torch.Tensor):
-                    # Create a detached copy to break any memory references
-                    obs_dict_deep_copy[key] = value.clone().detach()
-                else:
-                    obs_dict_deep_copy[key] = value
-
-            self.pending_states[state_id] = {
-                "state": frontend_state.copy(),  # Frontend state (lightweight)
-                "observations": obs_dict_deep_copy,  # Keep observations for dataset creation
-                "actions": [],  # Will collect action responses here
-                "responses_received": 0,
-                "timestamp": time.time(),
-                "served_during_stationary": None,  # Track if this state was served when robot was stationary
-                "important": False # updated later
-            }
+        # Episode-based state management - fast path to minimize latency
+        state_id = self.next_state_id
+        self.next_state_id += 1
         
-        print(f"🟢 State {state_id} added. Pending states: {len(self.pending_states)}")
-        # print(f"🟢 Joint positions: {joint_positions}")
-        # print(f"🟢 Gripper: {self._gripper_motion}")
+        # Deep copy obs_dict tensors (necessary for correctness)
+        obs_dict_deep_copy = {}
+        for key, value in obs_dict.items():
+            if isinstance(value, torch.Tensor):
+                obs_dict_deep_copy[key] = value.clone().detach()
+            else:
+                obs_dict_deep_copy[key] = value
+
+        state_info = {
+            "state": frontend_state.copy(),
+            "observations": obs_dict_deep_copy,
+            "actions": [],
+            "responses_received": 0,
+            "timestamp": time.time(),
+            "served_during_stationary": None,
+            "important": False,
+            "episode_id": episode_id
+        }
+        
+        # Quick episode-based assignment with minimal lock time
+        with self.state_lock:
+            # Initialize episode containers if needed
+            if episode_id not in self.pending_states_by_episode:
+                self.pending_states_by_episode[episode_id] = {}
+                self.completed_states_by_episode[episode_id] = {}
+                self.served_states_by_episode[episode_id] = {}
+            
+            # Add state to episode
+            self.pending_states_by_episode[episode_id][state_id] = state_info
+            
+            # Set current serving episode if none set
+            if self.current_serving_episode is None:
+                self.current_serving_episode = episode_id
+        
+        print(f"🟢 State {state_id} added to episode {episode_id}. Pending: {len(self.pending_states_by_episode.get(episode_id, {}))}")
 
     def set_last_state_to_important(self):
-        self.pending_states[self.next_state_id - 1]['important'] = True
-        self.auto_label_previous_states(self.next_state_id - 1)
+        """Mark the most recent state as important (across all episodes)"""
+        with self.state_lock:
+            # Find the most recent state across all episodes
+            latest_state_id = None
+            latest_episode_id = None
+            latest_timestamp = 0
+            
+            for episode_id, episode_states in self.pending_states_by_episode.items():
+                if not episode_states:
+                    continue
+                    
+                # Find the most recent state in this episode
+                for state_id, state_info in episode_states.items():
+                    if state_info["timestamp"] > latest_timestamp:
+                        latest_timestamp = state_info["timestamp"]
+                        latest_state_id = state_id
+                        latest_episode_id = episode_id
+            
+            if latest_state_id is not None and latest_episode_id is not None:
+                # Mark the most recent state as important
+                self.pending_states_by_episode[latest_episode_id][latest_state_id]['important'] = True
+                print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
+                
+                # Trigger auto-labeling for states in the same episode
+                self.auto_label_previous_states(latest_state_id)
+            else:
+                print("⚠️  No pending states found to mark as important")
 
     def auto_label_previous_states(self, important_state_id):
         """
@@ -691,52 +765,61 @@ class CrowdInterface():
     
     def get_latest_state(self, session_id: str = "default") -> dict:
         """
-        Get a state that needs responses with movement-aware prioritization:
-        - When robot is NOT moving: prioritize LATEST state for immediate execution
-        - When robot is moving: prioritize RANDOM state for diverse data collection
-        
-        Args:
-            session_id: Unique identifier for the user session (for tracking which state was served)
+        Get a state that needs responses from the current serving episode.
+        Episodes are served one by one - only move to next episode after current is complete.
         """
         with self.state_lock:
-            if not self.pending_states:
+            # Get current serving episode or find the next one
+            if (self.current_serving_episode is None or 
+                self.current_serving_episode in self.episodes_completed or
+                not self.pending_states_by_episode.get(self.current_serving_episode)):
+                
+                # Find next episode to serve
+                available_episodes = [ep_id for ep_id in self.pending_states_by_episode.keys() 
+                                    if ep_id not in self.episodes_completed and 
+                                    self.pending_states_by_episode[ep_id] and
+                                    ep_id is not None]  # Exclude None keys
+                
+                if not available_episodes:
+                    return {}  # No episodes to serve
+                
+                # Move to the earliest available episode (safe since None is filtered out)
+                self.current_serving_episode = min(available_episodes)
+                print(f"🎬 Now serving episode {self.current_serving_episode}")
+            
+            episode_states = self.pending_states_by_episode[self.current_serving_episode]
+            if not episode_states:
                 return {}
             
+            # Select state based on robot movement status
             if self.robot_is_moving is False:
                 # Robot not moving - prioritize LATEST state for immediate execution
-                latest_state_id = max(self.pending_states.keys(), 
-                                    key=lambda sid: self.pending_states[sid]["timestamp"])
-                state = self.pending_states[latest_state_id]["state"].copy()
-                
-                # Mark this state as served during stationary mode if not already marked
-                if self.pending_states[latest_state_id]["served_during_stationary"] is None:
-                    self.pending_states[latest_state_id]["served_during_stationary"] = True
-                
-                # Track which state was served to this session
-                self.served_states[session_id] = latest_state_id
-                
-                # Include state_id in the response so frontend can send it back
-                state["state_id"] = latest_state_id
-                
-                print(f"🎯 Robot stationary - serving LATEST state {latest_state_id} to session {session_id} for immediate execution")
-                return state
+                latest_state_id = max(episode_states.keys(), 
+                                    key=lambda sid: episode_states[sid]["timestamp"])
+                state_info = episode_states[latest_state_id]
             else:
                 # Robot moving - select random state for diverse data collection
-                random_state_id = random.choice(list(self.pending_states.keys()))
-                state = self.pending_states[random_state_id]["state"].copy()
-                
-                # Mark this state as served during moving mode if not already marked
-                if self.pending_states[random_state_id]["served_during_stationary"] is None:
-                    self.pending_states[random_state_id]["served_during_stationary"] = False
-                
-                # Track which state was served to this session
-                self.served_states[session_id] = random_state_id
-                
-                # Include state_id in the response so frontend can send it back
-                state["state_id"] = random_state_id
-                
-                print(f"🎲 Robot moving - serving RANDOM state {random_state_id} to session {session_id}")
-                return state
+                random_state_id = random.choice(list(episode_states.keys()))
+                state_info = episode_states[random_state_id]
+                latest_state_id = random_state_id
+            
+            # Mark state as served
+            if state_info["served_during_stationary"] is None:
+                state_info["served_during_stationary"] = not self.robot_is_moving
+            
+            # Track which state was served to this session (episode-aware)
+            if self.current_serving_episode not in self.served_states_by_episode:
+                self.served_states_by_episode[self.current_serving_episode] = {}
+            self.served_states_by_episode[self.current_serving_episode][session_id] = latest_state_id
+            
+            # Prepare response
+            state = state_info["state"].copy()
+            state["state_id"] = latest_state_id
+            state["episode_id"] = self.current_serving_episode
+            
+            status = "stationary" if not self.robot_is_moving else "moving"
+            print(f"🎯 Serving state {latest_state_id} from episode {self.current_serving_episode} to session {session_id} ({status})")
+            return state
     
     def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, submitted_gripper: int = None, original_gripper: int = None, threshold: float = 0.01) -> bool:
         """
@@ -791,155 +874,169 @@ class CrowdInterface():
 
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
         """
-        Record a response for a specific state.
+        Record a response for a specific state in the episode-based system.
         Returns True if this completes the required responses for a state.
-        
-        Args:
-            response_data: The response data containing state_id and action data
-            session_id: The user session that submitted the response
         """
         with self.state_lock:
-            if not self.pending_states:
-                print("⚠️  No pending states available to record response")
-                return False
-            
-            # Try to get state_id from response data first
+            # Get state_id and episode_id from response
             state_id = response_data.get("state_id")
-            if state_id is not None:
-                print(f"✅ Received state_id {state_id} from frontend for session {session_id}")
+            episode_id = response_data.get("episode_id")
             
-            # Validate that the state still exists
-            if state_id not in self.pending_states:
-                print(f"⚠️  State {state_id} no longer exists in pending states")
+            if state_id is None:
+                print("⚠️  No state_id in response data")
                 return False
             
-            pending_info = self.pending_states[state_id]
-
-            required_responses_this_state = self.required_responses_per_important_state if pending_info['important'] else self.required_responses_per_state
+            # Find the state in episode-based storage
+            state_info = None
+            found_episode = episode_id
+            
+            if episode_id and episode_id in self.pending_states_by_episode:
+                state_info = self.pending_states_by_episode[episode_id].get(state_id)
+                found_episode = episode_id
+            else:
+                # Search for state across all episodes if episode_id not provided or invalid
+                for ep_id, episode_states in self.pending_states_by_episode.items():
+                    if state_id in episode_states:
+                        state_info = episode_states[state_id]
+                        found_episode = ep_id
+                        break
+            
+            if not state_info:
+                print(f"⚠️  State {state_id} not found in pending states")
+                return False
+            
+            required_responses = (self.required_responses_per_important_state 
+                                if state_info['important'] else self.required_responses_per_state)
             
             # Extract joint positions and gripper action from response
             joint_positions = response_data.get("joint_positions", {})
             gripper_action = response_data.get("gripper", 0)
             
-            # Check if the submission is meaningful (now always returns True, but provides useful logging)
-            # Skip this check for "task already completed" submissions since they're explicitly meaningful
+            # Check meaningfulness (always returns True but provides logging)
             if not response_data.get("task_already_completed", False):
-                original_joints = pending_info["state"].get("joint_positions", {})
-                original_gripper = pending_info["state"].get("gripper", 0)
-                # Always meaningful now, but still log the movement analysis
+                original_joints = state_info["state"].get("joint_positions", {})
+                original_gripper = state_info["state"].get("gripper", 0)
                 self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
-            else:
-                print(f"✅ Task already completed submission from session {session_id} for state {state_id} - bypassing meaningfulness check")
             
-            # Check if this is the first response to a state that was served during stationary mode
-            if (pending_info["responses_received"] == 0 and 
-                pending_info["served_during_stationary"] is True):
-                # This is the first response to a state served when robot was stationary
-                # Set it as the latest goal for immediate execution
+            # Set as goal if first response to stationary-served state
+            if (state_info["responses_received"] == 0 and 
+                state_info["served_during_stationary"] is True):
                 self.latest_goal = response_data
-                print(f"🎯 Setting goal for immediate execution - first response to stationary-served state {state_id}")
+                print(f"🎯 Setting goal for immediate execution - first response to stationary state {state_id}")
             
-            pending_info["responses_received"] += 1
+            # Record the response
+            state_info["responses_received"] += 1
             
-            # Assemble goal_positions like in teleop_step_crowd
-            # Convert joint positions dict to ordered list matching JOINT_NAMES
+            # Convert response to tensor format
             goal_positions = []
             for joint_name in JOINT_NAMES:
                 joint_value = joint_positions.get(joint_name, 0.0)
-                # Handle both float values and lists/arrays (for backward compatibility)
                 if isinstance(joint_value, (list, tuple)) and len(joint_value) > 0:
                     goal_positions.append(float(joint_value[0]))
                 else:
                     goal_positions.append(float(joint_value))
             
-            # Handle gripper like in teleop_step_crowd: set to 0.044 or 0.0 based on sign
             goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
-            
-            # Store this action response in the same format as teleop_step_crowd
-            pending_info["actions"].append(goal_positions)
+            state_info["actions"].append(goal_positions)
 
-            print(f"🔔 Response recorded for state {state_id} from session {session_id} ({pending_info['responses_received']}/{required_responses_this_state})")
+            print(f"🔔 Response recorded for state {state_id} in episode {found_episode} ({state_info['responses_received']}/{required_responses})")
             
-            # Check if we've received enough responses
-            if pending_info["responses_received"] >= required_responses_this_state:
-                # Concatenate all action responses into a 1D tensor
-                # This will have shape [REQUIRED_RESPONSES_PER_STATE * action_dim]
-                all_actions = torch.cat(pending_info["actions"][:required_responses_this_state], dim=0)
+            # Check if state is complete
+            if state_info["responses_received"] >= required_responses:
+                # Complete the state and add to dataset
+                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
-                if required_responses_this_state < self.required_responses_per_important_state:
-                    # Pad all_actions with torch.inf to have the same shape as if we collected all important state responses
-                    # Calculate how many additional responses needed
-                    missing_responses = self.required_responses_per_important_state - required_responses_this_state
-                    action_dim = len(JOINT_NAMES)  # Number of joints per action
-                    
-                    # Create padding tensor filled with inf values
+                if required_responses < self.required_responses_per_important_state:
+                    # Pad with inf values
+                    missing_responses = self.required_responses_per_important_state - required_responses
+                    action_dim = len(JOINT_NAMES)
                     padding_size = missing_responses * action_dim
                     padding = torch.full((padding_size,), float('inf'), dtype=torch.float32)
-                    
-                    # Concatenate original actions with padding
                     all_actions = torch.cat([all_actions, padding], dim=0)
 
-                # Create the complete frame for dataset.add_frame()
-                # Format matches exactly what teleop_step_crowd produces
+                # Create complete frame for dataset
                 completed_state = {
-                    **pending_info["observations"],  # observations dict
-                    "action": all_actions,           # action tensor with all crowd responses
+                    **state_info["observations"],
+                    "action": all_actions,
                     "task": self.task if self.task else "crowdsourced_task"
                 }
                 
                 self.dataset.add_frame(completed_state)
                 
-                # Add to recently completed cache before removing from pending states
-                self.completed_states[state_id] = {
-                    "responses_received": pending_info["responses_received"],
+                # Move to completed states
+                if found_episode not in self.completed_states_by_episode:
+                    self.completed_states_by_episode[found_episode] = {}
+                self.completed_states_by_episode[found_episode][state_id] = {
+                    "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
-                    "is_important": pending_info.get("important", False)  # Preserve importance flag
+                    "is_important": state_info.get("important", False)
                 }
                 
-                # Remove from pending states
-                del self.pending_states[state_id]
-                print(f"✅ State {state_id} completed, removed from pending. Remaining: {len(self.pending_states)}")
+                # Remove from pending
+                del self.pending_states_by_episode[found_episode][state_id]
                 
-                # Clean up served states tracking for this completed state
-                sessions_to_clean = [sid for sid, served_state_id in self.served_states.items() 
-                                   if served_state_id == state_id]
-                for sid in sessions_to_clean:
-                    del self.served_states[sid]
+                # Check if episode is complete
+                if not self.pending_states_by_episode[found_episode]:
+                    print(f"🎬 Episode {found_episode} completed! Saving episode to dataset...")
+                    self.episodes_completed.add(found_episode)
+                    self.dataset.save_episode()
+                    
+                    # Clean up episode data structures  
+                    del self.pending_states_by_episode[found_episode]
+                    if found_episode in self.served_states_by_episode:
+                        del self.served_states_by_episode[found_episode]
                 
+                print(f"✅ State {state_id} completed in episode {found_episode}")
                 return True
             
             return False
     
     def get_pending_states_info(self) -> dict:
-        """Get information about pending states for debugging/monitoring"""
+        """Get episode-based state information for monitoring"""
         with self.state_lock:
+            episodes_info = {}
+            total_pending = 0
             
-            # Combine pending and recently completed states for monitoring
-            all_states_info = {}
-            
-            # Add pending states
-            for state_id, info in self.pending_states.items():
-                required_responses_this_state = self.required_responses_per_important_state if self.pending_states[state_id]['important'] else self.required_responses_per_state
-                all_states_info[state_id] = {
-                    "responses_received": info["responses_received"],
-                    "responses_needed": required_responses_this_state - info["responses_received"],
-                    "is_important": info.get("important", False)  # Include importance flag
-                }
-            
-            # Add recently completed states
-            for state_id, info in self.completed_states.items():
-                all_states_info[state_id] = {
-                    "responses_received": info["responses_received"],
-                    "responses_needed": 0,  # Completed
-                    "is_important": info.get("is_important", False)  # Include importance flag for completed states
+            # Process each episode
+            for episode_id in sorted(self.pending_states_by_episode.keys()):
+                episode_states = {}
+                
+                # Add pending states from this episode
+                for state_id, info in self.pending_states_by_episode[episode_id].items():
+                    required_responses = (self.required_responses_per_important_state 
+                                        if info['important'] else self.required_responses_per_state)
+                    episode_states[state_id] = {
+                        "responses_received": info["responses_received"],
+                        "responses_needed": required_responses - info["responses_received"],
+                        "is_important": info.get("important", False)
+                    }
+                    total_pending += 1
+                
+                # Add completed states from this episode
+                if episode_id in self.completed_states_by_episode:
+                    for state_id, info in self.completed_states_by_episode[episode_id].items():
+                        episode_states[state_id] = {
+                            "responses_received": info["responses_received"],
+                            "responses_needed": 0,  # Completed
+                            "is_important": info.get("is_important", False)
+                        }
+                
+                episodes_info[episode_id] = {
+                    "states": episode_states,
+                    "pending_count": len(self.pending_states_by_episode[episode_id]),
+                    "completed_count": len(self.completed_states_by_episode.get(episode_id, {})),
+                    "is_current_serving": episode_id == self.current_serving_episode,
+                    "is_completed": episode_id in self.episodes_completed
                 }
             
             return {
-                "total_pending": len(self.pending_states),
+                "total_pending": total_pending,
+                "current_serving_episode": self.current_serving_episode,
+                "episodes_completed": list(self.episodes_completed),
                 "required_responses_per_state": self.required_responses_per_state,
                 "required_responses_per_important_state": self.required_responses_per_important_state,
-                "states_info": all_states_info
+                "episodes": episodes_info
             }
     
     # --- Goal Management ---
@@ -1104,7 +1201,8 @@ class CrowdInterface():
         return poses
 
     def is_recording(self):
-        return len(self.pending_states) > 0
+        """Check if there are any pending states across all episodes"""
+        return any(len(episode_states) > 0 for episode_states in self.pending_states_by_episode.values())
 
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""
@@ -1155,7 +1253,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/test")
     def test():
-        return jsonify({"message": "Flask server is working", "states_count": len(crowd_interface.states)})
+        # Count total states across all episodes
+        total_states = sum(len(states) for states in crowd_interface.pending_states_by_episode.values())
+        return jsonify({"message": "Flask server is working", "states_count": total_states})
     
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
@@ -1181,45 +1281,53 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/monitor/latest-state", methods=["GET"])
     def monitor_latest_state():
         """
-        Read-only monitoring endpoint that returns the newest state's camera views
-        and basic information without interfering with the data collection system.
-        This endpoint only reads data and does not modify any state.
+        Read-only monitoring endpoint for episode-based state monitoring
         """
         try:
-            # Use a very quick read operation without locks to avoid any interference
             with crowd_interface.state_lock:
-                if not crowd_interface.pending_states:
+                # Check if we have any pending states across all episodes
+                all_pending = {}
+                current_episode = crowd_interface.current_serving_episode
+                
+                for episode_id, episode_states in crowd_interface.pending_states_by_episode.items():
+                    all_pending.update(episode_states)
+                
+                if not all_pending:
                     return jsonify({
                         "status": "no_states",
                         "message": "No pending states available",
                         "views": {},
                         "total_pending_states": 0,
+                        "current_serving_episode": current_episode,
                         "timestamp": time.time()
                     })
                 
-                # Get the newest state (highest state_id)
-                newest_state_id = max(crowd_interface.pending_states.keys())
-                newest_state_data = crowd_interface.pending_states[newest_state_id]
+                # Get the newest state across all episodes
+                newest_state_id = max(all_pending.keys())
+                newest_state_data = all_pending[newest_state_id]
                 newest_state = newest_state_data["state"]
+                episode_id = newest_state_data["episode_id"]
             
-            # Convert to JSON format safely (this doesn't modify anything)
+            # Build monitoring response with episode information
             monitoring_data = {
                 "status": "success",
                 "state_id": newest_state_id,
+                "episode_id": episode_id,
+                "current_serving_episode": current_episode,
                 "timestamp": newest_state_data["timestamp"],
                 "responses_received": newest_state_data["responses_received"],
-                "responses_required": crowd_interface.required_responses_per_important_state,
-                "is_important": newest_state_data.get("important", False),  # Include importance flag
+                "responses_required": (crowd_interface.required_responses_per_important_state 
+                                     if newest_state_data.get("important", False) else crowd_interface.required_responses_per_state),
+                "is_important": newest_state_data.get("important", False),
                 "views": newest_state.get("views", {}),
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),
                 "robot_moving": crowd_interface.is_robot_moving(),
-                "total_pending_states": len(crowd_interface.pending_states),
+                "total_pending_states": len(all_pending),
                 "current_time": time.time()
             }
             
             response = jsonify(monitoring_data)
-            # Prevent caching for real-time monitoring
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             response.headers['Pragma'] = 'no-cache'
             response.headers['Expires'] = '0'
@@ -1349,7 +1457,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             except Exception:
                 # Fallback to manual JSON parsing if that fails
                 try:
-                    import json
                     data = json.loads(request.get_data(as_text=True)) if request.get_data() else {}
                 except Exception:
                     data = {}
@@ -1363,10 +1470,16 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             # Get the original state to use its joint positions as the goal
             with crowd_interface.state_lock:
-                if state_id not in crowd_interface.pending_states:
+                # Search for state across all episodes
+                original_state = None
+                for episode_states in crowd_interface.pending_states_by_episode.values():
+                    if state_id in episode_states:
+                        original_state = episode_states[state_id]["state"]
+                        break
+                
+                if original_state is None:
                     return jsonify({"error": f"State {state_id} not found or already completed"}), 404
                 
-                original_state = crowd_interface.pending_states[state_id]["state"]
                 original_joints = original_state.get("joint_positions", {}).copy()
                 for joint_name in original_joints.keys():
                     original_joints[joint_name] = [original_joints[joint_name]]
@@ -1391,7 +1504,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 
         except Exception as e:
             print(f"❌ Error in task-already-completed: {e}")
-            import traceback
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
     

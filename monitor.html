@@ -693,11 +693,8 @@
         // Episode charts management
         const episodeChartsContainer = document.getElementById('episode-charts-container');
         let episodes = []; // Array of episode data
-        let currentEpisodeIndex = 0;
         let REQUIRED_RESPONSES_PER_STATE = 1; // Will be updated from API
         let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10; // Will be updated from API
-        let lastProcessedStateId = -1; // Track the highest state ID we've processed
-        let episodeStartStateId = 0; // Track where current episode started
         
         // Update server status indicator
         function updateServerStatus(connected) {
@@ -739,76 +736,61 @@
             // Function removed - joint positions panel no longer exists
         }
         
-        // Episode Chart Management
-        function createNewEpisode() {
-            const episodeIndex = episodes.length;
-            const episode = {
-                index: episodeIndex,
-                states: {},
-                maxStates: 0,
-                isComplete: false,
-                startStateId: lastProcessedStateId + 1 // Track where this episode starts
-            };
-            episodes.push(episode);
-            
-            // Update episode tracking variables
-            episodeStartStateId = lastProcessedStateId + 1;
-            
-            // Create the DOM element for this episode
-            createEpisodeChartElement(episode);
-            
-            // Mark this as the current episode
-            currentEpisodeIndex = episodeIndex;
-            updateCurrentEpisodeIndicator();
-            
-            console.log(`📊 Created new episode ${episodeIndex}, starting from state ID ${episodeStartStateId}`);
-            return episode;
-        }
+        // Episode Chart Management - Episodes are now managed by the backend
         
         function createEpisodeChartElement(episode) {
             const episodeDiv = document.createElement('div');
             episodeDiv.className = 'episode-chart';
-            episodeDiv.id = `episode-${episode.index}`;
+            episodeDiv.id = `episode-${episode.id}`;
+            
+            if (episode.isCurrentServing) {
+                episodeDiv.classList.add('current');
+            }
             
             episodeDiv.innerHTML = `
                 <div class="episode-header">
-                    <span class="episode-title">Episode ${episode.index + 1}</span>
-                    <span class="episode-stats" id="episode-${episode.index}-stats">0 states, 0 responses</span>
+                    <div class="episode-title">Episode ${episode.id}</div>
+                    <div class="episode-stats" id="episode-${episode.id}-stats">
+                        ${Object.keys(episode.states).length} states, 0 responses
+                    </div>
                 </div>
                 <div class="chart-container">
                     <div class="chart-y-axis">
-                        <div class="y-axis-label">100%</div>
-                        <div class="y-axis-label">50%</div>
-                        <div class="y-axis-label">0%</div>
+                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_IMPORTANT_STATE}</div>
+                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_IMPORTANT_STATE / 2)}</div>
+                        <div class="y-axis-label">0</div>
                     </div>
-                    <div class="chart-bars" id="episode-${episode.index}-bars">
-                        <!-- State bars will be added here -->
-                    </div>
-                    <div class="chart-x-axis">States → (🔴 Important, 🔵 Regular)</div>
+                    <div class="chart-bars" id="episode-${episode.id}-bars"></div>
+                    <div class="chart-x-axis">State IDs</div>
                 </div>
             `;
             
             episodeChartsContainer.appendChild(episodeDiv);
         }
         
-        function updateEpisodeChart(episodeIndex, stateId, responsesReceived, isImportant) {
-            if (episodeIndex >= episodes.length) return;
+        function updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant, forceRefresh = false) {
+            // Find the episode by ID
+            const episode = episodes.find(ep => ep.id === episodeId);
+            if (!episode) return;
             
-            const episode = episodes[episodeIndex];
-            
-            // Update episode data with importance information
-            episode.states[stateId] = {
-                responses: responsesReceived,
-                isImportant: isImportant || false
-            };
-            episode.maxStates = Math.max(episode.maxStates, Object.keys(episode.states).length);
-            
-            const stateType = isImportant ? "IMPORTANT" : "regular";
-            console.log(`📊 Updating chart for episode ${episodeIndex}, state ${stateId} (${stateType}), responses: ${responsesReceived}`);
+            // Update episode data with importance information (skip if force refresh)
+            if (!forceRefresh && stateId !== null) {
+                episode.states[stateId] = {
+                    responses: responsesReceived,
+                    isImportant: isImportant || false
+                };
+                episode.maxStates = Math.max(episode.maxStates, Object.keys(episode.states).length);
+                
+                const stateType = isImportant ? "IMPORTANT" : "regular";
+                console.log(`📊 Updating chart for episode ${episodeId}, state ${stateId} (${stateType}), responses: ${responsesReceived}`);
+            }
             
             // Get the bars container
-            const barsContainer = document.getElementById(`episode-${episodeIndex}-bars`);
-            if (!barsContainer) return;
+            const barsContainer = document.getElementById(`episode-${episodeId}-bars`);
+            if (!barsContainer) {
+                console.warn(`📊 Bars container not found for episode ${episodeId}`);
+                return;
+            }
             
             // Clear existing bars
             barsContainer.innerHTML = '';
@@ -816,13 +798,25 @@
             // Create bars for all states in this episode
             const stateIds = Object.keys(episode.states).sort((a, b) => parseInt(a) - parseInt(b));
             
+            if (stateIds.length === 0) {
+                console.log(`📊 No states found for episode ${episodeId}`);
+                return;
+            }
+            
+            // Force container to have width if it's 0 (common on page load)
+            if (barsContainer.clientWidth === 0) {
+                barsContainer.style.width = '200px'; // Fallback width
+            }
+            
             // Calculate the optimal width for each bar based on available space
             const containerWidth = barsContainer.clientWidth || 200; // fallback width
             const padding = 16; // total horizontal padding
             const gapWidth = 1; // gap between bars
             const availableWidth = containerWidth - padding;
-            const totalGapWidth = (stateIds.length - 1) * gapWidth;
+            const totalGapWidth = Math.max(0, (stateIds.length - 1) * gapWidth);
             const barWidth = Math.max(2, Math.min(20, (availableWidth - totalGapWidth) / stateIds.length));
+            
+            console.log(`📊 Creating ${stateIds.length} bars for episode ${episodeId}, container width: ${containerWidth}, bar width: ${barWidth}`);
             
             stateIds.forEach((stateId, index) => {
                 const stateData = episode.states[stateId];
@@ -840,6 +834,7 @@
                 
                 if (responses === 0) {
                     bar.classList.add('empty');
+                    bar.style.height = '100%'; // Empty bars take full height but are grayed out
                 } else {
                     // Calculate height based on percentage of required responses fulfilled
                     const completionPercent = Math.min((responses / requiredResponses) * 100, 100);
@@ -870,7 +865,7 @@
             });
             
             // Update episode stats
-            const statsElement = document.getElementById(`episode-${episodeIndex}-stats`);
+            const statsElement = document.getElementById(`episode-${episodeId}-stats`);
             if (statsElement) {
                 const totalResponses = Object.values(episode.states).reduce((sum, data) => sum + data.responses, 0);
                 const stateCount = Object.keys(episode.states).length;
@@ -884,9 +879,12 @@
                 const requiredResponses = data.isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
                 return data.responses >= requiredResponses;
             });
-            if (allStatesComplete && stateCount > 0) {
+            if (allStatesComplete && stateIds.length > 0) {
                 episode.isComplete = true;
-                document.getElementById(`episode-${episodeIndex}`).classList.add('complete');
+                const episodeElement = document.getElementById(`episode-${episodeId}`);
+                if (episodeElement) {
+                    episodeElement.classList.add('complete');
+                }
             }
         }
         
@@ -896,12 +894,15 @@
                 chart.classList.remove('current');
             });
             
-            // Add current class to the current episode
-            const currentChart = document.getElementById(`episode-${currentEpisodeIndex}`);
-            if (currentChart) {
-                currentChart.classList.add('current');
-                // Scroll to current episode
-                currentChart.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            // Find the current serving episode and add current class
+            const currentEpisode = episodes.find(ep => ep.isCurrentServing);
+            if (currentEpisode) {
+                const currentChart = document.getElementById(`episode-${currentEpisode.id}`);
+                if (currentChart) {
+                    currentChart.classList.add('current');
+                    // Scroll to current episode
+                    currentChart.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
             }
         }
         
@@ -914,34 +915,80 @@
                 REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
             }
             
-            // Ensure we have at least one episode
-            if (episodes.length === 0) {
-                createNewEpisode();
-            }
-            
-            // Process pending states info to update charts
-            if (data.states_info) {
-                console.log(`📈 Processing states info:`, data.states_info);
-                const currentEpisode = episodes[currentEpisodeIndex];
+            // Process episode-based data structure
+            if (data.episodes) {
+                console.log(`📈 Processing episodes data:`, data.episodes);
                 
-                Object.entries(data.states_info).forEach(([stateIdStr, stateInfo]) => {
-                    const stateId = parseInt(stateIdStr);
-                    const responsesReceived = stateInfo.responses_received || 0;
-                    const isImportant = stateInfo.is_important || false;
+                // Process each episode
+                Object.entries(data.episodes).forEach(([episodeId, episodeData]) => {
+                    let episodeIndex = episodes.findIndex(ep => ep.id === episodeId);
                     
-                    // Only process states that belong to the current episode
-                    // (states with ID >= the episode's start state ID)
-                    if (stateId >= currentEpisode.startStateId) {
-                        const stateType = isImportant ? "IMPORTANT" : "regular";
-                        console.log(`📊 Processing ${stateType} state ${stateId} for episode ${currentEpisodeIndex} (responses: ${responsesReceived})`);
-                        updateEpisodeChart(currentEpisodeIndex, stateId, responsesReceived, isImportant);
-                        lastProcessedStateId = Math.max(lastProcessedStateId, stateId);
-                    } else {
-                        console.log(`⏭️  Skipping state ${stateId} (belongs to previous episode, current episode starts at ${currentEpisode.startStateId})`);
+                    // Create episode if it doesn't exist
+                    if (episodeIndex === -1) {
+                        const newEpisode = {
+                            index: episodes.length,
+                            id: episodeId,
+                            states: {},
+                            maxStates: 0,
+                            isComplete: episodeData.is_completed || false,
+                            isCurrentServing: episodeData.is_current_serving || false
+                        };
+                        episodes.push(newEpisode);
+                        createEpisodeChartElement(newEpisode);
+                        episodeIndex = newEpisode.index;
+                    }
+                    
+                    const episode = episodes[episodeIndex];
+                    
+                    // Update episode properties
+                    episode.isComplete = episodeData.is_completed || false;
+                    episode.isCurrentServing = episodeData.is_current_serving || false;
+                    
+                    // Process states in this episode
+                    if (episodeData.states) {
+                        Object.entries(episodeData.states).forEach(([stateIdStr, stateInfo]) => {
+                            const stateId = parseInt(stateIdStr);
+                            const responsesReceived = stateInfo.responses_received || 0;
+                            const isImportant = stateInfo.is_important || false;
+                            
+                            console.log(`📊 Processing state ${stateId} in episode ${episodeId} (responses: ${responsesReceived}, important: ${isImportant})`);
+                            updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant);
+                        });
+                    }
+                    
+                    // Update episode title to show current serving status
+                    const episodeElement = document.getElementById(`episode-${episodeId}`);
+                    if (episodeElement) {
+                        const titleElement = episodeElement.querySelector('.episode-title');
+                        if (titleElement) {
+                            let title = `Episode ${episodeId}`;
+                            if (episode.isCurrentServing) {
+                                title += ' (Current)';
+                            }
+                            if (episode.isComplete) {
+                                title += ' (Complete)';
+                            }
+                            titleElement.textContent = title;
+                        }
+                        
+                        // Add visual indicator for current serving episode
+                        if (episode.isCurrentServing) {
+                            episodeElement.classList.add('current');
+                        } else {
+                            episodeElement.classList.remove('current');
+                        }
+                        
+                        // Add visual indicator for completed episodes
+                        if (episode.isComplete) {
+                            episodeElement.classList.add('complete');
+                        }
                     }
                 });
+                
+                // Update current episode indicator
+                updateCurrentEpisodeIndicator();
             } else {
-                console.log(`⚠️  No states_info in data:`, data);
+                console.log(`⚠️  No episodes data in response:`, data);
             }
         }
         
@@ -1030,73 +1077,18 @@
                     if (pendingStatesCount) {
                         pendingStatesCount.textContent = data.total_pending || 0;
                     }
+                    
+                    // Force refresh all episode charts after data update (especially on first load)
+                    setTimeout(() => {
+                        episodes.forEach(episode => {
+                            if (Object.keys(episode.states).length > 0) {
+                                updateEpisodeChart(episode.id, null, null, null, true); // Force refresh
+                            }
+                        });
+                    }, 50);
                 }
             } catch (error) {
                 console.error('Error fetching pending states info:', error);
-            }
-        }
-        
-        // Rebuild episode charts from existing state data (called on page load)
-        async function rebuildEpisodesFromStateData() {
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, {
-                    headers: {
-                        'Accept': 'application/json'
-                    }
-                });
-                if (!response.ok) {
-                    console.log('No existing state data to rebuild from');
-                    return;
-                }
-                
-                const data = await response.json();
-                console.log('🔄 Rebuilding episode charts from existing state data:', data);
-                
-                // Update response requirements
-                if (data.required_responses_per_state) {
-                    REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
-                }
-                if (data.required_responses_per_important_state) {
-                    REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
-                }
-                
-                if (!data.states_info || Object.keys(data.states_info).length === 0) {
-                    console.log('No states to rebuild from');
-                    return;
-                }
-                
-                // Sort state IDs numerically
-                const stateIds = Object.keys(data.states_info).map(id => parseInt(id)).sort((a, b) => a - b);
-                
-                if (stateIds.length === 0) return;
-                
-                // Create the current episode if it doesn't exist
-                if (episodes.length === 0) {
-                    createNewEpisode();
-                }
-                
-                const currentEpisode = episodes[0];
-                
-                // Rebuild episode data from state info
-                for (const stateId of stateIds) {
-                    const stateInfo = data.states_info[stateId];
-                    const responses = stateInfo.responses_received;
-                    const isImportant = stateInfo.is_important || false;
-                    const isCompleted = stateInfo.responses_needed === 0;
-                    
-                    console.log(`📊 Rebuilding state ${stateId}: ${responses} responses, important: ${isImportant}, completed: ${isCompleted}`);
-                    
-                    // Update episode chart
-                    updateEpisodeChart(0, stateId, responses, isImportant);
-                    
-                    // Track the highest state ID processed
-                    lastProcessedStateId = Math.max(lastProcessedStateId, stateId);
-                }
-                
-                console.log(`📊 Rebuilt episode chart with ${stateIds.length} states, highest ID: ${lastProcessedStateId}`);
-                
-            } catch (error) {
-                console.error('Error rebuilding episodes from state data:', error);
             }
         }
         
@@ -1136,9 +1128,8 @@
                 if (result.status === 'success') {
                     console.log('✅ Next episode triggered successfully');
                     
-                    // Create a new episode chart for the next episode
-                    // The new episode will automatically start tracking from the next state ID
-                    createNewEpisode();
+                    // The new episode will be automatically detected on the next data fetch
+                    // No need to manually create episode charts since backend manages episodes
                     
                 } else {
                     console.error('❌ Failed to trigger next episode:', result.message);
@@ -1216,9 +1207,18 @@
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('Data Collection Monitor initialized');
             await initializeApiUrl(); // Initialize API URL first
-            await rebuildEpisodesFromStateData(); // Rebuild episode charts from existing data
-            fetchLatestState(); // Initial fetch
+            
+            // Initial fetch of episode data with force refresh
+            await fetchPendingStatesInfo(); // Initial episode data fetch
+            fetchLatestState(); // Initial fetch for latest state info
+            
             startAutoRefresh(); // Start auto-refresh immediately
+            
+            // Additional force refresh after a short delay to ensure everything is loaded
+            setTimeout(async () => {
+                console.log('🔄 Force refreshing charts after page load...');
+                await fetchPendingStatesInfo(); // Force another refresh
+            }, 500);
         });
         
         // Handle page visibility changes to pause/resume auto-refresh
