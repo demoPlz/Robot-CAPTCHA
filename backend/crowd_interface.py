@@ -27,7 +27,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        10,
+    "left":        4,
     "right":       2,
     "perspective": 0,
 }
@@ -169,8 +169,14 @@ class CrowdInterface():
             "perspective": blank,
         }
         
+        # Teardown fence
+        self._shutting_down = False
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
+
+    def begin_shutdown(self):
+        """Fence off new work immediately; endpoints will early-return."""
+        self._shutting_down = True
     
     def _start_auto_label_worker(self):
         """Start the dedicated auto-labeling worker thread"""
@@ -183,17 +189,32 @@ class CrowdInterface():
         print("🧵 Started dedicated auto-labeling worker thread")
     
     def _stop_auto_label_worker(self):
-        """Stop the auto-labeling worker thread"""
+        """Stop the auto-labeling worker thread (idempotent)"""
+        t = getattr(self, "auto_label_worker_thread", None)
+        if not t:
+            return
+        if not self.auto_label_worker_running and not t.is_alive():
+            return
         self.auto_label_worker_running = False
-        # Send a stop signal to the queue
-        self.auto_label_queue.put(None)
-        if self.auto_label_worker_thread and self.auto_label_worker_thread.is_alive():
-            self.auto_label_worker_thread.join(timeout=1.0)
+        try:
+            # Non-blocking; OK if sentinel already queued/consumed
+            self.auto_label_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if t.is_alive():
+            t.join(timeout=2.0)
+        # Clear references and drain queue for a clean future start
+        self.auto_label_worker_thread = None
+        try:
+            with self.auto_label_queue.mutex:
+                self.auto_label_queue.queue.clear()
+        except Exception:
+            pass
         print("🛑 Stopped auto-labeling worker thread")
     
     def _auto_label_worker(self):
         """Dedicated worker thread that processes auto-labeling tasks from the queue"""
-        while self.auto_label_worker_running:
+        while self.auto_label_worker_running and not self._shutting_down:
             try:
                 # Wait for a task from the queue (blocking)
                 important_state_id = self.auto_label_queue.get(timeout=1.0)
@@ -218,6 +239,8 @@ class CrowdInterface():
     def _process_auto_labeling(self, important_state_id):
         """Process auto-labeling for states before the given important state ID (episode-aware)"""
         try:
+            if self._shutting_down:
+                return
             with self.state_lock:
                 # Find which episode the important state belongs to
                 target_episode_id = None
@@ -454,25 +477,34 @@ class CrowdInterface():
 
 
     def cleanup_cameras(self):
-        """Close all cameras and stop workers"""
-        # Stop auto-labeling worker
-        self._stop_auto_label_worker()
-        
-        # Stop background workers
-        if self._cap_running:
+        """Close all cameras and stop workers (idempotent)"""
+        # Stop auto-labeling worker (safe if already stopped)
+        try:
+            self._stop_auto_label_worker()
+        except Exception:
+            pass
+
+        # Stop background capture workers
+        if getattr(self, "_cap_running", False):
             self._cap_running = False
             for t in list(self._cap_threads.values()):
                 try:
-                    t.join(timeout=0.5)
+                    for _ in range(10):  # up to ~2s total
+                        t.join(timeout=0.2)
+                        if not t.is_alive():
+                            break
                 except Exception:
                     pass
             self._cap_threads.clear()
+
+        # Clear latest buffers
         self._latest_raw.clear()
         self._latest_ts.clear()
         self._latest_proc.clear()
         self._latest_jpeg.clear()
 
-        for cap in getattr(self, "cams", {}).values():
+        # Release cameras
+        for cap in list(getattr(self, "cams", {}).values()):
             try:
                 cap.release()
             except Exception:
@@ -761,6 +793,8 @@ class CrowdInterface():
         earlier than the given important state ID.
         """
         try:
+            if self._shutting_down:
+                return
             # Add the task to the queue (non-blocking)
             self.auto_label_queue.put_nowait(important_state_id)
             print(f"📝 Queued auto-labeling task for states before {important_state_id}")
@@ -774,6 +808,8 @@ class CrowdInterface():
         Get a state that needs responses from the current serving episode.
         Episodes are served one by one - only move to next episode after current is complete.
         """
+        if self._shutting_down:
+            return {}
         with self.state_lock:
             # Get current serving episode or find the next one
             if (self.current_serving_episode is None or 
@@ -906,6 +942,9 @@ class CrowdInterface():
         Record a response for a specific state in the episode-based system.
         Returns True if this completes the required responses for a state.
         """
+        if self._shutting_down:
+            print("⚠️  Ignoring submission during shutdown")
+            return False
         with self.state_lock:
             # Get state_id and episode_id from response
             state_id = response_data.get("state_id")
@@ -1308,6 +1347,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/get-state")
     def get_state():
+        if crowd_interface._shutting_down:
+            return jsonify({}), 200
         current_time = time.time()
         
         # Generate or retrieve session ID from request headers or IP
@@ -1336,6 +1377,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
         data = request.get_json(force=True, silent=True) or {}
         
         # Generate or retrieve session ID from request headers or IP
@@ -1542,6 +1586,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/task-already-completed", methods=["POST"])
     def task_already_completed():
         """Handle 'Task Already Completed' submissions by recording original state as goal"""
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
         try:
             # Try to get JSON data with force=True to bypass Content-Type check
             try:

@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pprint import pformat
 
 from threading import Thread
+from werkzeug.serving import make_server
 
 # from safetensors.torch import load_file, save_file
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -31,6 +32,19 @@ from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
 
 from crowd_interface import *
+import cv2  # for closing display windows
+
+def _stop_display_only(listener, display_cameras: bool):
+    """
+    Minimal UI teardown that does NOT touch the robot.
+    - Listener is a daemon thread; it dies with the process.
+    - Close any OpenCV windows if we showed cameras.
+    """
+    try:
+        if display_cameras:
+            cv2.destroyAllWindows()
+    except Exception:
+        pass
 
 @safe_disconnect
 def record(
@@ -130,14 +144,12 @@ def record(
     
     crowd_interface.set_async_collection(True)  # Switch to asynchronous data collection mode
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
-    stop_recording(robot, listener, cfg.display_cameras)
+    _stop_display_only(listener, cfg.display_cameras)
 
     while crowd_interface.is_recording():
 
         log_say("Still recording from users", cfg.play_sounds, blocking=True)
         time.sleep(1)
-
-    crowd_interface.cleanup_cameras()
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
@@ -161,10 +173,9 @@ def control_robot(cfg: ControlPipelineConfig):
     crowd_interface.init_cameras()
 
     app = create_flask_app(crowd_interface)
-    server_thread = Thread(
-        target=lambda: app.run(host="0.0.0.0", port=9000, debug=False, use_reloader=False),
-        daemon=True
-    )
+    # Use a controllable WSGI server instead of app.run() in a daemon thread.
+    http_server = make_server("0.0.0.0", 9000, app)
+    server_thread = Thread(target=http_server.serve_forever, name="flask-wsgi", daemon=True)
     server_thread.start()
 
     robot = make_robot_from_config(cfg.robot)
