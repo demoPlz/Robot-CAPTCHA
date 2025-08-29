@@ -123,6 +123,7 @@ class CrowdInterface():
         # Episode-based state management
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int, timestamp: float}}
         self.completed_states_by_episode = {}  # episode_id -> {state_id -> {responses_received: int, completion_time: float}}
+        self.completed_states_buffer_by_episode = {}  # episode_id -> {state_id -> completed_state_dict} - buffer for chronological add_frame
         self.served_states_by_episode = {}  # episode_id -> {session_id -> state_id}
         self.current_serving_episode = None  # The episode currently being served to users
         self.episodes_completed = set()  # Set of episode_ids that are fully completed
@@ -177,6 +178,26 @@ class CrowdInterface():
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
         self._shutting_down = True
+        # Flush any remaining buffered states before shutdown
+        self._flush_remaining_buffered_states()
+    
+    def _flush_remaining_buffered_states(self):
+        """Flush any states remaining in the buffer, useful during shutdown"""
+        if not self.dataset:
+            return
+            
+        for episode_id, buffered_states in self.completed_states_buffer_by_episode.items():
+            if buffered_states:
+                print(f"🚿 Flushing {len(buffered_states)} remaining buffered states for episode {episode_id}")
+                # Sort states by state_id to ensure chronological order
+                for state_id in sorted(buffered_states.keys()):
+                    self.dataset.add_frame(buffered_states[state_id])
+                # Save the episode
+                self.dataset.save_episode()
+        
+        # Clear the buffer
+        self.completed_states_buffer_by_episode.clear()
+        print("🧹 All buffered states flushed during shutdown")
     
     def _start_auto_label_worker(self):
         """Start the dedicated auto-labeling worker thread"""
@@ -342,9 +363,11 @@ class CrowdInterface():
                             "task": self.task if self.task else "crowdsourced_task"
                         }
                         
-                        # Add to dataset
+                        # Buffer completed state for chronological ordering
                         if self.dataset is not None:
-                            self.dataset.add_frame(completed_state)
+                            if target_episode_id not in self.completed_states_buffer_by_episode:
+                                self.completed_states_buffer_by_episode[target_episode_id] = {}
+                            self.completed_states_buffer_by_episode[target_episode_id][state_id] = completed_state
                         
                         # Move to episode-based completed states
                         if target_episode_id not in self.completed_states_by_episode:
@@ -1030,7 +1053,10 @@ class CrowdInterface():
                     "task": self.task if self.task else "crowdsourced_task"
                 }
                 
-                self.dataset.add_frame(completed_state)
+                # Buffer completed state for chronological ordering
+                if found_episode not in self.completed_states_buffer_by_episode:
+                    self.completed_states_buffer_by_episode[found_episode] = {}
+                self.completed_states_buffer_by_episode[found_episode][state_id] = completed_state
                 
                 # Move to completed states
                 if found_episode not in self.completed_states_by_episode:
@@ -1047,6 +1073,17 @@ class CrowdInterface():
                 # Check if episode is complete
                 if not self.pending_states_by_episode[found_episode]:
                     print(f"🎬 Episode {found_episode} completed! Saving episode to dataset...")
+                    
+                    # Add buffered states to dataset in chronological order
+                    if found_episode in self.completed_states_buffer_by_episode:
+                        buffered_states = self.completed_states_buffer_by_episode[found_episode]
+                        # Sort states by state_id to ensure chronological order
+                        for state_id in sorted(buffered_states.keys()):
+                            self.dataset.add_frame(buffered_states[state_id])
+                        print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
+                        # Clean up buffer
+                        del self.completed_states_buffer_by_episode[found_episode]
+                    
                     self.episodes_completed.add(found_episode)
                     self.dataset.save_episode()
                     
