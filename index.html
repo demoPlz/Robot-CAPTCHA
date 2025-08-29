@@ -135,6 +135,15 @@
     outline: none;
     border: 1px solid #9ca3af;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+    pointer-events: auto !important;
+    cursor: pointer;
+  }
+
+  /* Ensure calibration GUI sliders are interactive */
+  .lil-gui input[type="range"] {
+    pointer-events: auto !important;
+    cursor: pointer;
+    user-select: none;
   }
 
   /* Webkit slider thumb (Chrome, Safari, Edge) */
@@ -1164,7 +1173,10 @@ loader.load(
     // tiny helper: add a slider **and** a matching "revert" button for it
     function addParamWithRevert(folder, stateObj, key, range, step, label, onChange, camName){
       const [min, max] = range;
-      const ctrl = folder.add(stateObj, key, min, max, step).name(label).onChange(()=>onChange(camName));
+      const ctrl = folder.add(stateObj, key, min, max, step).name(label).onChange((value) => {
+        onChange(camName);
+      });
+      
       const revertObj = {};
       const revertLabel = `revert ${label}`;
       revertObj[revertLabel] = () => {
@@ -1185,17 +1197,19 @@ loader.load(
       const s = calibState[currentViewName];
       calibDefaults[currentViewName] = { ...s };
       calibGUI = new GUI();
-      // Position panel top-right
+      // Position panel top-right with higher z-index and ensure it's interactive
       calibGUI.domElement.style.position = 'fixed';
       calibGUI.domElement.style.top = '8px';
       calibGUI.domElement.style.right = '8px';
-      calibGUI.domElement.style.zIndex = 20;
+      calibGUI.domElement.style.zIndex = 9999;
+      calibGUI.domElement.style.pointerEvents = 'auto';
+      calibGUI.domElement.style.userSelect = 'none';
       
       // Intrinsics controls (no folder)
       const model = cameraModels[currentViewName];
       const W = model?.width  ?? 640;
       const H = model?.height ?? 480;
-      addParamWithRevert(calibGUI, s, 'zoom', [0.1, 5.0], 0.001, 'zoom', applyIntrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'zoom', [0.1, 5.0], 0.1, 'zoom', applyIntrinsicsFromParams, currentViewName);
       addParamWithRevert(calibGUI, s, 'fx', [50, 8000], 1,   'fx', applyIntrinsicsFromParams, currentViewName);
       addParamWithRevert(calibGUI, s, 'fy', [50, 8000], 1,   'fy', applyIntrinsicsFromParams, currentViewName);
       addParamWithRevert(calibGUI, s, 'cx', [0, W],     0.1, 'cx', applyIntrinsicsFromParams, currentViewName);

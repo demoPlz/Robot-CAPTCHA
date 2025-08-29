@@ -27,9 +27,9 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        4,
-    "right":       0,
-    "perspective": 2,
+    "left":        10,
+    "right":       2,
+    "perspective": 0,
 }
 
 JOINT_NAMES = [
@@ -309,7 +309,7 @@ class CrowdInterface():
                         missing_responses = self.required_responses_per_important_state - self.required_responses_per_state
                         action_dim = len(JOINT_NAMES)
                         padding_size = missing_responses * action_dim
-                        padding = torch.full((padding_size,), float('inf'), dtype=torch.float32)
+                        padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                         all_actions = torch.cat([all_actions, padding], dim=0)
                         
                         # Create completed state for dataset
@@ -981,7 +981,7 @@ class CrowdInterface():
                     missing_responses = self.required_responses_per_important_state - required_responses
                     action_dim = len(JOINT_NAMES)
                     padding_size = missing_responses * action_dim
-                    padding = torch.full((padding_size,), float('inf'), dtype=torch.float32)
+                    padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                     all_actions = torch.cat([all_actions, padding], dim=0)
 
                 # Create complete frame for dataset
