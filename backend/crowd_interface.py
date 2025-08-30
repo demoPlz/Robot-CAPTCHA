@@ -22,7 +22,7 @@ from math import cos, sin
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
-REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
+REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 2
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
@@ -130,6 +130,7 @@ class CrowdInterface():
         
         self.next_state_id = 0
         self.state_lock = Lock()  # Protects all episode-based state management
+        self.episodes_being_completed = set()  # Track episodes currently being processed for completion
 
         # Auto-labeling queue and worker thread
         self.auto_label_queue = queue.Queue()
@@ -981,16 +982,9 @@ class CrowdInterface():
             state_info = None
             found_episode = episode_id
             
-            if episode_id and episode_id in self.pending_states_by_episode:
+            if episode_id is not None and episode_id in self.pending_states_by_episode:
                 state_info = self.pending_states_by_episode[episode_id].get(state_id)
                 found_episode = episode_id
-            else:
-                # Search for state across all episodes if episode_id not provided or invalid
-                for ep_id, episode_states in self.pending_states_by_episode.items():
-                    if state_id in episode_states:
-                        state_info = episode_states[state_id]
-                        found_episode = ep_id
-                        break
             
             if not state_info:
                 print(f"⚠️  State {state_id} not found in pending states")
@@ -1072,25 +1066,31 @@ class CrowdInterface():
                 
                 # Check if episode is complete
                 if not self.pending_states_by_episode[found_episode]:
+                    # Mark episode as being completed to prevent race conditions with is_recording()
+                    self.episodes_being_completed.add(found_episode)
                     print(f"🎬 Episode {found_episode} completed! Saving episode to dataset...")
                     
-                    # Add buffered states to dataset in chronological order
-                    if found_episode in self.completed_states_buffer_by_episode:
-                        buffered_states = self.completed_states_buffer_by_episode[found_episode]
-                        # Sort states by state_id to ensure chronological order
-                        for state_id in sorted(buffered_states.keys()):
-                            self.dataset.add_frame(buffered_states[state_id])
-                        print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
-                        # Clean up buffer
-                        del self.completed_states_buffer_by_episode[found_episode]
-                    
-                    self.episodes_completed.add(found_episode)
-                    self.dataset.save_episode()
-                    
-                    # Clean up episode data structures  
-                    del self.pending_states_by_episode[found_episode]
-                    if found_episode in self.served_states_by_episode:
-                        del self.served_states_by_episode[found_episode]
+                    try:
+                        # Add buffered states to dataset in chronological order
+                        if found_episode in self.completed_states_buffer_by_episode:
+                            buffered_states = self.completed_states_buffer_by_episode[found_episode]
+                            # Sort states by state_id to ensure chronological order
+                            for state_id in sorted(buffered_states.keys()):
+                                self.dataset.add_frame(buffered_states[state_id])
+                            print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
+                            # Clean up buffer
+                            del self.completed_states_buffer_by_episode[found_episode]
+                        
+                        self.episodes_completed.add(found_episode)
+                        self.dataset.save_episode()
+                        
+                        # Clean up episode data structures  
+                        del self.pending_states_by_episode[found_episode]
+                        if found_episode in self.served_states_by_episode:
+                            del self.served_states_by_episode[found_episode]
+                    finally:
+                        # Always remove from being_completed set, even if there's an error
+                        self.episodes_being_completed.discard(found_episode)
                 
                 print(f"✅ State {state_id} completed in episode {found_episode}")
                 return True
@@ -1354,8 +1354,17 @@ class CrowdInterface():
         return poses
 
     def is_recording(self):
-        """Check if there are any pending states across all episodes"""
-        return any(len(episode_states) > 0 for episode_states in self.pending_states_by_episode.values())
+        """Check if there are any pending states across all episodes or episodes being completed"""
+        with self.state_lock:
+            # Check for pending states or episodes currently being completed
+            has_pending_states = any(len(episode_states) > 0 for episode_states in self.pending_states_by_episode.values())
+            has_episodes_being_completed = len(self.episodes_being_completed) > 0
+            
+            is_recording = has_pending_states or has_episodes_being_completed
+            if has_episodes_being_completed:
+                print(f"🔄 Recording status: {is_recording} (pending_states: {has_pending_states}, episodes_being_completed: {list(self.episodes_being_completed)})")
+            
+            return is_recording
 
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""
@@ -1638,19 +1647,30 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             session_id = request.headers.get("X-Session-ID", "default")
             
-            # Get the state_id from request
+            # Get the state_id and episode_id from request
             state_id = data.get("state_id")
+            episode_id = data.get("episode_id")
             if state_id is None:
                 return jsonify({"error": "state_id is required"}), 400
             
             # Get the original state to use its joint positions as the goal
             with crowd_interface.state_lock:
-                # Search for state across all episodes
+                # Use episode_id if provided, otherwise fall back to session tracking
                 original_state = None
-                for episode_states in crowd_interface.pending_states_by_episode.values():
-                    if state_id in episode_states:
-                        original_state = episode_states[state_id]["state"]
-                        break
+                found_episode = None
+                
+                if episode_id and episode_id in crowd_interface.pending_states_by_episode:
+                    if state_id in crowd_interface.pending_states_by_episode[episode_id]:
+                        original_state = crowd_interface.pending_states_by_episode[episode_id][state_id]["state"]
+                        found_episode = episode_id
+                elif not episode_id:
+                    # Use session tracking to find the correct episode
+                    for ep_id, session_states in crowd_interface.served_states_by_episode.items():
+                        if session_id in session_states and session_states[session_id] == state_id:
+                            if ep_id in crowd_interface.pending_states_by_episode and state_id in crowd_interface.pending_states_by_episode[ep_id]:
+                                original_state = crowd_interface.pending_states_by_episode[ep_id][state_id]["state"]
+                                found_episode = ep_id
+                                break
                 
                 if original_state is None:
                     return jsonify({"error": f"State {state_id} not found or already completed"}), 404
@@ -1664,6 +1684,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # This is equivalent to the user clicking "Confirm" without moving any sliders
             response_data = {
                 "state_id": state_id,
+                "episode_id": found_episode,             # Include the found episode_id
                 "joint_positions": original_joints,  # Use original positions as goal
                 "gripper": original_gripper,          # Use original gripper state as goal
                 "task_already_completed": True        # Flag to indicate this was a "no change needed" submission

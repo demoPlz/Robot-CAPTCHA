@@ -1571,7 +1571,8 @@ loader.load(
               position:   [eePos.x,  eePos.y,  eePos.z],
               rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
             },
-            state_id: state.state_id                 // include state_id for tracking
+            state_id: state.state_id,                // include state_id for tracking
+            episode_id: state.episode_id             // include episode_id for proper routing
           })
         });
         
@@ -1638,7 +1639,9 @@ loader.load(
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            state_id: state.state_id  // Send the current state_id
+            state_id: state.state_id,  // Send the current state_id
+            episode_id: state.episode_id,  // Send the current episode_id
+            task_already_completed: true
           })
         });
         
