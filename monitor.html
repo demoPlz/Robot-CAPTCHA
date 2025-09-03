@@ -686,6 +686,18 @@
         }
 
         // Configuration
+
+        // === Performance knobs ===
+        const DEBUG = false;               // flip to true if you want console logs
+        const CAMERA_POLL_MS = 250;        // ~4 FPS for camera previews
+        const INFO_POLL_MS   = 1000;       // 1 Hz for episode/state metadata
+
+        let latestStateInFlight = false;
+        let pendingInfoInFlight = false;
+
+        // Track per-camera last update to avoid churn
+        const lastCamUpdate = { front: 0, left: 0, right: 0, perspective: 0 };
+
         let autoRefreshInterval = null;
         
         // DOM elements
@@ -718,16 +730,14 @@
         // Remove episodes that the backend no longer reports (they've been fully completed and pruned)
         function pruneMissingEpisodes(presentIds) {
             const present = new Set(presentIds);
-            // Filter the local array and remove corresponding DOM nodes
-            episodes = episodes.filter(ep => {
+            for (let i = episodes.length - 1; i >= 0; i--) {
+                const ep = episodes[i];
                 if (!present.has(ep.id)) {
                     const el = document.getElementById(`episode-${ep.id}`);
                     if (el) el.remove();
-                    return false;
+                    episodes.splice(i, 1);
                 }
-                return true;
-            });
-            // After pruning, refresh the "current" marker
+            }
             updateCurrentEpisodeIndicator();
         }
         
@@ -745,13 +755,34 @@
         
         // Update camera view
         function updateCameraView(cameraName, imageDataUrl) {
-            const cameraView = cameraViews[cameraName];
-            if (!cameraView) return;
-            
-            if (imageDataUrl && imageDataUrl.startsWith('data:image/')) {
-                cameraView.innerHTML = `<img src="${imageDataUrl}" alt="${cameraName} camera" class="camera-image">`;
-            } else {
-                cameraView.innerHTML = '<div class="camera-placeholder">No image</div>';
+            const container = cameraViews[cameraName];
+            if (!container) return;
+
+            // If no image, render placeholder once
+            if (!imageDataUrl || !imageDataUrl.startsWith('data:image/')) {
+                if (!container.querySelector('img')) {
+                    container.innerHTML = '<div class="camera-placeholder">No image</div>';
+                }
+                return;
+            }
+
+            // Create the <img> once; reuse thereafter
+            let img = container.querySelector('img');
+            if (!img) {
+                container.innerHTML = '';
+                img = document.createElement('img');
+                img.className = 'camera-image';
+                img.decoding = 'async';
+                img.loading = 'lazy';
+                container.appendChild(img);
+            }
+
+            // Throttle updates roughly to poll cadence, avoid redundant src sets
+            const now = performance.now();
+            if (now - (lastCamUpdate[cameraName] || 0) < CAMERA_POLL_MS * 0.9) return;
+            if (img.src !== imageDataUrl) {
+                img.src = imageDataUrl;
+                lastCamUpdate[cameraName] = now;
             }
         }
         
@@ -821,233 +852,195 @@
             `;
             
             episodeChartsContainer.appendChild(episodeDiv);
+            // After episodeChartsContainer.appendChild(episodeDiv);
+            const bars = document.getElementById(`episode-${episode.id}-bars`);
+            const stats = document.getElementById(`episode-${episode.id}-stats`);
+
+            // Cache DOM references & a per-episode bar map
+            episode.barsContainer = bars;
+            episode.statsElement  = stats;
+            episode.barEls        = {};   // stateId -> <div.state-bar-container>
+            episode.responsesTotal = 0;   // keep running totals without O(N) recomputation
+            episode.importantCount = 0;
+            episode.regularCount   = 0;
         }
         
         function updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant, forceRefresh = false) {
-            // Find the episode by ID
+            // Find the episode object you created earlier
             const episode = episodes.find(ep => ep.id === episodeId);
-            if (!episode) return;
-            
-            // Update episode data with importance information (skip if force refresh)
-            if (!forceRefresh && stateId !== null) {
-                episode.states[stateId] = {
-                    responses: responsesReceived,
-                    isImportant: isImportant || false
-                };
-                episode.maxStates = Math.max(episode.maxStates, Object.keys(episode.states).length);
-                
-                const stateType = isImportant ? "IMPORTANT" : "regular";
-                console.log(`📊 Updating chart for episode ${episodeId}, state ${stateId} (${stateType}), responses: ${responsesReceived}`);
-            }
-            
-            // Get the bars container
-            const barsContainer = document.getElementById(`episode-${episodeId}-bars`);
-            if (!barsContainer) {
-                console.warn(`📊 Bars container not found for episode ${episodeId}`);
+            if (!episode || !episode.barsContainer) return;
+
+            // Force refresh is used only to refresh stats; keep it cheap
+            if (forceRefresh) {
+                // Update stats text from cached episode.state entries
+                const values = Object.values(episode.states || {});
+                let totalResponses = 0, important = 0, regular = 0;
+                for (const v of values) {
+                    totalResponses += v.responses || 0;
+                    if (v.isImportant) important++; else regular++;
+                }
+                episode.responsesTotal = totalResponses;
+                episode.importantCount = important;
+                episode.regularCount   = regular;
+                if (episode.statsElement) {
+                    episode.statsElement.textContent =
+                        `${values.length} states (🔴${important} 🔵${regular}), ${totalResponses} responses`;
+                }
                 return;
             }
-            
-            // Clear existing bars
-            barsContainer.innerHTML = '';
-            
-            // Create bars for all states in this episode
-            const stateIds = Object.keys(episode.states).sort((a, b) => parseInt(a) - parseInt(b));
-            
-            if (stateIds.length === 0) {
-                console.log(`📊 No states found for episode ${episodeId}`);
+
+            // Initialize storage for states if missing
+            if (!episode.states) episode.states = {};
+
+            // Short-circuit if nothing changed
+            const prev = episode.states[stateId];
+            if (prev && prev.responses === responsesReceived && prev.isImportant === !!isImportant) {
                 return;
             }
-            
-            // Force container to have width if it's 0 (common on page load)
-            if (barsContainer.clientWidth === 0) {
-                barsContainer.style.width = '200px'; // Fallback width
+
+            // Maintain running totals cheaply
+            if (prev) {
+                episode.responsesTotal -= prev.responses || 0;
+                if (prev.isImportant) episode.importantCount--; else episode.regularCount--;
             }
-            
-            // Calculate the optimal width for each bar based on available space
-            const containerWidth = barsContainer.clientWidth || 200; // fallback width
-            const padding = 16; // total horizontal padding
-            const gapWidth = 1; // gap between bars
-            const availableWidth = containerWidth - padding;
-            const totalGapWidth = Math.max(0, (stateIds.length - 1) * gapWidth);
-            const barWidth = Math.max(2, Math.min(20, (availableWidth - totalGapWidth) / stateIds.length));
-            
-            console.log(`📊 Creating ${stateIds.length} bars for episode ${episodeId}, container width: ${containerWidth}, bar width: ${barWidth}`);
-            
-            stateIds.forEach((stateId, index) => {
-                const stateData = episode.states[stateId];
-                const responses = stateData.responses;
-                const isImportant = stateData.isImportant;
-                const requiredResponses = isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
-                
-                const barContainer = document.createElement('div');
+            episode.responsesTotal += (responsesReceived || 0);
+            if (isImportant) episode.importantCount++; else episode.regularCount++;
+
+            // Cache the new state record
+            episode.states[stateId] = {
+                responses: responsesReceived || 0,
+                isImportant: !!isImportant
+            };
+
+            // Upsert the bar DOM node for this state
+            let barContainer = episode.barEls[stateId];
+            if (!barContainer) {
+                barContainer = document.createElement('div');
                 barContainer.className = 'state-bar-container';
-                barContainer.style.width = `${barWidth}px`;
-                barContainer.style.flex = 'none'; // Override flex: 1 to use fixed width
-                
+                barContainer.style.flex = 'none';
+                barContainer.style.width = '3px'; // fixed narrow column, lets container scroll horizontally
+
                 const bar = document.createElement('div');
                 bar.className = 'state-bar';
-                
-                if (responses === 0) {
-                    bar.classList.add('empty');
-                    bar.style.height = '100%'; // Empty bars take full height but are grayed out
-                } else {
-                    // Calculate height based on percentage of required responses fulfilled
-                    const completionPercent = Math.min((responses / requiredResponses) * 100, 100);
-                    bar.style.height = `${completionPercent}%`;
-                    
-                    // Color code based on state type and completion
-                    if (isImportant) {
-                        if (responses >= requiredResponses) {
-                            bar.style.background = 'linear-gradient(180deg, #dc2626, #991b1b)'; // Red - important complete
-                        } else {
-                            bar.style.background = 'linear-gradient(180deg, #f87171, #dc2626)'; // Light red - important incomplete
-                        }
-                    } else {
-                        if (responses >= requiredResponses) {
-                            bar.style.background = 'linear-gradient(180deg, #2563eb, #1d4ed8)'; // Blue - regular complete
-                        } else {
-                            bar.style.background = 'linear-gradient(180deg, #60a5fa, #2563eb)'; // Light blue - regular incomplete
-                        }
+                barContainer.appendChild(bar);
+
+                // Keep bars sorted by stateId with cheap insertion
+                barContainer.dataset.stateId = String(stateId);
+                const kids = episode.barsContainer.children;
+                let inserted = false;
+                for (let i = kids.length - 1; i >= 0; i--) {
+                    const cur = parseInt(kids[i].dataset.stateId, 10);
+                    if (cur <= stateId) {
+                        episode.barsContainer.insertBefore(barContainer, kids[i].nextSibling);
+                        inserted = true;
+                        break;
                     }
                 }
-                
-                // Add tooltip with percentage information
-                const completionPercent = Math.min((responses / requiredResponses) * 100, 100);
-                barContainer.title = `State ${stateId}: ${responses}/${requiredResponses} responses (${completionPercent.toFixed(1)}% complete, ${isImportant ? 'Important' : 'Regular'})`;
-                
-                barContainer.appendChild(bar);
-                barsContainer.appendChild(barContainer);
-            });
-            
-            // Update episode stats
-            const statsElement = document.getElementById(`episode-${episodeId}-stats`);
-            if (statsElement) {
-                const totalResponses = Object.values(episode.states).reduce((sum, data) => sum + data.responses, 0);
-                const stateCount = Object.keys(episode.states).length;
-                const importantCount = Object.values(episode.states).filter(data => data.isImportant).length;
-                const regularCount = stateCount - importantCount;
-                statsElement.textContent = `${stateCount} states (🔴${importantCount} 🔵${regularCount}), ${totalResponses} responses`;
+                if (!inserted) episode.barsContainer.insertBefore(barContainer, episode.barsContainer.firstChild);
+
+                episode.barEls[stateId] = barContainer;
             }
-            
-            // Check if episode is complete
-            const allStatesComplete = Object.values(episode.states).every(data => {
-                const requiredResponses = data.isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
-                return data.responses >= requiredResponses;
-            });
-            if (allStatesComplete && stateIds.length > 0) {
-                episode.isComplete = true;
-                const episodeElement = document.getElementById(`episode-${episodeId}`);
-                if (episodeElement) {
-                    episodeElement.classList.add('complete');
+
+            const bar = barContainer.firstChild;
+            const required = isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+
+            // Reset classes then set state‑specific styles
+            bar.className = 'state-bar';
+
+            if ((responsesReceived || 0) === 0) {
+                bar.classList.add('empty');
+                bar.style.height = '100%';  // empty bars are full height but gray
+            } else {
+                const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
+                bar.style.height = `${pct}%`;
+                if (isImportant) {
+                    bar.classList.add(responsesReceived >= required ? 'important-complete' : 'important-incomplete');
+                } else {
+                    bar.classList.add(responsesReceived >= required ? 'regular-complete' : 'regular-incomplete');
                 }
+            }
+
+            // Tooltip
+            const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
+            barContainer.title = `State ${stateId}: ${responsesReceived}/${required} (${pct.toFixed(1)}%, ${isImportant ? 'Important' : 'Regular'})`;
+
+            // Update stats (cheap; uses cached running totals)
+            if (episode.statsElement) {
+                const count = Object.keys(episode.states).length;
+                episode.statsElement.textContent =
+                    `${count} states (🔴${episode.importantCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
             }
         }
         
         function updateCurrentEpisodeIndicator() {
-            // Remove current class from all episodes
-            document.querySelectorAll('.episode-chart').forEach(chart => {
-                chart.classList.remove('current');
-            });
-            
-            // Find the current serving episode and add current class
-            const currentEpisode = episodes.find(ep => ep.isCurrentServing);
-            if (currentEpisode) {
-                const currentChart = document.getElementById(`episode-${currentEpisode.id}`);
-                if (currentChart) {
-                    currentChart.classList.add('current');
-                    // Scroll to current episode
-                    currentChart.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            const current = episodes.find(ep => ep.isCurrentServing);
+            document.querySelectorAll('.episode-chart').forEach(chart => chart.classList.remove('current'));
+            if (current) {
+                const el = document.getElementById(`episode-${current.id}`);
+                if (el) {
+                    el.classList.add('current');
+                    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
             }
         }
         
         function processMonitoringData(data) {
-            // Update response requirements from the data if available
             if (data.required_responses_per_state) {
                 REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
             }
             if (data.required_responses_per_important_state) {
                 REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
             }
-            
-            // Process episode-based data structure
-            if (data.episodes) {
-                console.log(`📈 Processing episodes data:`, data.episodes);
 
-                // First, drop any episodes that the backend no longer reports (they're done)
-                pruneMissingEpisodes(Object.keys(data.episodes));
-                
-                // Process each episode
-                Object.entries(data.episodes).forEach(([episodeId, episodeData]) => {
-                    let episodeIndex = episodes.findIndex(ep => ep.id === episodeId);
-                    
-                    // Create episode if it doesn't exist
-                    if (episodeIndex === -1) {
-                        const newEpisode = {
-                            index: episodes.length,
-                            id: episodeId,
-                            states: {},
-                            maxStates: 0,
-                            isComplete: episodeData.is_completed || false,
-                            isCurrentServing: episodeData.is_current_serving || false
-                        };
-                        episodes.push(newEpisode);
-                        createEpisodeChartElement(newEpisode);
-                        episodeIndex = newEpisode.index;
+            if (!data.episodes) return;
+
+            // Remove episodes the backend pruned
+            pruneMissingEpisodes(Object.keys(data.episodes));
+
+            for (const [episodeId, episodeData] of Object.entries(data.episodes)) {
+                let episodeIndex = episodes.findIndex(ep => ep.id === episodeId);
+                if (episodeIndex === -1) {
+                    const newEpisode = {
+                        index: episodes.length,
+                        id: episodeId,
+                        states: {},
+                        maxStates: 0,
+                        isComplete: episodeData.is_completed || false,
+                        isCurrentServing: episodeData.is_current_serving || false
+                    };
+                    episodes.push(newEpisode);
+                    createEpisodeChartElement(newEpisode);
+                    episodeIndex = newEpisode.index;
+                }
+
+                const episode = episodes[episodeIndex];
+                episode.isComplete = episodeData.is_completed || false;
+                episode.isCurrentServing = episodeData.is_current_serving || false;
+
+                // Upsert state bars incrementally
+                if (episodeData.states) {
+                    for (const [sidStr, info] of Object.entries(episodeData.states)) {
+                        const sid = parseInt(sidStr, 10);
+                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, info.is_important || false);
                     }
-                    
-                    const episode = episodes[episodeIndex];
-                    
-                    // Update episode properties
-                    episode.isComplete = episodeData.is_completed || false;
-                    episode.isCurrentServing = episodeData.is_current_serving || false;
-                    
-                    // Process states in this episode
-                    if (episodeData.states) {
-                        Object.entries(episodeData.states).forEach(([stateIdStr, stateInfo]) => {
-                            const stateId = parseInt(stateIdStr);
-                            const responsesReceived = stateInfo.responses_received || 0;
-                            const isImportant = stateInfo.is_important || false;
-                            
-                            console.log(`📊 Processing state ${stateId} in episode ${episodeId} (responses: ${responsesReceived}, important: ${isImportant})`);
-                            updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant);
-                        });
+                }
+
+                // Update header badges
+                const episodeElement = document.getElementById(`episode-${episodeId}`);
+                if (episodeElement) {
+                    const titleElement = episodeElement.querySelector('.episode-title');
+                    if (titleElement) {
+                        let title = `Episode ${episodeId}`;
+                        if (episode.isCurrentServing) title += ' (Current)';
+                        if (episode.isComplete)       title += ' (Complete)';
+                        titleElement.textContent = title;
                     }
-                    
-                    // Update episode title to show current serving status
-                    const episodeElement = document.getElementById(`episode-${episodeId}`);
-                    if (episodeElement) {
-                        const titleElement = episodeElement.querySelector('.episode-title');
-                        if (titleElement) {
-                            let title = `Episode ${episodeId}`;
-                            if (episode.isCurrentServing) {
-                                title += ' (Current)';
-                            }
-                            if (episode.isComplete) {
-                                title += ' (Complete)';
-                            }
-                            titleElement.textContent = title;
-                        }
-                        
-                        // Add visual indicator for current serving episode
-                        if (episode.isCurrentServing) {
-                            episodeElement.classList.add('current');
-                        } else {
-                            episodeElement.classList.remove('current');
-                        }
-                        
-                        // Add visual indicator for completed episodes
-                        if (episode.isComplete) {
-                            episodeElement.classList.add('complete');
-                        }
-                    }
-                });
-                
-                // Update current episode indicator
-                updateCurrentEpisodeIndicator();
-            } else {
-                console.log(`⚠️  No episodes data in response:`, data);
+                    episodeElement.classList.toggle('current',  episode.isCurrentServing);
+                    episodeElement.classList.toggle('complete', episode.isComplete);
+                }
             }
+
+            updateCurrentEpisodeIndicator();
         }
         
         // Fetch latest state from monitoring endpoint
@@ -1138,15 +1131,6 @@
                     if (pendingStatesCount) {
                         pendingStatesCount.textContent = data.total_pending || 0;
                     }
-                    
-                    // Force refresh all episode charts after data update (especially on first load)
-                    setTimeout(() => {
-                        episodes.forEach(episode => {
-                            if (Object.keys(episode.states).length > 0) {
-                                updateEpisodeChart(episode.id, null, null, null, true); // Force refresh
-                            }
-                        });
-                    }, 50);
                 }
             } catch (error) {
                 console.error('Error fetching pending states info:', error);
@@ -1155,18 +1139,33 @@
         
         // Auto-refresh function (always enabled at 30 FPS)
         function startAutoRefresh() {
-            autoRefreshInterval = setInterval(async () => {
-                await fetchLatestState();
-                await fetchPendingStatesInfo(); // Ensure chart updates happen every frame
-            }, 33); // 33ms = 30 FPS
-            console.log('Auto-refresh started (30 FPS)');
+            stopAutoRefresh(); // clear any old timers
+
+            autoRefreshInterval = {
+                cameras: setInterval(() => {
+                    if (!latestStateInFlight) {
+                        latestStateInFlight = true;
+                        fetchLatestState().finally(() => latestStateInFlight = false);
+                    }
+                }, CAMERA_POLL_MS),
+
+                info: setInterval(() => {
+                    if (!pendingInfoInFlight) {
+                        pendingInfoInFlight = true;
+                        fetchPendingStatesInfo().finally(() => pendingInfoInFlight = false);
+                    }
+                }, INFO_POLL_MS)
+            };
+
+            if (DEBUG) console.log(`Auto-refresh started (cams ${Math.round(1000/CAMERA_POLL_MS)} FPS, info ${Math.round(1000/INFO_POLL_MS)} Hz)`);
         }
-        
+
         function stopAutoRefresh() {
             if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
+                clearInterval(autoRefreshInterval.cameras);
+                clearInterval(autoRefreshInterval.info);
                 autoRefreshInterval = null;
-                console.log('Auto-refresh stopped');
+                if (DEBUG) console.log('Auto-refresh stopped');
             }
         }
         

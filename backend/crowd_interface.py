@@ -1613,25 +1613,35 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/monitor/latest-state", methods=["GET"])
     def monitor_latest_state():
         """
-        Read-only monitoring endpoint for episode-based state monitoring
+        Read-only monitoring endpoint for episode-based state monitoring.
+        Avoid building a combined dict of all pending states on every call.
         """
         try:
             with crowd_interface.state_lock:
-                # Check if we have any pending states across all episodes
-                all_pending = {}
                 current_episode = crowd_interface.current_serving_episode
-                
-                for episode_id, episode_states in crowd_interface.pending_states_by_episode.items():
-                    all_pending.update(episode_states)
-                
-                if not all_pending:
-                    # No pending states - check if we have any completed states to show info about
-                    
+
+                total_pending = 0
+                newest_state_id = None
+                newest_state_data = None
+                newest_episode_id = None
+
+                for ep_id, ep_states in crowd_interface.pending_states_by_episode.items():
+                    n = len(ep_states)
+                    total_pending += n
+                    if n == 0:
+                        continue
+                    # Max by key without materializing a merged dict
+                    ep_max_id = max(ep_states.keys())
+                    if newest_state_id is None or ep_max_id > newest_state_id:
+                        newest_state_id = ep_max_id
+                        newest_state_data = ep_states[ep_max_id]
+                        newest_episode_id = ep_id
+
+                if total_pending == 0 or newest_state_data is None:
                     return jsonify({
                         "status": "no_pending_states",
                         "message": "No pending states.",
-                        # Always serve the latest camera previews even when idle
-                        "views": crowd_interface._snapshot_latest_views(),
+                        "views": crowd_interface._snapshot_latest_views(),  # still show previews
                         "total_pending_states": 0,
                         "current_serving_episode": current_episode,
                         "robot_moving": crowd_interface.is_robot_moving(),
@@ -1640,44 +1650,40 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         "reset_countdown": crowd_interface.get_reset_countdown(),
                         "timestamp": time.time()
                     })
-                
-                # Get the newest state across all episodes
-                newest_state_id = max(all_pending.keys())
-                newest_state_data = all_pending[newest_state_id]
-                newest_state = newest_state_data["state"]
-                episode_id = newest_state_data["episode_id"]
-            
-            # Build monitoring response with episode information
+
+            # Build response outside the lock
+            newest_state = newest_state_data["state"]
             monitoring_data = {
                 "status": "success",
                 "state_id": newest_state_id,
-                "episode_id": episode_id,
+                "episode_id": newest_episode_id,
                 "current_serving_episode": current_episode,
                 "timestamp": newest_state_data["timestamp"],
                 "responses_received": newest_state_data["responses_received"],
-                "responses_required": (crowd_interface.required_responses_per_important_state 
-                                     if newest_state_data.get("important", False) else crowd_interface.required_responses_per_state),
+                "responses_required": (
+                    crowd_interface.required_responses_per_important_state
+                    if newest_state_data.get("important", False)
+                    else crowd_interface.required_responses_per_state
+                ),
                 "is_important": newest_state_data.get("important", False),
-                # Attach freshest camera previews on demand (we don't store per-state views)
-                "views": crowd_interface._snapshot_latest_views(),
+                "views": crowd_interface._snapshot_latest_views(),  # lightweight snapshot (pre-encoded)
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),
                 "robot_moving": crowd_interface.is_robot_moving(),
                 "is_async_collection": crowd_interface.is_async_collection_mode(),
                 "is_resetting": crowd_interface.is_in_reset(),
                 "reset_countdown": crowd_interface.get_reset_countdown(),
-                "total_pending_states": len(all_pending),
+                "total_pending_states": total_pending,
                 "current_time": time.time()
             }
-            
+
             response = jsonify(monitoring_data)
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             response.headers['Pragma'] = 'no-cache'
             response.headers['Expires'] = '0'
             return response
-            
+
         except Exception as e:
-            # Don't let monitoring errors affect the main system
             return jsonify({
                 "status": "error",
                 "message": f"Monitoring error: {str(e)}",

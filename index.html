@@ -1319,6 +1319,9 @@ loader.load(
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
     const baseQuat = startQuat.clone();
+    // NEW: track accumulated orientation and last slider values (for incremental deltas)
+    let currentQuat = baseQuat.clone();
+    let lastAngles = { roll: 0, pitch: 0, yaw: 0 };
 
     /* ---------- semi-transparent alignment line -------------------- */
     const lineLen = 0.80;      // meters
@@ -1366,12 +1369,25 @@ loader.load(
       marker.position.set(params.x, params.y, params.z);
 
       /* orientation */
-      const delta = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
-      );
-      const quat = baseQuat.clone().multiply(delta);
-      goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
-      marker.quaternion.copy(quat);
+      const dRoll  = params.roll  - lastAngles.roll;
+      const dPitch = params.pitch - lastAngles.pitch;
+      const dYaw   = params.yaw   - lastAngles.yaw;
+
+      // Only update if there was any change (avoids drift)
+      if (dRoll !== 0 || dPitch !== 0 || dYaw !== 0) {
+        // Increment defined in local axes with the same XYZ order
+        const inc = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(dRoll, dPitch, dYaw, 'XYZ')
+        );
+        // Local (body) rotation: post-multiply
+        currentQuat.multiply(inc).normalize();
+        lastAngles.roll  = params.roll;
+        lastAngles.pitch = params.pitch;
+        lastAngles.yaw   = params.yaw;
+      }
+
+      goal.setQuaternion(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
+      marker.quaternion.copy(currentQuat);
 
       // On first slider interaction: reveal the robot and update button label
       if (!robotVisible) {
