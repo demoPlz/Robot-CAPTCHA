@@ -748,6 +748,10 @@
         let REQUIRED_RESPONSES_PER_STATE = 1; // Will be updated from API
         let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10; // Will be updated from API
 
+        // Track user scroll state to prevent auto-scroll interference
+        let userIsScrolling = false;
+        let scrollTimeout = null;
+
         // Remove episodes that the backend no longer reports (they've been fully completed and pruned)
         function pruneMissingEpisodes(presentIds) {
             const present = new Set(presentIds);
@@ -1069,7 +1073,10 @@
                 const el = document.getElementById(`episode-${current.id}`);
                 if (el) {
                     el.classList.add('current');
-                    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    // Only auto-scroll if user is not manually scrolling
+                    if (!userIsScrolling) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }
                 }
             }
         }
@@ -1364,6 +1371,21 @@
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('Data Collection Monitor initialized');
             await initializeApiUrl(); // Initialize API URL first
+            
+            // Set up scroll detection for episode charts container
+            episodeChartsContainer.addEventListener('scroll', function() {
+                userIsScrolling = true;
+                
+                // Clear any existing timeout
+                if (scrollTimeout) {
+                    clearTimeout(scrollTimeout);
+                }
+                
+                // Reset scroll state after user stops scrolling for 3 seconds
+                scrollTimeout = setTimeout(() => {
+                    userIsScrolling = false;
+                }, 3000);
+            });
             
             // Initial fetch of episode data with force refresh
             await fetchPendingStatesInfo(); // Initial episode data fetch
