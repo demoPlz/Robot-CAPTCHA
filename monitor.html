@@ -137,6 +137,24 @@
             object-fit: contain;
             border-radius: 3px;
         }
+
+        .camera-view {              /* only positioning context, doesn't change layout */
+            position: relative;
+        }
+
+        .camera-layer {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 3px;     /* matches .camera-image */
+            display: none;          /* Use display instead of opacity for instant swap */
+        }
+
+        .camera-layer.is-visible {
+            display: block;
+        }
         
         .camera-placeholder {
             color: #64748b;
@@ -697,6 +715,9 @@
 
         // Track per-camera last update to avoid churn
         const lastCamUpdate = { front: 0, left: 0, right: 0, perspective: 0 };
+        // Double-buffer state per camera (created on first frame)
+        const cameraBuffers = {};          // cameraName -> { imgs: [img0, img1], active: 0/1, lastSrc: '', initialized: bool }
+        const camSwapInFlight = {};        // cameraName -> boolean (prevents overlapping swaps)
 
         let autoRefreshInterval = null;
         
@@ -752,39 +773,108 @@
                 serverStatus.innerHTML = '<span class="status-indicator disconnected"></span>Disconnected';
             }
         }
+
+        function ensureCameraBuffers(cameraName) {
+            const container = cameraViews[cameraName];
+            if (!container) return null;
+
+            let state = cameraBuffers[cameraName];
+            if (!state) {
+                // Create two stacked <img> layers; start hidden (opacity 0).
+                const img0 = document.createElement('img');
+                img0.className = 'camera-image camera-layer';
+                img0.alt = `${cameraName} camera 0`;
+
+                const img1 = document.createElement('img');
+                img1.className = 'camera-image camera-layer';
+                img1.alt = `${cameraName} camera 1`;
+
+                container.appendChild(img0);
+                container.appendChild(img1);
+
+                state = cameraBuffers[cameraName] = {
+                    imgs: [img0, img1],
+                    active: 0,
+                    lastSrc: '',
+                    initialized: false
+                };
+            }
+            return state;
+        }
         
         // Update camera view
-        function updateCameraView(cameraName, imageDataUrl) {
+        async function updateCameraView(cameraName, imageDataUrl) {
             const container = cameraViews[cameraName];
             if (!container) return;
 
-            // If no image, render placeholder once
+            // If no image: show (or keep) placeholder and hide buffers
             if (!imageDataUrl || !imageDataUrl.startsWith('data:image/')) {
-                if (!container.querySelector('img')) {
-                    container.innerHTML = '<div class="camera-placeholder">No image</div>';
+                const state = cameraBuffers[cameraName];
+                if (state) {
+                    state.imgs[0].classList.remove('is-visible');
+                    state.imgs[1].classList.remove('is-visible');
+                    state.initialized = false;
+                    state.lastSrc = '';
+                }
+                if (!container.querySelector('.camera-placeholder')) {
+                    const ph = document.createElement('div');
+                    ph.className = 'camera-placeholder';
+                    ph.textContent = 'No image';
+                    container.appendChild(ph);
                 }
                 return;
             }
 
-            // Create the <img> once; reuse thereafter
-            let img = container.querySelector('img');
-            if (!img) {
-                container.innerHTML = '';
-                img = document.createElement('img');
-                img.className = 'camera-image';
-                img.decoding = 'async';
-                img.loading = 'lazy';
-                container.appendChild(img);
-            }
-
-            // Throttle updates roughly to poll cadence, avoid redundant src sets
+            // Throttle a bit to avoid redundant churn
             const now = performance.now();
             if (now - (lastCamUpdate[cameraName] || 0) < CAMERA_POLL_MS * 0.9) return;
-            if (img.src !== imageDataUrl) {
-                img.src = imageDataUrl;
+
+            const state = ensureCameraBuffers(cameraName);
+            if (!state) return;
+
+            // If the incoming frame is byte-identical to the last one, skip
+            if (imageDataUrl === state.lastSrc) return;
+
+            // Avoid overlapping decodes/swaps for this camera
+            if (camSwapInFlight[cameraName]) return;
+            camSwapInFlight[cameraName] = true;
+
+            const backIndex = 1 - state.active;
+            const backImg   = state.imgs[backIndex];
+
+            try {
+                backImg.decoding = 'async';
+                backImg.src = imageDataUrl;
+
+                // Wait until the new frame is fully decoded before we show it
+                if (typeof backImg.decode === 'function') {
+                    await backImg.decode().catch(() => {});
+                } else {
+                    await new Promise(resolve =>
+                        backImg.complete ? resolve() : (backImg.onload = () => resolve())
+                    );
+                }
+
+                // First successful frame: remove placeholder if present
+                if (!state.initialized) {
+                    const ph = container.querySelector('.camera-placeholder');
+                    if (ph) ph.remove();
+                    state.initialized = true;
+                }
+
+                // Atomic swap: hide old image and show new one instantly
+                // This eliminates any flickering or empty frames
+                state.imgs[state.active].classList.remove('is-visible');
+                backImg.classList.add('is-visible');
+                state.active = backIndex;
+                
+                state.lastSrc = imageDataUrl;
                 lastCamUpdate[cameraName] = now;
+            } finally {
+                camSwapInFlight[cameraName] = false;
             }
         }
+
         
         // Update robot state
         function updateRobotState(isMoving, isResetting, resetCountdown, isAsyncCollection) {
