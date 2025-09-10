@@ -29,8 +29,8 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        10,
-    "right":       2,
+    "left":        8,
+    "right":       16,
     "perspective": 0,
 }
 
