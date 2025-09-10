@@ -472,6 +472,32 @@
     cursor: not-allowed;
     box-shadow: none;
   }
+
+  /* Animate button styling */
+  .controls-container .animate-button {
+    background: #f65c5c;
+    color: white;
+    width: 100%;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    opacity: .85;
+    transition: all .15s ease;
+    margin-bottom: 12px; /* ← add a bit of breathing room */
+  }
+  .controls-container .animate-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(139, 92, 246, .35);
+    opacity: 1;
+  }
+  .controls-container .animate-button.active {
+    background: #ed3a3a; /* brighter while active */
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, .25), 0 8px 18px rgba(0,0,0,.18);
+    opacity: 1;
+  }
   
   @keyframes pulse {
     0%, 100% { opacity: 1; }
@@ -1508,6 +1534,55 @@ loader.load(
     let currentQuat = baseQuat.clone();
     let lastAngles = { roll: 0, pitch: 0, yaw: 0 };
 
+    /* ===== Animate button + loop state ===== */
+    const animState = {
+      enabled: false,
+      t: 0,             // normalized 0 → 1
+      dir: 1,           // +1 forward, -1 backward
+      duration: 2000,   // one-way time in ms
+      lastTs: 0
+    };
+
+    // Compute the *target* pose from current user params.
+    // We purposely derive orientation from baseQuat + (roll,pitch,yaw)
+    // instead of reusing currentQuat to avoid drift.
+    function computeTargetPose() {
+      const pos = new THREE.Vector3(params.x, params.y, params.z);
+      const dQ  = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
+      );
+      const quat = baseQuat.clone().multiply(dQ).normalize();
+      return { pos, quat };
+    }
+
+    // Snap the solver goal to the current user-specified target.
+    function applyCurrentTargetToGoal() {
+      const { pos, quat } = computeTargetPose();
+      goal.setPosition(pos.x, pos.y, pos.z);
+      goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
+    }
+
+    // Toggle animation ON/OFF.
+    function toggleAnimation() {
+      animState.enabled = !animState.enabled;
+      if (animState.enabled) {
+        // reveal robot if hidden
+        if (!robotVisible) {
+          robotVisible = true;
+          robot.visible = true;
+          if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+        }
+        animState.t = 0;      // start from initial pose
+        animState.dir = 1;    // go forward first
+        animState.lastTs = performance.now();
+        animateBtn.classList.add('active');
+      } else {
+        animateBtn.classList.remove('active');
+        applyCurrentTargetToGoal();       // snap to target when stopping
+      }
+    }
+
+
     /* ---------- semi-transparent alignment line -------------------- */
     const lineLen = 0.80;      // meters
     const lineRad = 0.002;     // thickness
@@ -1711,32 +1786,32 @@ loader.load(
     function slidersAtDefault(){ return getChangedAxes().length === 0; }
 
     function updateGoal() {
-      /* position */
-      goal.setPosition(params.x, params.y, params.z);
+      /* position (marker always follows params immediately) */
       marker.position.set(params.x, params.y, params.z);
 
-      /* orientation */
+      /* orientation accumulation for marker/target */
       const dRoll  = params.roll  - lastAngles.roll;
       const dPitch = params.pitch - lastAngles.pitch;
       const dYaw   = params.yaw   - lastAngles.yaw;
 
-      // Only update if there was any change (avoids drift)
       if (dRoll !== 0 || dPitch !== 0 || dYaw !== 0) {
-        // Increment defined in local axes with the same XYZ order
         const inc = new THREE.Quaternion().setFromEuler(
           new THREE.Euler(dRoll, dPitch, dYaw, 'XYZ')
         );
-        // Local (body) rotation: post-multiply
         currentQuat.multiply(inc).normalize();
         lastAngles.roll  = params.roll;
         lastAngles.pitch = params.pitch;
         lastAngles.yaw   = params.yaw;
       }
-
-      goal.setQuaternion(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
       marker.quaternion.copy(currentQuat);
 
-      // On first slider interaction: reveal the robot and update button label
+      // Only push to IK solver immediately when not animating.
+      if (!animState.enabled) {
+        goal.setPosition(params.x, params.y, params.z);
+        goal.setQuaternion(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
+      }
+
+      // First interaction reveals the robot
       if (!robotVisible) {
         robotVisible = true;
         robot.visible = true;
@@ -1745,6 +1820,7 @@ loader.load(
 
       updateGripperInteractivity();
     }
+
 
     // ---------- Drag helpers ----------
     const raycaster = new THREE.Raycaster();
@@ -2146,6 +2222,12 @@ loader.load(
       }
     };
 
+    // Animate toggle button (appears above Confirm)
+    const animateBtn = document.createElement('button');
+    animateBtn.textContent = 'Animate';
+    animateBtn.className = 'animate-button';
+    animateBtn.onclick = toggleAnimation;
+
     const spanDefs = [
       ['x',     0.20],   // meters
       ['y',     0.20],
@@ -2200,6 +2282,8 @@ loader.load(
 
     // Evaluate initial interactivity (usually enabled because sliders = defaults)
     updateGripperInteractivity();
+
+    controlsContainer.appendChild(animateBtn);
 
     // Add confirm button at the bottom
     controlsContainer.appendChild(confirmBtn);
@@ -2287,83 +2371,82 @@ loader.load(
     // (solver settings default to 5 iterations, etc.)
 
     /* --- animation loop --- */
-    function animate() {
+    function animate(now) {
       requestAnimationFrame(animate);
 
-      setIKFromUrdf(ikRoot, robot);   // URDF ➜ IK                                         :contentReference[oaicite:1]{index=1}
-      solver.solve();                 // run DLS IK
-      setUrdfFromIK(robot, ikRoot);   // IK ➜ URDF                                         :contentReference[oaicite:2]{index=2}
+      // If Animate is ON, set the IK goal to the interpolated pose for this frame.
+      if (animState.enabled) {
+        if (!animState.lastTs) animState.lastTs = now;
+        const dt = Math.min(100, now - animState.lastTs); // clamp to avoid huge jumps on tab restore
+        animState.lastTs = now;
 
-      // --- align the green line so its bottom sits on the ground ---
+        // Advance normalized time and ping-pong at the ends
+        animState.t += (dt / animState.duration);
+        if (animState.t > 1) animState.t = 0;
+
+        const { pos: tgtPos, quat: tgtQuat } = computeTargetPose();
+
+        // Interpolate pose: linear for pos, slerp for orientation
+        const interpPos  = new THREE.Vector3().copy(startPos).lerp(tgtPos,  animState.t);
+        const interpQuat = new THREE.Quaternion().copy(startQuat).slerp(tgtQuat, animState.t);
+
+        goal.setPosition(interpPos.x, interpPos.y, interpPos.z);
+        goal.setQuaternion(interpQuat.x, interpQuat.y, interpQuat.z, interpQuat.w);
+      }
+
+      // Solve IK for this frame
+      setIKFromUrdf(ikRoot, robot);
+      solver.solve();
+      setUrdfFromIK(robot, ikRoot);
+
+      // ----- green vertical line from EE to floor -----
       eeVis.getWorldPosition(_eePosTmp);
-      // Effective vertical length (Z-up), clamped to ≥ 0 with a small gap from the floor
       let len = _eePosTmp.z - (floorZ + bottomPad);
       if (len <= 0) {
-        line.visible = false;             // EE at/below floor → hide
+        line.visible = false;
       } else {
         line.visible = true;
-        // Scale along local Y (already rotated to world Z)
         line.scale.y = len / baseLineLen;
-        // Center of cylinder should be midway between EE.z and floorZ+pad
         const midZ = (floorZ + bottomPad) + 0.5 * len;
         line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
       }
 
-      function updateFingerLine(link, lineMesh, localTipVec){
+      // ----- yellow drop lines from finger tips -----
+      function updateFingerLine(link, lineMesh, localTipVec) {
         if (!link) { lineMesh.visible = false; return; }
-
         link.updateMatrixWorld(true);
-
-        // World-space tip position from the calibrated local offset
         const tipWorld = localTipVec.clone().applyMatrix4(link.matrixWorld);
-
         const lenToFloor = tipWorld.z - (floorZ + fingerBottomPad);
-        if (lenToFloor <= 0) {
-          lineMesh.visible = false;
-          return;
-        }
-
+        if (lenToFloor <= 0) { lineMesh.visible = false; return; }
         lineMesh.visible = true;
         lineMesh.scale.y = lenToFloor / baseLineLen;
         const midZ = (floorZ + fingerBottomPad) + 0.5 * lenToFloor;
-
-        // Place directly under each finger tip
         lineMesh.position.set(tipWorld.x, tipWorld.y, midZ);
       }
-
-      // Update both finger lines each frame
       updateFingerLine(leftFingerLink,  leftFingerLine,  fingerTipLocalLeft);
       updateFingerLine(rightFingerLink, rightFingerLine, fingerTipLocalRight);
 
-
-      
-      // Update gripper arrow positions based on robot link positions
+      // ----- gripper arrows track the two finger links -----
       gripArrows.forEach(arrow => {
         const link = arrow.userData.targetLink;
         const originLocal = arrow.userData.originLocal;
         const dirLocal = arrow.userData.dirLocal;
-        
-        if (link) {
-          // Get the world transform of the target link
-          link.updateMatrixWorld(true);
-          
-          // Transform the local position to world coordinates
-          const worldPos = originLocal.clone().applyMatrix4(link.matrixWorld);
-          arrow.position.copy(worldPos);
-          
-          // Transform the local direction to world coordinates
-          const worldDir = dirLocal.clone().transformDirection(link.matrixWorld);
-          arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), worldDir);
-        }
+        if (!link) return;
+        link.updateMatrixWorld(true);
+        const worldPos = originLocal.clone().applyMatrix4(link.matrixWorld);
+        arrow.position.copy(worldPos);
+        const worldDir = dirLocal.clone().transformDirection(link.matrixWorld);
+        arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), worldDir);
       });
-      
-      // Update gripper arrow visibility based on current view
       updateGripArrowVisibility();
 
+      // ----- rotation wheels follow marker orientation -----
       (function updateWheels(){
         const pos = marker.position;
-        const { xW, yW, zW } = localAxesWorld();
-
+        const q = marker.quaternion;
+        const xW = new THREE.Vector3(1,0,0).applyQuaternion(q).normalize();
+        const yW = new THREE.Vector3(0,1,0).applyQuaternion(q).normalize();
+        const zW = new THREE.Vector3(0,0,1).applyQuaternion(q).normalize();
         if (rotationWheels.roll) {
           rotationWheels.roll.group.position.copy(pos);
           alignRingToNormal(rotationWheels.roll.group, xW);
@@ -2377,14 +2460,15 @@ loader.load(
           alignRingToNormal(rotationWheels.yaw.group, zW);
         }
       })();
-      
-      // Render all views
+
+      // ----- render all views -----
       views.forEach(view => {
-        // Set the background texture for this specific view
         scene.background = view.texture ?? defaultBg;
         view.renderer.render(scene, view.camera);
       });
     }
+
+
     animate();
   }
 );
