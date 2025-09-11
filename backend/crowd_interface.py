@@ -447,13 +447,20 @@ class CrowdInterface():
                         state_info.get("actions")):
                         previous_important_states.append((state_id, state_info))
                 
-                # Check completed states in this episode
+                # ---- Check completed states in this episode (recover from completed buffer) ----
                 if target_episode_id in self.completed_states_by_episode:
-                    for state_id in self.completed_states_by_episode[target_episode_id]:
-                        if state_id < important_state_id:
-                            # Need to find the original state info - it might be in a separate storage
-                            # For now, we'll only use pending states as completed ones don't have actions stored
-                            pass
+                    buf = self.completed_states_buffer_by_episode.get(target_episode_id, {})
+                    for sid, cinfo in self.completed_states_by_episode[target_episode_id].items():
+                        if sid < important_state_id and cinfo.get("is_important", False):
+                            m = buf.get(sid)
+                            if isinstance(m, dict) and "action" in m:
+                                act = m["action"]  # concatenated 1D tensor: (required_responses_per_important_state * action_dim,)
+                                action_dim = len(JOINT_NAMES)
+                                first = act[:action_dim]
+                                if not isinstance(first, torch.Tensor):
+                                    first = torch.as_tensor(first, dtype=torch.float32)
+                                # Emulate pending-state structure expected later
+                                previous_important_states.append((sid, {"actions": [first]}))
                 
                 if previous_important_states:
                     # Use the most recent previous important state's first action as template
