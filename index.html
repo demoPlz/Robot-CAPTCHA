@@ -1729,7 +1729,7 @@ loader.load(
 
     // Make the dot easy to pick: invisible, larger hit target
     const pickProxy = new THREE.Mesh(
-      new THREE.SphereGeometry(0.02, 16, 16), // ~2cm radius hit area
+      new THREE.SphereGeometry(0.08, 16, 16), // ~4cm radius hit area
       new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
     );
     pickProxy.name = 'marker_pick_proxy';
@@ -1747,7 +1747,7 @@ loader.load(
     };
 
     // Build one wheel (striped annulus) for an axis
-    function makeWheel(axisName, colorHex, innerR=0.065, outerR=0.085, strips=48) {
+    function makeWheel(axisName, colorHex, innerR=0.085, outerR=0.105, strips=48) {
       const group = new THREE.Group();
       group.name = `wheel_${axisName}`;
       group.userData.axis = axisName;
