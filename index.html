@@ -1849,6 +1849,27 @@ loader.load(
 
 
     /* 2) build lil-GUI sliders ----------------------------------- */
+    // ---- absolute hard limits (same for all users) ----
+    const ABS_LIMITS = {
+      x:     { min: 0.10,  max: 0.43  },
+      y:     { min: -0.15, max: 0.15  },
+      z:     { min: 0.015, max: 0.30  },
+      roll:  { min: -1.00, max: 1.00  },
+      pitch: { min: -0.60, max: 0.75  },
+      yaw:   { min: -0.81, max: 0.81  },
+    };
+    // compute span∩ABS_LIMITS; if no overlap (should be rare), snap to nearest boundary
+    function effectiveRange(axis, center, span){
+      const abs = ABS_LIMITS[axis];
+      const min0 = center - span;
+      const max0 = center + span;
+      const min  = Math.max(min0, abs.min);
+      const max  = Math.min(max0, abs.max);
+      if (min <= max) return {min, max};
+      // Degenerate overlap: collapse to nearest boundary within ABS range
+      const clampedCenter = Math.min(abs.max, Math.max(abs.min, center));
+      return {min: clampedCenter, max: clampedCenter};
+    }
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
     // --- interactive target pose (driven by sliders/marker) ---
     const targetPose = {
@@ -1957,9 +1978,17 @@ loader.load(
     }
 
     function clampToSlider(axis, v){
-      const r = sliderRanges[axis];
-      if (!r) return v;
-      return Math.min(r.max, Math.max(r.min, v));
+      // Clamp to the effective slider range (span∩ABS_LIMITS) and also
+      // to the absolute limits for extra safety.
+      const r = sliderRanges[axis] || {};
+      const abs = ABS_LIMITS[axis];
+      let min = r.min ?? -Infinity;
+      let max = r.max ?? +Infinity;
+      if (abs) {
+        min = Math.max(min, abs.min);
+        max = Math.min(max, abs.max);
+      }
+      return Math.min(max, Math.max(min, v));
     }
 
     function updateSlidersDisplay(axes){
@@ -2383,9 +2412,10 @@ loader.load(
     const sliderRanges  = {};  // axis -> {min, max}
 
     spanDefs.forEach(([key, span])=>{
-      if (!activeControls.includes(key)) return;
-      const center = params[key];          // start-pose value
-      const controller = gui.add(params, key, center - span, center + span);
+      const center = params[key];          // start-pose value (remains the "conceptual" center)
+      // Use the intersection of centered span and ABS_LIMITS so the thumb can't leave valid area
+      const er = effectiveRange(key, center, span);
+      const controller = gui.add(params, key, er.min, er.max);
       controller.onChange(() => {
         if (slidersLocked) {
           // Revert the bound value and refresh the UI; do not push to IK
@@ -2393,13 +2423,15 @@ loader.load(
           controller.updateDisplay();
           return;
         }
+        // Extra guard: clamp any programmatic changes into the effective range
+        params[key] = clampToSlider(key, params[key]);
         updateGoal();
       });
 
       // Save references for drag interaction
       sliderCtrls[key]   = controller;
       sliderCenters[key] = center;
-      sliderRanges[key]  = { min: center - span, max: center + span };
+      sliderRanges[key]  = { ...er };
 
       // Add reset button to each slider
       setTimeout(() => {
@@ -2412,7 +2444,9 @@ loader.load(
           resetBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            params[key] = center; // Reset to initial center value
+            // Reset EXACTLY to the original center, even if out-of-bounds.
+            // Slider track stays clamped; first user interaction will snap back into the valid range.
+            params[key] = sliderCenters[key];
             controller.updateDisplay();
             updateGoal();
           };
@@ -2422,6 +2456,8 @@ loader.load(
     });
 
     setSlidersLocked(false);
+    // Ensure marker/goal reflect params (and any implicit clamping from controller init)
+    updateGoal();
 
     // Add gripper buttons after sliders
     if (gripperButtonsContainer) {
