@@ -1657,12 +1657,16 @@ loader.load(
           robot.visible = true;
           if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
         }
+        // Hide pose gizmos while animating (rotation wheels + red dot)
+        setPoseGizmosVisible(false);
       } else {
         animateBtn.classList.remove('active');
         // If stopped mid-way, snap directly to the current target
         const { pos, quat } = getTargetPose();
         goal.setPosition(pos.x, pos.y, pos.z);
         goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
+        // Restore pose gizmos when animation is off
+        setPoseGizmosVisible(true);
       }
     }
 
@@ -1671,17 +1675,8 @@ loader.load(
     const lineLen = 0.80;      // meters
     const lineRad = 0.002;     // thickness
     const lineOffX = - 0.01;
-    const lineMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff00, transparent: true, opacity: 0.4
-    });
-    const line    = new THREE.Mesh(
-      new THREE.CylinderGeometry(lineRad, lineRad, lineLen, 8, 1, true),
-      lineMat
-    );
-    line.rotation.x = Math.PI / 2;   // cylinder-Y → world Z
-    scene.add(line);
     // --- cache & helpers for fast updates (no per-frame allocs) ---
-    const baseLineLen = line.geometry.parameters.height; // original cylinder height
+    const baseLineLen = lineLen; // baseline length for scaling helper lines
     const floorZ      = 0.0;      // ground plane (Z-up)
     const bottomPad   = 0.0005;   // tiny lift to avoid z-fighting
     const _eePosTmp   = new THREE.Vector3();
@@ -1843,6 +1838,14 @@ loader.load(
     // Build wheels now that the marker exists
     buildRotationWheels();
     // ===== Rotation wheels — helpers & state (end) =====
+
+    // --- helper to show/hide pose gizmos (red dot + rotation wheels) ---
+    function setPoseGizmosVisible(visible) {
+      if (marker) marker.visible = visible;
+      Object.values(rotationWheels).forEach(w => {
+        if (w && w.group) w.group.visible = visible;
+      });
+    }
 
 
     /* 2) build lil-GUI sliders ----------------------------------- */
@@ -2300,6 +2303,8 @@ loader.load(
     if (animState.enabled) {
       animState.enabled = false;
       if (animateBtn) animateBtn.classList.remove('active');
+      // Restore gizmos when leaving animation via Confirm
+      setPoseGizmosVisible(true);
     }
 
     // 1) Use the *intended* goal pose (not the currently rendered interpolated pose)
@@ -2569,18 +2574,6 @@ loader.load(
       setIKFromUrdf(ikRoot, robot);
       solver.solve();
       setUrdfFromIK(robot, ikRoot);
-
-      // ----- green vertical line from EE to floor -----
-      eeVis.getWorldPosition(_eePosTmp);
-      let len = _eePosTmp.z - (floorZ + bottomPad);
-      if (len <= 0) {
-        line.visible = false;
-      } else {
-        line.visible = true;
-        line.scale.y = len / baseLineLen;
-        const midZ = (floorZ + bottomPad) + 0.5 * len;
-        line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
-      }
 
       // ----- yellow drop lines from finger tips -----
       function updateFingerLine(link, lineMesh, localTipVec) {
