@@ -2300,7 +2300,8 @@ loader.load(
           updateGoal();
           sliderCtrls[dragState.axis]?.updateDisplay();
         }
-
+        
+        updateTaskCompletedAvailability();
         evt.preventDefault();
       });
 

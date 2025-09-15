@@ -131,18 +131,25 @@ def record(
             break
 
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
-        record_episode_crowd(
-            robot=robot,
-            dataset=dataset,
-            events=events,
-            episode_time_s=cfg.episode_time_s,
-            display_cameras=cfg.display_cameras,
-            policy=policy,
-            fps=cfg.fps,
-            single_task=cfg.single_task,
-            crowd_interface=crowd_interface,
-            episode_id = recorded_episodes
-        )
+        # Ensure immediate-execution only fires for submissions belonging to the
+        # *currently active* episode loop.
+        crowd_interface.set_active_episode(recorded_episodes)
+        try:
+            record_episode_crowd(
+                robot=robot,
+                dataset=dataset,
+                events=events,
+                episode_time_s=cfg.episode_time_s,
+                display_cameras=cfg.display_cameras,
+                policy=policy,
+                fps=cfg.fps,
+                single_task=cfg.single_task,
+                crowd_interface=crowd_interface,
+                episode_id = recorded_episodes
+            )
+        finally:
+            # Leave no active episode once the loop exits (including early exit).
+            crowd_interface.set_active_episode(None)
 
         # Execute a few seconds without recording to give time to manually reset the environment
         # Current code logic doesn't allow to teleoperate during this time.

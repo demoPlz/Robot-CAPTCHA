@@ -212,6 +212,7 @@ class CrowdInterface():
 
         self._exec_gate_by_session: dict[str, dict] = {}
 
+        self._active_episode_id = None
         self._start_obs_stream_worker()
 
     def begin_shutdown(self):
@@ -260,6 +261,11 @@ class CrowdInterface():
         # Clear the buffer
         self.completed_states_buffer_by_episode.clear()
         print("🧹 All buffered states flushed during shutdown")
+
+    def set_active_episode(self, episode_id):
+        """Mark which episode the outer robot loop is currently in (or None)."""
+        with self.state_lock:
+            self._active_episode_id = episode_id
 
     # --- Per-state VIEW snapshot cache (persist camera images to disk) ---
     def _persist_views_to_disk(self, episode_id: str, state_id: int, views_b64: dict[str, str]) -> dict[str, str]:
@@ -1078,6 +1084,31 @@ class CrowdInterface():
                 max_id = k
         return max_id
     
+    def _global_max_existing_state_id(self) -> int | None:
+        """
+        Return the newest state_id that EXISTS anywhere in memory:
+        - pending states,
+        - completed states (metadata),
+        - completed states buffered for chronological add (manifest).
+        """
+        max_id = None
+        # Pending
+        for ep_states in self.pending_states_by_episode.values():
+            if ep_states:
+                k = max(ep_states.keys())
+                max_id = k if max_id is None or k > max_id else max_id
+        # Completed metadata
+        for ep_done in self.completed_states_by_episode.values():
+            if ep_done:
+                k = max(ep_done.keys())
+                max_id = k if max_id is None or k > max_id else max_id
+        # Completed buffer (manifest entries awaiting add/save)
+        for ep_buf in self.completed_states_buffer_by_episode.values():
+            if ep_buf:
+                k = max(ep_buf.keys())
+                max_id = k if max_id is None or k > max_id else max_id
+        return max_id
+    
     # --- State Management ---
     def add_state(self, 
                   joint_positions: dict, 
@@ -1316,8 +1347,8 @@ class CrowdInterface():
                 self._exec_gate_by_session[session_id] = {
                     "state_id": latest_state_id,
                     "episode_id": serving_episode,
-                    # Snapshot of "newest pending state" at serve time; if this changes, gate fails.
-                    "served_max_state_id": self._global_max_pending_state_id(),
+                    # Snapshot of "newest existing state" at serve time; if this changes, gate fails.
+                    "served_max_state_id": self._global_max_existing_state_id(),
                 }
 
             
@@ -1465,12 +1496,14 @@ class CrowdInterface():
             # and no newer state has been added since serving (no TTL).
             if state_info["responses_received"] == 0 and state_info["served_during_stationary"] is True:
                 gate = self._exec_gate_by_session.get(session_id)
-                current_max = self._global_max_pending_state_id()
+                current_max = self._global_max_existing_state_id()
                 gate_ok = (
                     gate is not None
                     and gate.get("state_id") == state_id
                     and gate.get("episode_id") == found_episode
                     and current_max == gate.get("served_max_state_id")
+                    and current_max == state_id
+                    and self._active_episode_id == found_episode
                 )
                 if gate_ok:
                     self.latest_goal = response_data
