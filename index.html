@@ -1140,7 +1140,96 @@ loader.load(
 
     scene.add(robot);
 
-    showOnlySpecifiedLinks(robot, ['link_6', 'gripper_left', 'gripper_right']);
+    // Which links should be visible outside animation:
+    const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
+
+    // Start in minimal mode
+    showOnlySpecifiedLinks(robot, MINIMAL_LINKS);
+
+    // Helpers to flip visibility modes
+    function showAllRobotMeshes() {
+      robot.traverse(o => { if (o.isMesh) o.visible = true; });
+    }
+    function showMinimalRobotMeshes() {
+      showOnlySpecifiedLinks(robot, MINIMAL_LINKS);
+    }
+
+    // ---- Ghosting (semi-transparent) ------------------------------------------
+    const GHOST = {
+      opacity: 0.42,                 // tweak ghost strength here (0..1)
+      origMat: new WeakMap(),        // Mesh -> original material (or array)
+      ghostFor: new WeakMap()        // Material -> ghost clone (shared)
+    };
+
+    // Utility: is `obj` under any of the given roots?
+    function isUnderAny(obj, rootSet) {
+      let p = obj;
+      while (p) {
+        if (rootSet.has(p)) return true;
+        p = p.parent;
+      }
+      return false;
+    }
+
+    // Get (or build once) a ghost clone for a material
+    function getGhostMaterial(mat) {
+      let gm = GHOST.ghostFor.get(mat);
+      if (!gm) {
+        gm = mat.clone();
+        gm.transparent = true;
+        gm.opacity = GHOST.opacity;
+        gm.depthWrite = false;     // helps avoid z-fighting with opaque parts
+        // keep depthTest = true so ghosts still sort reasonably
+        if (gm.needsUpdate !== undefined) gm.needsUpdate = true;
+        GHOST.ghostFor.set(mat, gm);
+      }
+      return gm;
+    }
+
+    function applyGhostToMesh(mesh) {
+      if (!mesh.isMesh || GHOST.origMat.has(mesh)) return;
+      const orig = mesh.material;
+      GHOST.origMat.set(mesh, orig);
+      mesh.material = Array.isArray(orig) ? orig.map(getGhostMaterial) : getGhostMaterial(orig);
+    }
+
+    function restoreMeshMaterial(mesh) {
+      if (!mesh.isMesh) return;
+      const orig = GHOST.origMat.get(mesh);
+      if (orig) {
+        mesh.material = orig;
+        GHOST.origMat.delete(mesh);
+        if (mesh.material.needsUpdate !== undefined) mesh.material.needsUpdate = true;
+      }
+    }
+
+    /**
+     * Turn ghosting on/off for everything NOT in MINIMAL_LINKS.
+     * Assumes the robot is already visible. Call after showAllRobotMeshes()
+     * when enabling, and before showMinimalRobotMeshes() when disabling.
+     */
+    function setGhostMode(on) {
+      // Collect roots for the minimal (fully opaque) subtree(s)
+      const minimalRoots = new Set(
+        MINIMAL_LINKS.map(n => robot.getObjectByName(n)).filter(Boolean)
+      );
+
+      robot.traverse(o => {
+        if (!o.isMesh) return;
+        const keepOpaque = isUnderAny(o, minimalRoots);
+        if (on) {
+          if (keepOpaque) {
+            restoreMeshMaterial(o);
+          } else {
+            applyGhostToMesh(o);
+            o.visible = true; // ensure non-minimal parts are actually shown
+          }
+        } else {
+          // Turn ghosting off everywhere
+          restoreMeshMaterial(o);
+        }
+      });
+    }
 
     let robotVisible = false; // toggle visibility of the robot model
     robot.visible = false;     // hide arm until user moves a slider
@@ -2056,6 +2145,9 @@ loader.load(
         }
         // Hide pose gizmos while animating (rotation wheels + red dot)
         setPoseGizmosVisible(false);
+        showAllRobotMeshes();
+        setGhostMode(true);
+
       } else {
         animateBtn.classList.remove('active');
         // If stopped mid-way, snap directly to the current target
@@ -2064,6 +2156,8 @@ loader.load(
         goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
         // Restore pose gizmos when animation is off
         setPoseGizmosVisible(true);
+        setGhostMode(false);
+        showMinimalRobotMeshes();
       }
     }
 
@@ -2888,6 +2982,8 @@ loader.load(
         animState.enabled = false;
         if (animateBtn) animateBtn.classList.remove('active');
         setPoseGizmosVisible(true);
+        setGhostMode(false);
+        showMinimalRobotMeshes();
       }
 
       // NEW: If "Task Already Completed" is selected, POST that and exit early.
@@ -2990,6 +3086,8 @@ loader.load(
         animState.enabled = false;
         animateBtn.classList.remove('active');
         setPoseGizmosVisible(true);
+        setGhostMode(false);
+        showMinimalRobotMeshes();
       }
 
       // Pose → back to initial
