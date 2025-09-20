@@ -569,6 +569,117 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
   }
+
+  /* --- Gripper force widget -------------------------------------------------- */
+  .controls-container .force-widget{
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .controls-container .force-row{
+    display:flex; justify-content:space-between; align-items:center;
+    font: 600 13px / 1.2 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    color:#374151;
+  }
+  .controls-container .force-pill{
+    padding: 4px 8px; border-radius: 999px; font-weight: 700; color: #fff;
+  }
+  .controls-container .force-pill.free{     background:#9ca3af; }
+  .controls-container .force-pill.contact{  background:#f59e0b; }
+  .controls-container .force-pill.grasped{  background:#22c55e; }
+  .controls-container .force-bar{ height:8px; width:100%; background:#e5e7eb; border-radius:999px; overflow:hidden; }
+  .controls-container .force-bar .fill{
+    height:100%; width:0%;
+    background:linear-gradient(90deg, #60a5fa, #1d4ed8);
+    transition: width .25s ease;
+  }
+
+  /* optional: subtle pulse when grasped */
+  @keyframes forcePulse { 0%,100%{opacity:.95} 50%{opacity:.6} }
+
+  .controls-container .force-bar {
+    margin-top: 12px;  /* adjust to taste: 12–16px works nicely */
+  }
+
+  /* Reset All button (same rhythm as Animate / TAC) */
+  .controls-container .reset-all-button{
+    background:#22c55e;          /* green */
+    color:#ffffff;
+    width:100%;
+    font-size:15px;
+    font-weight:600;
+    padding:10px 16px;
+    border-radius:6px;
+    border:1px solid #16a34a;    /* darker green edge */
+    margin-bottom:12px;           /* same cadence as others */
+    cursor:pointer;               /* show hand cursor */
+  }
+
+  .controls-container .reset-all-button:hover{
+    transform:translateY(-1px);
+    box-shadow:0 2px 8px rgba(34,197,94,.30);
+  }
+
+  .controls-container .reset-all-button:active{
+    transform:translateY(0);
+    filter:brightness(.95);
+  }
+
+  /* Accessible focus ring to match the green theme */
+  .controls-container .reset-all-button:focus{
+    outline:none;
+    box-shadow:0 0 0 3px rgba(34,197,94,.25), 0 2px 8px rgba(0,0,0,.15);
+  }
+
+  /* Optional: disabled state if you ever disable it */
+  .controls-container .reset-all-button:disabled{
+    background:#e5e7eb;
+    color:#9ca3af;
+    border:1px dashed #d1d5db;
+    cursor:not-allowed;
+    box-shadow:none;
+    transform:none;
+  }
+
+  /* === In-view gripper toggle chip ========================================= */
+  .view-container .grip-chip{
+    position:absolute;
+    z-index:2;                 /* above canvas */
+    padding:6px 10px;
+    border-radius:999px;
+    font:600 12px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
+    color:#fff;
+    border:1px solid rgba(0,0,0,.15);
+    box-shadow:0 2px 8px rgba(0,0,0,.25);
+    transform:translate(-50%,-50%);
+    user-select:none;
+    pointer-events:auto;
+    cursor:pointer;            /* hand cursor on hover */
+    transition:transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+  }
+  .view-container .grip-chip:hover{
+    transform:translate(-50%,-50%) translateY(-1px);
+    box-shadow:0 4px 12px rgba(0,0,0,.30);
+  }
+  .view-container .grip-chip.open{
+    background:#10b981;        /* green when currently open */
+    border-color:#059669;
+  }
+  .view-container .grip-chip.close{
+    background:#ef4444;        /* red when currently closed */
+    border-color:#dc2626;
+  }
+  .view-container .grip-chip.disabled{
+    background:#e5e7eb;
+    color:#6b7280;
+    border:1px dashed #d1d5db;
+    cursor:not-allowed;
+    box-shadow:none;
+    transform:translate(-50%,-50%);
+  }
 </style>
 
 <!-- Polyfill so the import-map works everywhere -->
@@ -1125,6 +1236,7 @@ loader.load(
         /* geometry ---------------------------------------------------- */
         const mat       = new THREE.MeshBasicMaterial({ color: colour });
         const grp       = new THREE.Group();
+        grp.userData.mat = mat;
 
         const shaftGeo  = new THREE.CylinderGeometry(shaftRad, shaftRad,
                                                      shaftLen, 8, 1, true);
@@ -1170,9 +1282,150 @@ loader.load(
 
     const initialGripDir = gripDir;
 
-    const gui = new GUI({ container: controlsContainer });
-    gui.domElement.style.position = 'static'; // Remove absolute positioning
-    gui.domElement.style.width = '100%';
+    /* ================== Grip force -> UI + 3D feedback ================== */
+
+    // 1) Read value (Newtons). Missing? We’ll hide the widget.
+    let lastGripForceN = (typeof state.left_carriage_external_force === 'number')
+      ? state.left_carriage_external_force
+      : null;
+
+    // 2) Small history to estimate noise (persists across page refreshes)
+    const FORCE_HISTORY_KEY = 'wxai_force_hist_v1';
+    function loadForceHistory(){
+      try { return JSON.parse(localStorage.getItem(FORCE_HISTORY_KEY) || '[]'); } catch { return []; }
+    }
+    function saveForceHistory(arr){
+      try { localStorage.setItem(FORCE_HISTORY_KEY, JSON.stringify(arr.slice(-200))); } catch {}
+    }
+    function median(arr){
+      const a = arr.slice().sort((x,y)=>x-y), n=a.length;
+      if (!n) return 0;
+      return n%2 ? a[(n-1)/2] : 0.5*(a[n/2-1]+a[n/2]);
+    }
+    function mad(arr, med){
+      const dev = arr.map(x => Math.abs(x - med));
+      return median(dev);
+    }
+    function computeThresholds(history, fallbackContact=25, fallbackGrasp=60){
+      // Robust: median ± k*MAD; falls back if not enough samples
+      if (!history || history.length < 20) return { contact: fallbackContact, grasp: fallbackGrasp };
+      const med = median(history);
+      const sigma = mad(history, med) * 1.4826 || 1; // MAD → ~std
+      return {
+        contact: Math.max(med + 3*sigma, 5),       // at least 5 N
+        grasp:   Math.max(med + 6*sigma, med + 3*sigma + 5)
+      };
+    }
+    function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+
+    // 3) Minimal widget in the controls column
+    function createForceWidget(parent){
+      const box = document.createElement('div');
+      box.className = 'force-widget';
+      const row = document.createElement('div'); row.className = 'force-row';
+      const label = document.createElement('div'); label.textContent = 'Grip Pressure';
+      const pill = document.createElement('div'); pill.className = 'force-pill free'; pill.textContent = 'free';
+      row.append(label, pill);
+      const bar = document.createElement('div'); bar.className = 'force-bar';
+      const fill = document.createElement('div'); fill.className = 'fill';
+      bar.appendChild(fill);
+      const val = document.createElement('div'); val.style.font = '600 12px system-ui'; val.style.color = '#4b5563';
+
+      box.append(row, bar, val);
+      parent.insertBefore(box, parent.firstChild); // show above sliders
+
+      function setBadge(status){
+        pill.classList.remove('free','contact','grasped');
+        pill.classList.add(status);
+        pill.textContent = (status === 'grasped' ? 'grasped' : status);
+        box.style.animation = (status === 'grasped') ? 'forcePulse 1.5s ease-in-out infinite' : 'none';
+      }
+
+      return {
+        hide(){ box.style.display = 'none'; },
+        show(){ box.style.display = 'block'; },
+        update(forceN, status, thresholds){
+          const absF = Math.abs(forceN || 0);
+          setBadge(status);
+          // Fill target up to ~1.4× grasp threshold for headroom
+          const denom = Math.max(thresholds.grasp * 1.4, thresholds.contact || 1);
+          fill.style.width = `${clamp01(absF / denom) * 100}%`;
+          val.textContent = `${absF.toFixed(1)} N`;
+        }
+      };
+    }
+    const forceUI = createForceWidget(controlsContainer);
+
+    // 4) Classification + 3D adornment
+    function classifyGrip(forceN, dir, thresholds){
+      const absF = Math.abs(forceN || 0);
+      if (Number.isNaN(absF)) return 'free';
+      // If the gripper is commanded open, treat as 'free' unless it’s extremely high
+      if (dir > 0 && absF < Math.max(thresholds.grasp, 2 * thresholds.contact)) return 'free';
+      if (absF >= thresholds.grasp)   return 'grasped';
+      if (absF >= thresholds.contact) return 'contact';
+      return 'free';
+    }
+
+    function applyGripVisual(status, forceN, thresholds){
+      const absF = Math.abs(forceN || 0);
+      const span = Math.max(1e-6, thresholds.grasp - thresholds.contact);
+      const strength = clamp01((absF - thresholds.contact) / span);  // 0..1
+      const color = (status === 'grasped')
+        ? 0x22c55e      // green
+        : (status === 'contact' ? 0xf59e0b : (gripDir > 0 ? 0x00ff00 : 0xff0000));
+      const opacity = (status === 'free') ? 0.85 : 0.95;
+
+      gripArrows.forEach(a => {
+        if (!a) return;
+        // elongate a bit with force
+        const lenScale = 1 + 0.6 * strength;
+        a.scale.set(1, lenScale, 1);
+        // recolor
+        const mat = a.userData?.mat;
+        if (mat){
+          mat.color.setHex(color);
+          mat.opacity = opacity;
+          mat.needsUpdate = true;
+        }
+      });
+    }
+
+    // 5) Drive UI from this state (and record to history)
+    (function initGripForce(){
+      if (lastGripForceN == null){
+        forceUI.hide();
+        return;
+      }
+      const hist = loadForceHistory();
+      hist.push(Math.abs(lastGripForceN));
+      saveForceHistory(hist);
+      const thresholds = computeThresholds(hist);             // robust, auto-adapting
+      const status = classifyGrip(lastGripForceN, gripDir, thresholds);
+      forceUI.show();
+      forceUI.update(lastGripForceN, status, thresholds);
+      applyGripVisual(status, lastGripForceN, thresholds);
+
+      // Re-evaluate visuals if user toggles gripper state (Open/Close)
+      const _recalc = () => {
+        const newStatus = classifyGrip(lastGripForceN, gripDir, thresholds);
+        forceUI.update(lastGripForceN, newStatus, thresholds);
+        applyGripVisual(newStatus, lastGripForceN, thresholds);
+      };
+      // Hook into your existing gripper change handler:
+      const _origOnGripperChange = onGripperChange;
+      onGripperChange = function(newDir){
+        _origOnGripperChange(newDir);
+        _recalc();
+      };
+    })();
+
+    let gui = null;
+    if (devMode) {
+      gui = new GUI({ container: controlsContainer });
+      gui.domElement.style.position = 'static';
+      gui.domElement.style.width = '100%';
+    }
 
     let guiShield = null;  // invisible overlay to block pointer input on lil-gui
     
@@ -1234,6 +1487,8 @@ loader.load(
       } else {
         updateGripperButtonStates();
       }
+
+      updateGripChipsInteractivity();
     }
 
 
@@ -1339,6 +1594,8 @@ loader.load(
 
       // Lock/unlock sliders considering both gripper change and TAC selection
       recomputeLocks();
+      updateGripChipsAppearance();
+      updateGripChipsInteractivity();
     }
 
     
@@ -1965,6 +2222,103 @@ loader.load(
       resetAllWheelStates();
     }
 
+    /* === In-view gripper chip ================================================= */
+    const gripChips = []; // [{ view, el }]
+
+    function createGripChipForView(view){
+      const chip = document.createElement('div');
+      chip.className = 'grip-chip';
+      chip.setAttribute('role','button');
+      chip.setAttribute('aria-pressed','false');
+      chip.title = 'Click to toggle gripper';
+
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Respect gating: disabled when TAC is selected or pose != initial.
+        if (!slidersAtDefault() || taskCompletedSelected) return;
+        onGripperChange(gripDir > 0 ? -1 : +1);
+      });
+
+      view.container.appendChild(chip);
+      gripChips.push({ view, el: chip });
+
+      // initial paint
+      updateGripChipsAppearance();
+      updateGripChipsInteractivity();
+      // position handled in animate() by positionGripChips()
+    }
+
+    // Update label + color based on current state
+    function updateGripChipsAppearance(){
+      const isOpen = gripDir > 0;
+      gripChips.forEach(({ el }) => {
+        el.textContent = isOpen ? 'Open' : 'Close';   // shows current state
+        el.classList.toggle('open',  isOpen);
+        el.classList.toggle('close', !isOpen);
+        el.setAttribute('aria-pressed', String(isOpen));
+      });
+    }
+
+    // Enable/disable with same rules as your side buttons used to have
+    function updateGripChipsInteractivity(){
+      const disabled = taskCompletedSelected || !slidersAtDefault();
+      const hoverMsg = disabled
+        ? (taskCompletedSelected
+            ? 'Disabled: “Task Already Completed” is selected.'
+            : 'Disabled: pose changed. Reset to default to change gripper.')
+        : `Click to ${gripDir > 0 ? 'Close' : 'Open'} gripper.`;
+
+      gripChips.forEach(({ el }) => {
+        el.classList.toggle('disabled', disabled);
+        el.title = hoverMsg;
+      });
+    }
+
+    // Convert marker position to chip position in each view (screen space),
+    // offset outward beyond wheel radius (~0.105 m) with a small margin.
+    const _tmpV3a = new THREE.Vector3();
+    const _tmpV3b = new THREE.Vector3();
+    function positionGripChips(){
+      gripChips.forEach(({ view, el }) => {
+        const cam  = view.camera;
+        const rect = view.renderer.domElement.getBoundingClientRect();
+
+        // 1) base marker projection
+        _tmpV3a.copy(marker.position).project(cam);
+        // hide if behind camera or off frustum
+        if (_tmpV3a.z < -1 || _tmpV3a.z > 1){
+          el.style.display = 'none';
+          return;
+        }
+        el.style.display = 'block';
+
+        const baseX = (_tmpV3a.x * 0.5 + 0.5) * rect.width;
+        const baseY = (-_tmpV3a.y * 0.5 + 0.5) * rect.height;
+
+        // 2) compute pixels-per-meter along screen "up" direction at the marker
+        const upWorld = _tmpV3b.set(0,1,0).applyQuaternion(cam.quaternion).normalize();
+        const METER = 0.1; // sample baseline (10 cm)
+        const p0 = marker.position;
+        const p1 = _tmpV3b.copy(upWorld).multiplyScalar(METER).add(p0.clone());
+
+        const sp0 = p0.clone().project(cam);
+        const sp1 = p1.clone().project(cam);
+        const py0 = (-sp0.y * 0.5 + 0.5) * rect.height;
+        const py1 = (-sp1.y * 0.5 + 0.5) * rect.height;
+        const pxPerMeterY = Math.abs(py1 - py0) / METER || 0;
+
+        // 3) push the chip just outside the outer ring (~0.105 m) + ~0.03 m margin
+        const offsetPx = pxPerMeterY * (0.105 + 0.03); // ≈ 13.5 cm from center
+        const margin = 8;
+        const targetX = Math.round(baseX);
+        const targetY = Math.round(baseY - offsetPx);  // screen-up
+
+        el.style.left = `${Math.max(margin, Math.min(rect.width  - margin, targetX))}px`;
+        el.style.top  = `${Math.max(margin, Math.min(rect.height - margin, targetY))}px`;
+      });
+    }
+
+
     // World-space local axes from the marker’s orientation
     function localAxesWorld() {
       const q = marker.quaternion;
@@ -2315,6 +2669,7 @@ loader.load(
             params[axis] = clampToSlider(axis, v);   // invisible ABS barrier
           });
           updateGoal();
+          updateGripChipsInteractivity();
           updateSlidersDisplay(dragState.axes);
         } else if (dragState.mode === 'rotate' && dragState.axis) {
           // Angle delta on plane
@@ -2325,6 +2680,7 @@ loader.load(
 
           params[dragState.axis] = newVal;
           updateGoal();
+          updateGripChipsInteractivity();
           sliderCtrls[dragState.axis]?.updateDisplay();
         }
         
@@ -2426,6 +2782,7 @@ loader.load(
       availableViews.forEach((viewInfo, index) => {
         const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
         attachDragHandlersToView(view);
+        createGripChipForView(view);
         
         // Set up camera pose and projection
         updateViewCamera(view, viewInfo.pose);
@@ -2623,6 +2980,81 @@ loader.load(
     animateBtn.className = 'animate-button';
     animateBtn.onclick = toggleAnimation;
 
+    const resetAllBtn = document.createElement('button');
+    resetAllBtn.textContent = 'Reset all';
+    resetAllBtn.className = 'reset-all-button';
+
+    resetAllBtn.onclick = () => {
+      // Stop any animation and show gizmos again
+      if (animState.enabled) {
+        animState.enabled = false;
+        animateBtn.classList.remove('active');
+        setPoseGizmosVisible(true);
+      }
+
+      // Pose → back to initial
+      params.x = initialParams.x; params.y = initialParams.y; params.z = initialParams.z;
+      params.roll = initialParams.roll; params.pitch = initialParams.pitch; params.yaw = initialParams.yaw;
+      prevAngles.roll = params.roll; prevAngles.pitch = params.pitch; prevAngles.yaw = params.yaw;
+
+      targetPose.pos.copy(startPos);
+      targetPose.quat.copy(startQuat);
+
+      goal.setPosition(startPos.x, startPos.y, startPos.z);
+      goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
+
+      // Marker
+      marker.position.copy(startPos);
+      marker.quaternion.copy(startQuat);
+
+      // Robot joints → initial
+      if (initialJointPositions) {
+        for (const [name, val] of Object.entries(initialJointPositions)) {
+          robot.setJointValue(name, val);
+        }
+        robot.updateMatrixWorld(true);
+      }
+
+      // Gripper → initial (and visuals)
+      gripDir = initialGripDir;
+      drawGripArrows(gripDir);
+      updateGripArrowVisibility();
+      updateGripperButtonStates();
+
+      // Dev-only: refresh slider UI if present
+      if (devMode && gui) {
+        Object.keys(sliderCtrls).forEach(k => sliderCtrls[k]?.updateDisplay());
+        ['x','y','z','roll','pitch','yaw'].forEach(updateSliderDecor);
+      }
+
+      // Task Already Completed → clear selection (back to neutral)
+      if (taskCompletedSelected) {
+        taskCompletedSelected = false;
+        if (taskCompletedBtn) {
+          taskCompletedBtn.classList.remove('active');
+          taskCompletedBtn.classList.add('inactive');
+          taskCompletedBtn.setAttribute('aria-pressed', 'false');
+        }
+      }
+
+      // Locks / availability reflect "reset to default"
+      recordLastGood(poseAxes);
+      updateTaskCompletedAvailability();
+      recomputeLocks();
+
+      updateGripChipsAppearance();
+      updateGripChipsInteractivity();
+
+      // Force widget + arrow accent recolor
+      if (lastGripForceN != null) {
+        const hist = loadForceHistory();
+        const thresholds = computeThresholds(hist);
+        const status = classifyGrip(lastGripForceN, gripDir, thresholds);
+        forceUI.update(lastGripForceN, status, thresholds);
+        applyGripVisual(status, lastGripForceN, thresholds);
+      }
+    };
+
     const spanDefs = [
       ['x',     0.20],   // meters
       ['y',     0.20],
@@ -2637,72 +3069,77 @@ loader.load(
     const sliderCenters = {};  // axis -> center value
     const sliderRanges  = {};  // axis -> {min, max}
 
-    spanDefs.forEach(([key, span])=>{
-      if (!activeControls.includes(key)) return;
-      const center = params[key];                // original pose
-      const min = center - span;
-      const max = center + span;
-      const controller = gui.add(params, key, min, max); // keep track centered visually
-      controller.onChange(() => {
-        if (slidersLocked) {
-          // Revert the bound value and refresh the UI; do not push to IK
-          params[key] = lastGoodParams[key];
-          controller.updateDisplay();
-          return;
-        }
-        // Invisible barrier: clamp to ABS within the (center±span) track
-        // Also apply a small snap detent to the exact center.
-        const { min: smin, max: smax } = sliderRanges[key];
-        const abs = ABS_LIMITS[key];
-        const spanNow = smax - smin;
-        const detent = 0.02 * spanNow;
-        if (Math.abs(params[key] - sliderCenters[key]) <= detent) {
-          params[key] = sliderCenters[key];
-        } else {
-          params[key] = clampToSlider(key, params[key]); // (track ∩ ABS)
-        }
-        updateGoal();
-        updateTaskCompletedAvailability();
-        updateSliderDecor(key);
-      });
-
-      // Save references for drag interaction
-      sliderCtrls[key]   = controller;
-      sliderCenters[key] = center;
-      sliderRanges[key]  = { min, max };  // full centered track (not pre‑clamped to ABS)
-
-      // Add reset button to each slider
-      setTimeout(() => {
-        const controllerEl = controller.domElement;
-        if (controllerEl) {
-          const resetBtn = document.createElement('button');
-          resetBtn.textContent = '⟲';
-          resetBtn.className = 'reset-btn';
-          resetBtn.title = `Reset ${key} to default`;
-          resetBtn.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            // Reset EXACTLY to the original center, even if out-of-bounds.
-            // Slider track stays clamped; first user interaction will snap back into the valid range.
-            params[key] = sliderCenters[key];
+    if (devMode && gui) {
+      spanDefs.forEach(([key, span])=>{
+        if (!activeControls.includes(key)) return;
+        const center = params[key];                // original pose
+        const min = center - span;
+        const max = center + span;
+        const controller = gui.add(params, key, min, max); // keep track centered visually
+        controller.onChange(() => {
+          if (slidersLocked) {
+            // Revert the bound value and refresh the UI; do not push to IK
+            params[key] = lastGoodParams[key];
             controller.updateDisplay();
-            updateGoal();
-            updateTaskCompletedAvailability();
-            updateSliderDecor(key);
-          };
-          controllerEl.appendChild(resetBtn);
-        }
-        // Initial decoration
-        updateSliderDecor(key);
-      }, 0);
-    });
+            return;
+          }
+          // Invisible barrier: clamp to ABS within the (center±span) track
+          // Also apply a small snap detent to the exact center.
+          const { min: smin, max: smax } = sliderRanges[key];
+          const abs = ABS_LIMITS[key];
+          const spanNow = smax - smin;
+          const detent = 0.02 * spanNow;
+          if (Math.abs(params[key] - sliderCenters[key]) <= detent) {
+            params[key] = sliderCenters[key];
+          } else {
+            params[key] = clampToSlider(key, params[key]); // (track ∩ ABS)
+          }
+          updateGoal();
+          updateGripChipsInteractivity();
+          updateTaskCompletedAvailability();
+          updateSliderDecor(key);
+        });
+
+        // Save references for drag interaction
+        sliderCtrls[key]   = controller;
+        sliderCenters[key] = center;
+        sliderRanges[key]  = { min, max };  // full centered track (not pre‑clamped to ABS)
+
+        // Add reset button to each slider
+        setTimeout(() => {
+          const controllerEl = controller.domElement;
+          if (controllerEl) {
+            const resetBtn = document.createElement('button');
+            resetBtn.textContent = '⟲';
+            resetBtn.className = 'reset-btn';
+            resetBtn.title = `Reset ${key} to default`;
+            resetBtn.onclick = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              // Reset EXACTLY to the original center, even if out-of-bounds.
+              // Slider track stays clamped; first user interaction will snap back into the valid range.
+              params[key] = sliderCenters[key];
+              controller.updateDisplay();
+              updateGoal();
+              updateGripChipsInteractivity();
+              updateTaskCompletedAvailability();
+              updateSliderDecor(key);
+            };
+            controllerEl.appendChild(resetBtn);
+          }
+          // Initial decoration
+          updateSliderDecor(key);
+        }, 0);
+      });
+    }
 
     setSlidersLocked(false);
     // Ensure marker/goal reflect params (and any implicit clamping from controller init)
     updateGoal();
+    updateGripChipsInteractivity();
 
     // Add gripper buttons after sliders
-    if (gripperButtonsContainer) {
+    if (gripperButtonsContainer && devMode) {
       controlsContainer.appendChild(gripperButtonsContainer);
       updateGripperButtonStates(); // Set initial button states
     }
@@ -2711,6 +3148,8 @@ loader.load(
     updateGripperInteractivity();
 
     controlsContainer.appendChild(animateBtn);
+
+    controlsContainer.appendChild(resetAllBtn);
 
     // Add confirm button at the bottom
     controlsContainer.appendChild(confirmBtn);
@@ -2729,7 +3168,8 @@ loader.load(
     taskCompletedTitle.style.textAlign = 'left';
     taskCompletedTitle.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans"';
 
-    const taskCompletedBtn = document.createElement('button');
+    let taskCompletedBtn = null;
+    taskCompletedBtn = document.createElement('button');
     taskCompletedBtn.textContent = 'Task Already Completed';
     taskCompletedBtn.className = 'task-completed-button';
     taskCompletedBtn.setAttribute('aria-pressed', 'false');
@@ -2749,6 +3189,9 @@ loader.load(
       // When selected: block sliders + gripper; when deselected: re-evaluate
       recomputeLocks();
 
+      updateGripChipsAppearance();
+      updateGripChipsInteractivity();
+
       // Keep the title consistent with current state
       setTaskCompletedBlocked(taskCompletedBlocked);
 
@@ -2761,7 +3204,9 @@ loader.load(
 
     // Update layout based on number of active controls
     function updateControlsLayout() {
-      const numSliders = activeControls.filter(ctrl => ['x', 'y', 'z', 'roll', 'pitch', 'yaw'].includes(ctrl)).length;
+      const numSliders = (devMode && gui)
+      ? activeControls.filter(ctrl => ['x','y','z','roll','pitch','yaw'].includes(ctrl)).length
+      : 0;
       const hasGripper = activeControls.includes('gripper');
       const totalControls = numSliders + (hasGripper ? 1 : 0) + 1; // +1 for confirm button
 
@@ -2888,6 +3333,8 @@ loader.load(
           alignRingToNormal(rotationWheels.yaw.group, zW);
         }
       })();
+
+      positionGripChips();
 
       // ----- render all views -----
       views.forEach(view => {
