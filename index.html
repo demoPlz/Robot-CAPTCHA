@@ -644,42 +644,90 @@
     transform:none;
   }
 
-  /* === In-view gripper toggle chip ========================================= */
-  .view-container .grip-chip{
+  /* === In-view Grip HUD (glass) ============================================= */
+  .view-container .grip-hud{
     position:absolute;
-    z-index:2;                 /* above canvas */
-    padding:6px 10px;
-    border-radius:999px;
-    font:600 12px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
-    color:#fff;
-    border:1px solid rgba(0,0,0,.15);
-    box-shadow:0 2px 8px rgba(0,0,0,.25);
+    z-index:2;
     transform:translate(-50%,-50%);
+    /* force a vertical stack regardless of earlier rules */
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:center !important;
+    gap:6px !important;
+
+    padding:8px 10px;
+    border-radius:14px;
+    background: linear-gradient(135deg, rgba(255,255,255,.28), rgba(255,255,255,.12));
+    border: 1px solid rgba(255,255,255,.35);
+    box-shadow: 0 8px 24px rgba(0,0,0,.20);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    color:#111827;
     user-select:none;
     pointer-events:auto;
-    cursor:pointer;            /* hand cursor on hover */
-    transition:transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+    transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+    opacity:.92;
   }
-  .view-container .grip-chip:hover{
+
+  .view-container .grip-hud .badge,
+  .view-container .grip-hud .toggle{
+    display:block !important;   /* ensure each occupies its own row */
+  }
+
+  .view-container .grip-hud:hover{
     transform:translate(-50%,-50%) translateY(-1px);
-    box-shadow:0 4px 12px rgba(0,0,0,.30);
+    box-shadow: 0 14px 32px rgba(0,0,0,.26);
+    opacity:1;
   }
-  .view-container .grip-chip.open{
-    background:#10b981;        /* green when currently open */
+
+  .view-container .grip-hud .badge{
+    padding:4px 8px;
+    border-radius:999px;
+    font:700 11px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
+    color:#fff;
+    text-transform: none;
+    white-space:nowrap;
+  }
+  .view-container .grip-hud .badge.free    { background:#9ca3af; }  /* gray */
+  .view-container .grip-hud .badge.contact { background:#f59e0b; }  /* amber */
+  .view-container .grip-hud .badge.grasped { background:#22c55e; }  /* green */
+
+  .view-container .grip-hud .toggle{
+    appearance:none; border:0; border-radius:9px;
+    padding:6px 10px;
+    font:700 12px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
+    color:#fff; cursor:pointer;
+    transition: transform .12s ease, box-shadow .12s ease, filter .12s ease, background .12s ease;
+    box-shadow: 0 2px 10px rgba(0,0,0,.20);
+    border:1px solid transparent;
+  }
+  .view-container .grip-hud .toggle:hover{ transform: translateY(-1px); }
+  .view-container .grip-hud .toggle:active{ transform: translateY(0); }
+
+  /* Toggle tints (current commanded state) */
+  .view-container .grip-hud .toggle.open {
+    background:#10b981;              /* green */
     border-color:#059669;
   }
-  .view-container .grip-chip.close{
-    background:#ef4444;        /* red when currently closed */
+  .view-container .grip-hud .toggle.close{
+    background:#ef4444;              /* red */
     border-color:#dc2626;
   }
-  .view-container .grip-chip.disabled{
-    background:#e5e7eb;
+
+  /* Disabled gating */
+  .view-container .grip-hud.disabled{
+    opacity:.85;
+    cursor:not-allowed;
+    box-shadow: 0 6px 18px rgba(0,0,0,.14);
+  }
+  .view-container .grip-hud.disabled .toggle{
+    background: rgba(255,255,255,.55);
     color:#6b7280;
     border:1px dashed #d1d5db;
     cursor:not-allowed;
     box-shadow:none;
-    transform:translate(-50%,-50%);
   }
+
 </style>
 
 <!-- Polyfill so the import-map works everywhere -->
@@ -922,6 +970,9 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2);
 dir.position.set(2, 4, 2);
 scene.add(dir);
+
+
+const GRASP_THRESHOLD_N = 50; // N
 
 /* ---------- floor / workspace visual -------------------- */
 // light, neutral grid on the ground (y = 0)
@@ -1235,6 +1286,36 @@ loader.load(
     robot.visible = false;     // hide arm until user moves a slider
     let toggleRobotBtn = null;
 
+    // --- Visibility policy: show minimal meshes only after *pose* changes ---
+    let userHasAdjustedPose = false; // set to true on first translation/rotation change
+
+    function revealMinimalRobotFromPose() {
+      // Idempotent — call when the user actually adjusts the pose (drag/slider)
+      if (!userHasAdjustedPose) userHasAdjustedPose = true;
+      if (userHasAdjustedPose && !robotVisible) {
+        robotVisible = true;
+        robot.visible = true;
+        if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+      }
+    }
+
+    function hideRobotCompletely() {
+      robotVisible = false;
+      robot.visible = false;
+    }
+
+    function applyPostAnimationVisibility() {
+      // After animation stops, respect the "only after pose change" rule
+      if (userHasAdjustedPose) {
+        robotVisible = true;
+        robot.visible = true;
+        showMinimalRobotMeshes();
+      } else {
+        hideRobotCompletely();
+      }
+    }
+
+
     /* --- build IK tree from URDF (limits copied automatically) --- */
     const ikRoot = urdfRobotToIKRoot(robot);          // :contentReference[oaicite:0]{index=0}
 
@@ -1300,6 +1381,22 @@ loader.load(
     let gripArrows = [];                       // keeps currently-shown arrow meshes
     let gripDir    = state.gripper ?? 0;
 
+    let gripHUDs = []; // [{ view, el, badge, btn }]
+
+    let hudHiddenForAnimation = false;
+    function setHUDHiddenForAnimation(hidden) {
+      hudHiddenForAnimation = hidden;
+      gripHUDs.forEach(({ el }) => {
+        if (hidden) {
+          // Force it off even against CSS '!important'
+          el.style.setProperty('display', 'none', 'important');
+        } else {
+          // Let the stylesheet's 'display:flex !important' win again
+          el.style.removeProperty('display');
+        }
+      });
+    }
+
     function drawGripArrows(dir /* +1 open | –1 close */) {
       /* remove previous arrows */
       gripArrows.forEach(a => scene.remove(a));
@@ -1313,7 +1410,7 @@ loader.load(
       const effectiveDir = (dir !== undefined && dir !== null) ? dir : gripDir || 1; // default to open arrows if no direction available
       const colour   = effectiveDir > 0 ? 0x00ff00 : 0xff0000;
       const len      = 0.04, headLen = 0.02;
-      const shaftLen = len - headLen, shaftRad = 0.005, offset = 0.00;
+      const shaftLen = len - headLen, shaftRad = 0.005, offset = 0.03;
       const tipX     = 0.02;
 
       function addArrow(linkName, outward) {
@@ -1323,8 +1420,12 @@ loader.load(
         const originLocal = new THREE.Vector3(tipX, outward * baseDist, 0);
 
         /* geometry ---------------------------------------------------- */
-        const mat       = new THREE.MeshBasicMaterial({ color: colour });
+        const mat = new THREE.MeshBasicMaterial({
+          color: colour, transparent: true, opacity: 0.95,
+          depthTest: false, depthWrite: false
+        });
         const grp       = new THREE.Group();
+        grp.renderOrder = 1000;
         grp.userData.mat = mat;
 
         const shaftGeo  = new THREE.CylinderGeometry(shaftRad, shaftRad,
@@ -1378,33 +1479,49 @@ loader.load(
       ? state.left_carriage_external_force
       : null;
 
-    // 2) Small history to estimate noise (persists across page refreshes)
-    const FORCE_HISTORY_KEY = 'wxai_force_hist_v1';
-    function loadForceHistory(){
-      try { return JSON.parse(localStorage.getItem(FORCE_HISTORY_KEY) || '[]'); } catch { return []; }
+    function setGripForceN(newN){
+      if (typeof newN !== 'number' || !Number.isFinite(newN)) return;
+      lastGripForceN = newN;
+      updateGripHUDState();
     }
-    function saveForceHistory(arr){
-      try { localStorage.setItem(FORCE_HISTORY_KEY, JSON.stringify(arr.slice(-200))); } catch {}
+
+    let forcePollTimer = null;
+
+    function extractForceN(s){
+      // Prefer left carriage; fall back to other likely names if your backend differs
+      const candidates = [
+        s?.left_carriage_external_force,
+        s?.right_carriage_external_force,
+        s?.gripper_force_n,
+        s?.gripper_force,
+        s?.force_n,
+        s?.forceN
+      ];
+      return candidates.find(v => typeof v === 'number' && Number.isFinite(v));
     }
-    function median(arr){
-      const a = arr.slice().sort((x,y)=>x-y), n=a.length;
-      if (!n) return 0;
-      return n%2 ? a[(n-1)/2] : 0.5*(a[n/2-1]+a[n/2]);
+
+    function startForcePolling(intervalMs = 250){
+      stopForcePolling();
+      forcePollTimer = setInterval(async ()=>{
+        try{
+          const resp = await apiFetch(`/api/monitor/latest-state`, { headers: { 'Accept':'application/json' } });
+          if (!resp.ok) return;
+          const s = await resp.json();
+          const v = extractForceN(s);
+          if (typeof v === 'number') setGripForceN(v);
+        }catch(_){ /* ignore transient errors */ }
+      }, intervalMs);
     }
-    function mad(arr, med){
-      const dev = arr.map(x => Math.abs(x - med));
-      return median(dev);
+
+    function stopForcePolling(){
+      if (forcePollTimer){ clearInterval(forcePollTimer); forcePollTimer = null; }
     }
-    function computeThresholds(history, fallbackContact=25, fallbackGrasp=60){
-      // Robust: median ± k*MAD; falls back if not enough samples
-      if (!history || history.length < 20) return { contact: fallbackContact, grasp: fallbackGrasp };
-      const med = median(history);
-      const sigma = mad(history, med) * 1.4826 || 1; // MAD → ~std
-      return {
-        contact: Math.max(med + 3*sigma, 5),       // at least 5 N
-        grasp:   Math.max(med + 6*sigma, med + 3*sigma + 5)
-      };
-    }
+
+    window.addEventListener('visibilitychange', ()=>{
+      if (document.hidden) stopForcePolling(); else startForcePolling();
+    });
+    window.addEventListener('beforeunload', stopForcePolling);
+
     function clamp01(x){ return Math.max(0, Math.min(1, x)); }
 
     // 3) Minimal widget in the controls column
@@ -1433,11 +1550,11 @@ loader.load(
       return {
         hide(){ box.style.display = 'none'; },
         show(){ box.style.display = 'block'; },
-        update(forceN, status, thresholds){
+        update(forceN, status){
           const absF = Math.abs(forceN || 0);
           setBadge(status);
-          // Fill target up to ~1.4× grasp threshold for headroom
-          const denom = Math.max(thresholds.grasp * 1.4, thresholds.contact || 1);
+          // Scale bar to ~1.4× the single grasp threshold
+          const denom = Math.max(GRASP_THRESHOLD_N * 1.4, 1);
           fill.style.width = `${clamp01(absF / denom) * 100}%`;
           val.textContent = `${absF.toFixed(1)} N`;
         }
@@ -1445,35 +1562,28 @@ loader.load(
     }
     const forceUI = createForceWidget(controlsContainer);
 
+    if (!devMode && forceUI) forceUI.hide();
+
     // 4) Classification + 3D adornment
-    function classifyGrip(forceN, dir, thresholds){
-      const absF = Math.abs(forceN || 0);
-      if (Number.isNaN(absF)) return 'free';
-      // If the gripper is commanded open, treat as 'free' unless it’s extremely high
-      if (dir > 0 && absF < Math.max(thresholds.grasp, 2 * thresholds.contact)) return 'free';
-      if (absF >= thresholds.grasp)   return 'grasped';
-      if (absF >= thresholds.contact) return 'contact';
-      return 'free';
+    function classifyGrip(forceN){
+      const f = Math.abs(forceN ?? 0);
+      if (!Number.isFinite(f)) return 'free';
+      return (f > GRASP_THRESHOLD_N) ? 'grasped' : 'free';
     }
 
-    function applyGripVisual(status, forceN, thresholds){
-      const absF = Math.abs(forceN || 0);
-      const span = Math.max(1e-6, thresholds.grasp - thresholds.contact);
-      const strength = clamp01((absF - thresholds.contact) / span);  // 0..1
-      const color = (status === 'grasped')
-        ? 0x22c55e      // green
-        : (status === 'contact' ? 0xf59e0b : (gripDir > 0 ? 0x00ff00 : 0xff0000));
-      const opacity = (status === 'free') ? 0.85 : 0.95;
+    // Visuals: keep arrow color tied to commanded state (open/close).
+    function applyGripVisual(status, forceN){
+      const baseColor = (gripDir > 0 ? 0x00ff00 : 0xff0000); // open=green, close=red
+      const opacity   = 0.95;
+      const strength  = (status === 'grasped') ? 1 : 0;       // simple 0/1
 
       gripArrows.forEach(a => {
         if (!a) return;
-        // elongate a bit with force
-        const lenScale = 1 + 0.6 * strength;
+        const lenScale = 1 + 0.6 * strength;  // emphasize when grasped
         a.scale.set(1, lenScale, 1);
-        // recolor
         const mat = a.userData?.mat;
         if (mat){
-          mat.color.setHex(color);
+          mat.color.setHex(baseColor);
           mat.opacity = opacity;
           mat.needsUpdate = true;
         }
@@ -1482,30 +1592,12 @@ loader.load(
 
     // 5) Drive UI from this state (and record to history)
     (function initGripForce(){
-      if (lastGripForceN == null){
-        forceUI.hide();
-        return;
-      }
-      const hist = loadForceHistory();
-      hist.push(Math.abs(lastGripForceN));
-      saveForceHistory(hist);
-      const thresholds = computeThresholds(hist);             // robust, auto-adapting
-      const status = classifyGrip(lastGripForceN, gripDir, thresholds);
-      forceUI.show();
-      forceUI.update(lastGripForceN, status, thresholds);
-      applyGripVisual(status, lastGripForceN, thresholds);
+      updateGripHUDState();
 
-      // Re-evaluate visuals if user toggles gripper state (Open/Close)
-      const _recalc = () => {
-        const newStatus = classifyGrip(lastGripForceN, gripDir, thresholds);
-        forceUI.update(lastGripForceN, newStatus, thresholds);
-        applyGripVisual(newStatus, lastGripForceN, thresholds);
-      };
-      // Hook into your existing gripper change handler:
       const _origOnGripperChange = onGripperChange;
       onGripperChange = function(newDir){
         _origOnGripperChange(newDir);
-        _recalc();
+        updateGripHUDState();
       };
     })();
 
@@ -1577,7 +1669,7 @@ loader.load(
         updateGripperButtonStates();
       }
 
-      updateGripChipsInteractivity();
+      updateGripHUDInteractivity();
     }
 
 
@@ -1673,6 +1765,7 @@ loader.load(
     
     
     function onGripperChange(newDir) {
+      cancelAnimationIfRunning('gripper changed');
       gripDir = newDir;                         // Update the current gripper direction
       drawGripArrows(newDir);
       updateGripArrowVisibility();
@@ -1683,8 +1776,8 @@ loader.load(
 
       // Lock/unlock sliders considering both gripper change and TAC selection
       recomputeLocks();
-      updateGripChipsAppearance();
-      updateGripChipsInteractivity();
+      updateGripHUDState();
+      updateGripHUDInteractivity();
     }
 
     
@@ -2097,6 +2190,8 @@ loader.load(
       holdElapsed: 0
     };
 
+    let cancelAnimationIfRunning = () => {};
+
     // Reusable temporaries for interpolation (avoid per‑frame allocations)
     const _interpPos  = new THREE.Vector3();
     const _interpQuat = new THREE.Quaternion();
@@ -2148,6 +2243,8 @@ loader.load(
         showAllRobotMeshes();
         setGhostMode(true);
 
+        setHUDHiddenForAnimation(true);
+
       } else {
         animateBtn.classList.remove('active');
         // If stopped mid-way, snap directly to the current target
@@ -2157,7 +2254,9 @@ loader.load(
         // Restore pose gizmos when animation is off
         setPoseGizmosVisible(true);
         setGhostMode(false);
-        showMinimalRobotMeshes();
+        applyPostAnimationVisibility();
+
+        setHUDHiddenForAnimation(false);
       }
     }
 
@@ -2316,45 +2415,72 @@ loader.load(
       resetAllWheelStates();
     }
 
-    /* === In-view gripper chip ================================================= */
-    const gripChips = []; // [{ view, el }]
+    function createGripHUDForView(view){
+      const hud = document.createElement('div');
+      hud.className = 'grip-hud';
+      hud.setAttribute('role','group');
+      hud.setAttribute('aria-label','Grip control');
 
-    function createGripChipForView(view){
-      const chip = document.createElement('div');
-      chip.className = 'grip-chip';
-      chip.setAttribute('role','button');
-      chip.setAttribute('aria-pressed','false');
-      chip.title = 'Click to toggle gripper';
+      const badge = document.createElement('span');
+      badge.className = 'badge free';
+      badge.textContent = 'free';
+      badge.setAttribute('aria-live','polite');
 
-      chip.addEventListener('click', (e) => {
+      const btn = document.createElement('button');
+      btn.className = 'toggle';
+      btn.setAttribute('aria-pressed','false');
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Respect gating: disabled when TAC is selected or pose != initial.
-        if (!slidersAtDefault() || taskCompletedSelected) return;
+        if (hud.classList.contains('disabled')) return;
         onGripperChange(gripDir > 0 ? -1 : +1);
       });
 
-      view.container.appendChild(chip);
-      gripChips.push({ view, el: chip });
+      // No meter element anymore
+      hud.append(badge, btn);
 
-      // initial paint
-      updateGripChipsAppearance();
-      updateGripChipsInteractivity();
-      // position handled in animate() by positionGripChips()
+      view.container.appendChild(hud);
+      // No meterFill in the stored object
+      gripHUDs.push({ view, el: hud, badge, btn });
+
+      updateGripHUDState();
+      updateGripHUDInteractivity();
     }
 
-    // Update label + color based on current state
-    function updateGripChipsAppearance(){
+    /* Update texts/colors based on gripDir + force classification */
+    function updateGripHUDState(){
+      const status = classifyGrip(lastGripForceN);
+      const absF   = Math.abs(lastGripForceN || 0);
       const isOpen = gripDir > 0;
-      gripChips.forEach(({ el }) => {
-        el.textContent = isOpen ? 'Open' : 'Close';   // shows current state
-        el.classList.toggle('open',  isOpen);
-        el.classList.toggle('close', !isOpen);
-        el.setAttribute('aria-pressed', String(isOpen));
+
+      gripHUDs.forEach(({ el, badge, btn }) => {
+        badge.classList.remove('free','contact','grasped');
+        badge.classList.add(status);
+        badge.textContent = status;
+
+        btn.textContent = isOpen ? 'Open' : 'Close';
+        btn.classList.toggle('open',  isOpen);
+        btn.classList.toggle('close', !isOpen);
+        btn.setAttribute('aria-pressed', String(isOpen));
+
+        el.title  = (lastGripForceN != null) ? `${absF.toFixed(1)} N` : 'Grip force unavailable';
+        btn.title = `Click to ${isOpen ? 'Close' : 'Open'} gripper.`;
       });
+
+      applyGripVisual(status, lastGripForceN);
+
+      if (forceUI) {
+        if (devMode && lastGripForceN != null) {
+          forceUI.show();
+          forceUI.update(lastGripForceN, status);
+        } else {
+          forceUI.hide();
+        }
+      }
     }
 
-    // Enable/disable with same rules as your side buttons used to have
-    function updateGripChipsInteractivity(){
+
+    /* Enable/disable HUD with same gating rules as before */
+    function updateGripHUDInteractivity(){
       const disabled = taskCompletedSelected || !slidersAtDefault();
       const hoverMsg = disabled
         ? (taskCompletedSelected
@@ -2362,56 +2488,74 @@ loader.load(
             : 'Disabled: pose changed. Reset to default to change gripper.')
         : `Click to ${gripDir > 0 ? 'Close' : 'Open'} gripper.`;
 
-      gripChips.forEach(({ el }) => {
+      gripHUDs.forEach(({ el, btn }) => {
         el.classList.toggle('disabled', disabled);
-        el.title = hoverMsg;
+        btn.title = hoverMsg;
       });
     }
 
-    // Convert marker position to chip position in each view (screen space),
-    // offset outward beyond wheel radius (~0.105 m) with a small margin.
-    const _tmpV3a = new THREE.Vector3();
-    const _tmpV3b = new THREE.Vector3();
-    function positionGripChips(){
-      gripChips.forEach(({ view, el }) => {
+    const WHEEL_OUTER_RADIUS_M = 0.105; // keep in sync with makeWheel(... outerR=0.105 ...)
+    const HUD_MARGIN_PX = 20;           // constant 2D gap above the wheel (increase/decrease as desired)
+
+    const _hudTmpA = new THREE.Vector3();
+    const _hudTmpB = new THREE.Vector3();
+    const _hudTmpC = new THREE.Vector3(); // NEW: for screen-right computations
+    const _hudTmpD = new THREE.Vector3(); // NEW: for projected positions
+    function positionGripHUDs(){
+      gripHUDs.forEach(({ view, el }) => {
         const cam  = view.camera;
         const rect = view.renderer.domElement.getBoundingClientRect();
 
-        // 1) base marker projection
-        _tmpV3a.copy(marker.position).project(cam);
-        // hide if behind camera or off frustum
-        if (_tmpV3a.z < -1 || _tmpV3a.z > 1){
-          el.style.display = 'none';
+        if (hudHiddenForAnimation) {
+          el.style.setProperty('display', 'none', 'important');
           return;
+        } else {
+          el.style.removeProperty('display');
         }
+
+        // project marker center to screen
+        _hudTmpA.copy(marker.position).project(cam);
+        if (_hudTmpA.z < -1 || _hudTmpA.z > 1) { el.style.display = 'none'; return; }
         el.style.display = 'block';
 
-        const baseX = (_tmpV3a.x * 0.5 + 0.5) * rect.width;
-        const baseY = (-_tmpV3a.y * 0.5 + 0.5) * rect.height;
+        const baseX = (_hudTmpA.x * 0.5 + 0.5) * rect.width;
+        const baseY = (-_hudTmpA.y * 0.5 + 0.5) * rect.height;
 
-        // 2) compute pixels-per-meter along screen "up" direction at the marker
-        const upWorld = _tmpV3b.set(0,1,0).applyQuaternion(cam.quaternion).normalize();
-        const METER = 0.1; // sample baseline (10 cm)
+        // --- compute px-per-meter for up (Y) and right (X) on screen ---
+        // Up direction (screen-space up)
+        const upWorld = _hudTmpB.set(0,1,0).applyQuaternion(cam.quaternion).normalize();
+        const M = 0.1; // sample baseline (meters)
         const p0 = marker.position;
-        const p1 = _tmpV3b.copy(upWorld).multiplyScalar(METER).add(p0.clone());
 
-        const sp0 = p0.clone().project(cam);
-        const sp1 = p1.clone().project(cam);
-        const py0 = (-sp0.y * 0.5 + 0.5) * rect.height;
-        const py1 = (-sp1.y * 0.5 + 0.5) * rect.height;
-        const pxPerMeterY = Math.abs(py1 - py0) / METER || 0;
+        // Y scale: move a little along world "screen-up", project, measure Δpx
+        const p1y = _hudTmpD.copy(p0).addScaledVector(upWorld, M);
+        const sp1y = _hudTmpD.clone().project(cam);
+        const py1 = (-sp1y.y * 0.5 + 0.5) * rect.height;
+        const pxPerMeterY = Math.abs(py1 - baseY) / M || 0;
 
-        // 3) push the chip just outside the outer ring (~0.105 m) + ~0.03 m margin
-        const offsetPx = pxPerMeterY * (0.105 + 0.03); // ≈ 13.5 cm from center
-        const margin = 8;
-        const targetX = Math.round(baseX);
-        const targetY = Math.round(baseY - offsetPx);  // screen-up
+        // X scale: move a little along world "screen-right", project, measure Δpx
+        const rightWorld = _hudTmpC.set(1,0,0).applyQuaternion(cam.quaternion).normalize();
+        const p1x = _hudTmpD.copy(p0).addScaledVector(rightWorld, M);
+        const sp1x = _hudTmpD.clone().project(cam);
+        const px1  = (sp1x.x * 0.5 + 0.5) * rect.width;
+        const pxPerMeterX = Math.abs(px1 - baseX) / M || 0;
 
-        el.style.left = `${Math.max(margin, Math.min(rect.width  - margin, targetX))}px`;
-        el.style.top  = `${Math.max(margin, Math.min(rect.height - margin, targetY))}px`;
+        // wheel radius in pixels along each axis + a constant margin
+        const wheelPxRadiusY = pxPerMeterY * WHEEL_OUTER_RADIUS_M;
+        const wheelPxRadiusX = pxPerMeterX * WHEEL_OUTER_RADIUS_M;
+
+        const offsetPxY = wheelPxRadiusY + HUD_MARGIN_PX; // up
+        const offsetPxX = wheelPxRadiusX + HUD_MARGIN_PX; // right
+
+        // position with a small screen-edge clamp
+        const edge = 8;
+        const x = Math.round(baseX + offsetPxX);   // move right
+        const y = Math.round(baseY - offsetPxY);   // move up
+
+        el.style.left = `${Math.max(edge, Math.min(rect.width  - edge, x))}px`;
+        el.style.top  = `${Math.max(edge, Math.min(rect.height - edge, y))}px`;
       });
     }
-
 
     // World-space local axes from the marker’s orientation
     function localAxesWorld() {
@@ -2513,6 +2657,8 @@ loader.load(
     function slidersAtDefault(){ return getChangedAxes().length === 0; }
 
     function updateGoal() {
+      cancelAnimationIfRunning('pose changed');
+
       // 1) Absolute position from sliders/drag
       targetPose.pos.set(params.x, params.y, params.z);
 
@@ -2546,11 +2692,6 @@ loader.load(
       }
 
       // Existing reveal/locking UI
-      if (!robotVisible) {
-        robotVisible = true;
-        robot.visible = true;
-        if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
-      }
       if (!slidersLocked) recordLastGood();
       updateGripperInteractivity();
     }
@@ -2706,6 +2847,8 @@ loader.load(
         const hits = pickAll(evt);
         if (!hits.length) return;
 
+        cancelAnimationIfRunning('drag start');
+
         // Decide mode by topmost hit
         const top = hits[0];
         const hitAxis = top.object?.userData?.axis || null;
@@ -2762,8 +2905,9 @@ loader.load(
             const v = axis === 'x' ? hitPoint.x : axis === 'y' ? hitPoint.y : hitPoint.z;
             params[axis] = clampToSlider(axis, v);   // invisible ABS barrier
           });
+          revealMinimalRobotFromPose();
           updateGoal();
-          updateGripChipsInteractivity();
+          updateGripHUDInteractivity();
           updateSlidersDisplay(dragState.axes);
         } else if (dragState.mode === 'rotate' && dragState.axis) {
           // Angle delta on plane
@@ -2773,8 +2917,9 @@ loader.load(
           newVal = clampToSlider(dragState.axis, newVal);
 
           params[dragState.axis] = newVal;
+          revealMinimalRobotFromPose();
           updateGoal();
-          updateGripChipsInteractivity();
+          updateGripHUDInteractivity();
           sliderCtrls[dragState.axis]?.updateDisplay();
         }
         
@@ -2876,7 +3021,7 @@ loader.load(
       availableViews.forEach((viewInfo, index) => {
         const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
         attachDragHandlersToView(view);
-        createGripChipForView(view);
+        createGripHUDForView(view);
         
         // Set up camera pose and projection
         updateViewCamera(view, viewInfo.pose);
@@ -2983,7 +3128,7 @@ loader.load(
         if (animateBtn) animateBtn.classList.remove('active');
         setPoseGizmosVisible(true);
         setGhostMode(false);
-        showMinimalRobotMeshes();
+        applyPostAnimationVisibility();
       }
 
       // NEW: If "Task Already Completed" is selected, POST that and exit early.
@@ -3076,6 +3221,36 @@ loader.load(
     animateBtn.className = 'animate-button';
     animateBtn.onclick = toggleAnimation;
 
+    // --- cancel helper + global listeners ---------------------------------
+    cancelAnimationIfRunning = (reason = '') => {
+      if (!animState.enabled) return;
+
+      // Turn OFF animation (same as clicking "Animate" again to stop)
+      animState.enabled = false;
+      animateBtn.classList.remove('active');
+
+      // Snap the goal to the current target to avoid jumps
+      const { pos, quat } = getTargetPose();
+      goal.setPosition(pos.x, pos.y, pos.z);
+      goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
+
+      // Restore normal visuals
+      setPoseGizmosVisible(true);
+      setGhostMode(false);
+      applyPostAnimationVisibility();
+      setHUDHiddenForAnimation(false);
+
+      if (reason) console.log('⏹️ Animate cancelled:', reason);
+    };
+
+    // Stop animation if the user presses anywhere on the page
+    // (ignore clicks on the Animate button itself so it can toggle ON/OFF normally)
+    window.addEventListener('pointerdown', (e) => {
+      const t = e.target;
+      if (t === animateBtn || (animateBtn && animateBtn.contains && animateBtn.contains(t))) return;
+      cancelAnimationIfRunning('pointerdown anywhere');
+    }, { capture: true });
+
     const resetAllBtn = document.createElement('button');
     resetAllBtn.textContent = 'Reset all';
     resetAllBtn.className = 'reset-all-button';
@@ -3087,8 +3262,12 @@ loader.load(
         animateBtn.classList.remove('active');
         setPoseGizmosVisible(true);
         setGhostMode(false);
-        showMinimalRobotMeshes();
+        applyPostAnimationVisibility();
       }
+
+      // Reset policy state: back to "not revealed"
+      userHasAdjustedPose = false;
+      hideRobotCompletely();
 
       // Pose → back to initial
       params.x = initialParams.x; params.y = initialParams.y; params.z = initialParams.z;
@@ -3140,16 +3319,14 @@ loader.load(
       updateTaskCompletedAvailability();
       recomputeLocks();
 
-      updateGripChipsAppearance();
-      updateGripChipsInteractivity();
+      updateGripHUDState();
+      updateGripHUDInteractivity();
 
       // Force widget + arrow accent recolor
       if (lastGripForceN != null) {
-        const hist = loadForceHistory();
-        const thresholds = computeThresholds(hist);
-        const status = classifyGrip(lastGripForceN, gripDir, thresholds);
-        forceUI.update(lastGripForceN, status, thresholds);
-        applyGripVisual(status, lastGripForceN, thresholds);
+        const status = classifyGrip(lastGripForceN);
+        forceUI.update(lastGripForceN, status);
+        applyGripVisual(status, lastGripForceN);
       }
     };
 
@@ -3175,6 +3352,8 @@ loader.load(
         const max = center + span;
         const controller = gui.add(params, key, min, max); // keep track centered visually
         controller.onChange(() => {
+          cancelAnimationIfRunning('slider change');
+          revealMinimalRobotFromPose();
           if (slidersLocked) {
             // Revert the bound value and refresh the UI; do not push to IK
             params[key] = lastGoodParams[key];
@@ -3193,7 +3372,7 @@ loader.load(
             params[key] = clampToSlider(key, params[key]); // (track ∩ ABS)
           }
           updateGoal();
-          updateGripChipsInteractivity();
+          updateGripHUDInteractivity();
           updateTaskCompletedAvailability();
           updateSliderDecor(key);
         });
@@ -3219,7 +3398,7 @@ loader.load(
               params[key] = sliderCenters[key];
               controller.updateDisplay();
               updateGoal();
-              updateGripChipsInteractivity();
+              updateGripHUDInteractivity();
               updateTaskCompletedAvailability();
               updateSliderDecor(key);
             };
@@ -3234,7 +3413,7 @@ loader.load(
     setSlidersLocked(false);
     // Ensure marker/goal reflect params (and any implicit clamping from controller init)
     updateGoal();
-    updateGripChipsInteractivity();
+    updateGripHUDInteractivity();
 
     // Add gripper buttons after sliders
     if (gripperButtonsContainer && devMode) {
@@ -3287,8 +3466,8 @@ loader.load(
       // When selected: block sliders + gripper; when deselected: re-evaluate
       recomputeLocks();
 
-      updateGripChipsAppearance();
-      updateGripChipsInteractivity();
+      updateGripHUDState();
+      updateGripHUDInteractivity();
 
       // Keep the title consistent with current state
       setTaskCompletedBlocked(taskCompletedBlocked);
@@ -3432,7 +3611,7 @@ loader.load(
         }
       })();
 
-      positionGripChips();
+      positionGripHUDs();
 
       // ----- render all views -----
       views.forEach(view => {
