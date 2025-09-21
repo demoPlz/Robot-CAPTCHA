@@ -849,6 +849,90 @@
     transform:translateY(0);
   }
 
+  /* --- Full-bleed blue header inside the #viewport card --- */
+  #viewport .prompt-bar{
+    /* cancel the card's 20px padding on the top & sides */
+    margin: -20px -20px 0 -20px;
+    border-radius: 0; /* square corners */
+  }
+
+  /* --- Square corners (90°) across the UI --- */
+  #viewport,
+  #viewport .prompt-bar,
+  #viewport .content-container,
+  #viewport .controls-container,
+  #viewport .task-completed-container,
+  #statusOverlay .card,
+  #refreshCountdown,
+  #viewport .workbar,
+  #viewport .workbar .btn-compact,          /* Animate & Reset buttons */
+  #viewport .confirm-bar .confirm-button,    /* lower-right Confirm */
+  .controls-container .gripper-buttons button,
+  .controls-container .confirm-button,       /* (dev-mode confirm) */
+  .controls-container .tac-toggle,
+  .controls-container .task-completed-button,
+  .controls-container .animate-button,
+  .controls-container .reset-all-button,
+  .controls-container .force-widget,
+  .controls-container .force-pill,
+  .controls-container .lil-gui .controller input[type="range"],
+  .controls-container .lil-gui .controller input[type="range"]::-webkit-slider-thumb,
+  .controls-container .lil-gui .controller input[type="range"]::-moz-range-thumb {
+    border-radius: 0 !important;
+  }
+
+  /* === Force square corners everywhere you asked (place LAST in <style>) === */
+
+  /* Square the white card itself (all four corners) */
+  #viewport {
+    border-radius: 0 !important;
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  /* Square the compact workbar and its buttons (Animate / Reset) */
+  #viewport .workbar,
+  #viewport .workbar .btn-compact,
+  #viewport .workbar .btn-animate,
+  #viewport .workbar .btn-reset {
+    border-radius: 0 !important;
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  /* Square the lower-right Confirm button (and its bar) */
+  #viewport .confirm-bar,
+  #viewport .confirm-bar .confirm-button,
+  .controls-container .confirm-button {
+    border-radius: 0 !important;
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  /* Belt-and-suspenders: catch any other buttons in those bars */
+  #viewport .workbar button,
+  #viewport .confirm-bar button {
+    border-radius: 0 !important;
+  }
+
+  /* === Keep the gripper HUD rounded (unchanged) === */
+  .view-container .grip-hud {
+    border-radius: 14px !important;          /* as designed */
+  }
+  .view-container .grip-hud .toggle {
+    border-radius: 9px !important;
+  }
+  .view-container .grip-hud .badge {
+    border-radius: 999px !important;
+  }
+
+
 </style>
 
 <!-- Polyfill so the import-map works everywhere -->
