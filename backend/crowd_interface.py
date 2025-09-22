@@ -18,7 +18,6 @@ from flask_cors import CORS
 from flask import request, make_response
 from pathlib import Path
 from threading import Thread, Lock, Timer
-from collections import deque
 from math import cos, sin
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -194,17 +193,6 @@ class CrowdInterface():
 
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
-        H, W = 64, 64
-        pink = np.full((H, W, 3), 255, dtype=np.uint8)  # one-time NumPy buffer
-        blank = pink.tolist()                           # one-time JSON-serializable view
-        # Reuse the same object for all cameras (read-only downstream)
-        self._blank_views = {
-            "left":        blank,
-            "right":       blank,
-            "front":       blank,
-            "perspective": blank,
-        }
-        
         # Teardown fence
         self._shutting_down = False
         # Start the auto-labeling worker thread
@@ -564,7 +552,6 @@ class CrowdInterface():
                     
         except Exception as e:
             print(f"❌ Error in _process_auto_labeling: {e}")
-            import traceback
             traceback.print_exc()
     
     def set_events(self, events):
@@ -813,34 +800,6 @@ class CrowdInterface():
         self.cams = {}
 
 
-    def get_views(self) -> dict[str, list]:
-        """Return an RGB image dict from available webcams.
-        Uses grab() → retrieve() pattern for near-simultaneous multi-cam capture."""
-        if not hasattr(self, "cams"):
-            self.cams = {}
-
-        order = ("left", "right", "front", "perspective")
-        # 1) grab from all first (non-blocking dequeue)
-        for name in order:
-            if name in self.cams:
-                self.cams[name].grab()
-
-        # 2) retrieve, convert, downscale
-        views: dict[str, list] = {}
-        for name in order:
-            if name not in self.cams:
-                continue
-            frame = self._grab_frame(self.cams[name], size=(640, 480))
-            # Apply per-camera undistortion (if intrinsics provided)
-            maps = self._undistort_maps.get(name)
-            if frame is not None and maps is not None:
-                m1, m2 = maps
-                frame = cv2.remap(frame, m1, m2, interpolation=cv2.INTER_LINEAR)
-            if frame is not None:
-                views[name] = frame.tolist()
-        return views
-
-
     def _grab_frame(self, cap, size=(64, 64)) -> np.ndarray | None:
         # retrieve() after grab(); falls back to read() if needed
         ok, frame = cap.retrieve()
@@ -930,31 +889,7 @@ class CrowdInterface():
             if s is not None:
                 out[name] = s
         return out
-
-    def _get_views_np(self) -> dict[str, np.ndarray]:
-        """
-        Return raw NumPy frames (BGR, native size) without resize/undistort.
-        Use this in the high-rate control loop; convert on /api/get-state.
-        """
-        if not hasattr(self, "cams"):
-            self.cams = {}
-
-        order = ("left", "right", "front", "perspective")
-        # 1) grab from all first (non-blocking dequeue)
-        for name in order:
-            if name in self.cams:
-                self.cams[name].grab()
-
-        # 2) retrieve, convert, (optional) undistort
-        views: dict[str, np.ndarray] = {}
-        for name in order:
-            if name not in self.cams:
-                continue
-            frame = self._grab_frame_raw(self.cams[name])
-            if frame is not None:
-                views[name] = frame
-        return views
-
+    
     def _state_to_json(self, state: dict) -> dict:
         """
         Build the JSON payload for the labeling frontend:
@@ -1373,57 +1308,6 @@ class CrowdInterface():
                 status = "stationary"
             print(f"🎯 Serving state {latest_state_id} from episode {serving_episode} to session {session_id} ({status})")
             return state
-    
-    def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, submitted_gripper: int = None, original_gripper: int = None, threshold: float = 0.01) -> bool:
-        """
-        Check if the submitted joint positions or gripper action are meaningfully different from the original state.
-        Now allows small movements and no-change actions as they can be meaningful (e.g., "stay in place", "fine adjustments").
-        
-        Args:
-            submitted_joints: Joint positions from user submission
-            original_joints: Original joint positions from the state
-            submitted_gripper: Gripper action from user submission (optional)
-            original_gripper: Original gripper action from the state (optional)
-            threshold: Minimum difference threshold (in radians/meters) - now only used for logging
-        
-        Returns:
-            True (always accepts submissions now - small/no movements are valid actions)
-        """
-        # Check joint positions for logging purposes
-        total_diff = 0.0
-        joint_count = 0
-        
-        for joint_name in JOINT_NAMES[:-1]:  # Exclude gripper for now
-            if joint_name in submitted_joints and joint_name in original_joints:
-                # Get the first element if it's a list/array, otherwise use directly
-                submitted_val = submitted_joints[joint_name]
-                if isinstance(submitted_val, (list, tuple)):
-                    submitted_val = submitted_val[0]
-                
-                original_val = original_joints[joint_name]
-                if isinstance(original_val, (list, tuple)):
-                    original_val = original_val[0]
-                
-                diff = abs(float(submitted_val) - float(original_val))
-                total_diff += diff
-                joint_count += 1
-        
-        # Check if gripper action has changed (for logging)
-        gripper_changed = False
-        if submitted_gripper is not None and original_gripper is not None:
-            # Convert to standardized values (1 for open, -1 for close)
-            submitted_gripper_norm = 1 if submitted_gripper > 0 else -1
-            original_gripper_norm = 1 if original_gripper > 0 else -1
-            gripper_changed = submitted_gripper_norm != original_gripper_norm
-        
-        avg_diff = total_diff / max(joint_count, 1)
-        movement_type = "no_change" if avg_diff < 0.001 else ("small_movement" if avg_diff < threshold else "large_movement")
-        
-        print(f"📏 Submission accepted: joints_diff={avg_diff:.4f}, gripper_changed={gripper_changed}, movement_type={movement_type}")
-        
-        # Always return True - all submissions are now considered meaningful
-        # Small movements and no-change actions are valid responses in crowdsourcing
-        return True
 
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
         """
@@ -1465,10 +1349,6 @@ class CrowdInterface():
             original_joints = state_info["state"].get("joint_positions", {})
             original_gripper = state_info["state"].get("gripper", 0)
 
-            # Keep the existing meaningfulness logging as-is
-            if not response_data.get("task_already_completed", False):
-                self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
-            
             # NEW: If the frontend says the pose sliders were reset to their initial values,
             # treat this as *no pose movement* regardless of tiny IK/joint discrepancies.
             pose_reset_to_default = bool(response_data.get("pose_reset_to_default", False))
@@ -1652,12 +1532,6 @@ class CrowdInterface():
             }
     
     # --- Goal Management ---
-    def submit_goal(self, goal_data: dict):
-        """Submit a new goal from the frontend - goal setting now handled in record_response"""
-        # Goal setting logic has been moved to record_response method
-        # This method is kept for API compatibility but does nothing
-        pass
-    
     def get_latest_goal(self) -> dict | None:
         """Get and clear the latest goal (for robot loop to consume)"""
         goal = self.latest_goal
@@ -1935,36 +1809,15 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
          allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID"],
          methods=["GET", "POST", "OPTIONS"])
     
-    # Add ngrok-specific headers
-    @app.after_request
-    def after_request(response):
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,ngrok-skip-browser-warning,X-Session-ID'
-        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
-        return response
-    
-    # Handle preflight OPTIONS requests
-    @app.before_request
-    def handle_preflight():
-        if request.method == "OPTIONS":
-            response = make_response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add('Access-Control-Allow-Headers', "Content-Type,ngrok-skip-browser-warning,X-Session-ID")
-            response.headers.add('Access-Control-Allow-Methods', "GET,POST,OPTIONS")
-            return response
-    
     @app.route("/api/get-state")
     def get_state():
         if crowd_interface._shutting_down:
             return jsonify({}), 200
-        current_time = time.time()
         
         # Generate or retrieve session ID from request headers or IP
         session_id = request.headers.get('X-Session-ID', request.remote_addr)
         
         state = crowd_interface.get_latest_state(session_id)
-        # print(f"🔍 Flask route /api/get-state called at {current_time}")
-        # print(f"🔍 Pending states: {len(crowd_interface.pending_states)}")
         payload = crowd_interface._state_to_json(state)
         
         # Add hardcoded prompt text
@@ -1992,8 +1845,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         
         # Generate or retrieve session ID from request headers or IP
         session_id = request.headers.get('X-Session-ID', request.remote_addr)
-        
-        crowd_interface.submit_goal(data)
         
         # Record this as a response to the correct state for this session
         # The frontend now includes state_id in the request data
