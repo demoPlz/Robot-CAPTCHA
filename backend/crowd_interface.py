@@ -213,6 +213,12 @@ class CrowdInterface():
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
 
+        # segmentation worker
+        self._seg_queue = queue.Queue()
+        self._seg_worker_thread = None
+        self._seg_worker_running = False
+        self._start_segmentation_worker()
+
         self._exec_gate_by_session: dict[str, dict] = {}
 
         self._active_episode_id = None
@@ -260,7 +266,7 @@ class CrowdInterface():
 
         # segmentation tunables
         self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "10"))     # px
-        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "25.0"))  # 0..255
+        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "55.0"))  # 0..255
 
         # --- NEW: "flat gray" guard (RGB in [min,max] and channels nearly equal) ---
         self._seg_gray_patch_radius = int(os.getenv("SEG_GRAY_PATCH_RADIUS", str(self._seg_dark_patch_radius)))
@@ -279,11 +285,37 @@ class CrowdInterface():
             "gripper_force",
         )
 
+        # --- Multi-seed SAM2 prompting around gripper center ---
+        self._seg_use_multi_seed   = bool(int(os.getenv("SEG_USE_MULTI_SEED", "0")))
+        self._seg_seed_radius_px   = int(os.getenv("SEG_SEED_RADIUS_PX", "10"))   # base ring spacing, px
+        self._seg_seed_rings       = int(os.getenv("SEG_SEED_RINGS", "1"))        # number of inner positive rings
+        self._seg_seed_per_ring    = int(os.getenv("SEG_SEED_PER_RING", "8"))     # samples per ring
+        self._seg_min_valid_seeds  = int(os.getenv("SEG_MIN_VALID_SEEDS", "0"))   # fallback to center if fewer
+
+        # Optional negatives (one outer ring of 0-label clicks)
+        self._seg_use_neg_ring     = bool(int(os.getenv("SEG_USE_NEG_RING", "0")))
+        self._seg_neg_ring_scale   = float(os.getenv("SEG_NEG_RING_SCALE", "2.5"))  # outer ring radius multiplier vs base
+
+        # Optional post-processing
+        self._seg_mask_close_ksize = int(os.getenv("SEG_MASK_CLOSE_KSIZE", "0"))   # 0 to disable; else odd >=3
+
+        # Multi-seed behavior for occlusion cases
+        self._seg_center_negative  = bool(int(os.getenv("SEG_CENTER_NEGATIVE", "1")))  # center as NEG if dark/gray
+        self._seg_ring_filter_mode = os.getenv("SEG_RING_FILTER_MODE", "loose")        # off | loose | strict
+        self._seg_multimask        = bool(int(os.getenv("SEG_MULTIMASK", "1")))        # try multiple masks
+
+        # Use a larger minimum ring radius so we click outside the gripper
+        self._seg_seed_min_radius_px = int(os.getenv("SEG_SEED_MIN_RADIUS_PX", "12"))  # >= gripper radius in px
+
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
         self._shutting_down = True
         try:
             self._stop_obs_stream_worker()
+        except Exception:
+            pass
+        try:
+            self._stop_segmentation_worker()
         except Exception:
             pass
         # Flush any remaining buffered states before shutdown
@@ -629,6 +661,80 @@ class CrowdInterface():
         except Exception as e:
             print(f"❌ Error in _process_auto_labeling: {e}")
             traceback.print_exc()
+    
+    def _start_segmentation_worker(self):
+        """Start the dedicated segmentation worker thread"""
+        if self._seg_worker_thread is not None and self._seg_worker_thread.is_alive():
+            return
+        self._seg_worker_running = True
+        self._seg_worker_thread = Thread(target=self._segmentation_worker, daemon=True)
+        self._seg_worker_thread.start()
+        print("🧵 Started segmentation worker")
+
+    def _stop_segmentation_worker(self):
+        """Stop the segmentation worker thread (idempotent)"""
+        t = getattr(self, "_seg_worker_thread", None)
+        if not t:
+            return
+        self._seg_worker_running = False
+        try: 
+            self._seg_queue.put_nowait(None)
+        except queue.Full: 
+            pass
+        if t.is_alive():
+            t.join(timeout=2.0)
+        self._seg_worker_thread = None
+        try:
+            with self._seg_queue.mutex:
+                self._seg_queue.queue.clear()
+        except Exception:
+            pass
+        print("🛑 Stopped segmentation worker")
+
+    def _enqueue_segmentation_job(self, episode_id, state_id, view_paths, joints):
+        """Enqueue a segmentation job for background processing"""
+        try:
+            self._seg_queue.put_nowait((episode_id, state_id, view_paths, joints))
+            print(f"🗂️ Queued segmentation job ep={episode_id} sid={state_id}")
+        except queue.Full:
+            print(f"⚠️ Segmentation queue full; skipping ep={episode_id} sid={state_id}")
+
+    def _segmentation_worker(self):
+        """Dedicated worker thread that processes segmentation tasks from the queue"""
+        while self._seg_worker_running and not self._shutting_down:
+            try:
+                item = self._seg_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            episode_id_local, state_id_local, view_paths_local, joints_local = item
+            try:
+                # heavy work with NO state_lock
+                seg_paths = self._segment_views_for_state(
+                    episode_id_local, state_id_local, view_paths_local, joints_local
+                )
+            except Exception as e:
+                print(f"⚠️ segmentation failed for state {state_id_local}: {e}")
+                seg_paths = {}
+
+            # write results atomically
+            with self.state_lock:
+                ep_states = self.pending_states_by_episode.get(episode_id_local, {})
+                info = ep_states.get(state_id_local)
+                if info is not None:
+                    info["segmentation_paths"] = seg_paths
+                    info["segmentation_ready"] = True
+                    self._segmentation_paths_by_episode.setdefault(episode_id_local, {})
+                    self._segmentation_paths_by_episode[episode_id_local][state_id_local] = seg_paths
+                    print(f"✅ segmentation ready for important state {state_id_local} in episode {episode_id_local}")
+                else:
+                    # state may have completed/been removed while we were segmenting
+                    print(f"ℹ️ segmentation finished but state {state_id_local} is no longer pending")
+            try:
+                self._seg_queue.task_done()
+            except Exception:
+                pass
     
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
@@ -1226,79 +1332,49 @@ class CrowdInterface():
         print(f"🟢 State {state_id} added to episode {episode_id}. Pending: {len(self.pending_states_by_episode.get(episode_id, {}))}")
 
     def set_last_state_to_important(self):
-        """Mark the most recent state as important (across all episodes)"""
+        """Mark the most recent state as important (across all episodes)."""
         with self.state_lock:
-            # Find the most recent state across all episodes
             latest_state_id = None
             latest_episode_id = None
-            latest_timestamp = 0
-            
+            latest_timestamp = -1.0
             for episode_id, episode_states in self.pending_states_by_episode.items():
                 if not episode_states:
                     continue
-                    
-                # Find the most recent state in this episode
-                for state_id, state_info in episode_states.items():
-                    if state_info["timestamp"] > latest_timestamp:
-                        latest_timestamp = state_info["timestamp"]
-                        latest_state_id = state_id
+                for sid, sinfo in episode_states.items():
+                    ts = sinfo.get("timestamp", 0.0)
+                    if ts > latest_timestamp:
+                        latest_timestamp = ts
+                        latest_state_id = sid
                         latest_episode_id = episode_id
-            
-            if latest_state_id is not None and latest_episode_id is not None:
-                # Mark the most recent state as important
-                self.pending_states_by_episode[latest_episode_id][latest_state_id]['important'] = True
-                print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
-                
-                # --- NEW: compute VIEWS-only segmentation BEFORE serving this state ---
-                # mark as not ready to prevent get_latest_state from serving it
-                self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_ready"] = False
 
-                # ---- NEW: gate segmentation on "grasped" status ----
-                st_obj = self.pending_states_by_episode[latest_episode_id][latest_state_id]["state"]
-                if not self._gripper_is_grasped(st_obj):
-                    # Skip segmentation entirely (no masks), but mark ready so we don't block serving.
-                    self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_paths"] = {}
-                    self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_ready"] = True
-                    force_val = self._extract_grip_force_N(st_obj)
-                    print(f"⛔️ Skipping segmentation for important state {latest_state_id} "
-                          f"(episode {latest_episode_id}) — gripper not grasped "
-                          f"(force={force_val!r}, thresh={self._grasp_force_thresh_N} N)")
-                    return
-                
-                # Trigger auto-labeling for states in the same episode
-                self.auto_label_previous_states(latest_state_id)
+            if latest_state_id is None or latest_episode_id is None:
+                print("⚠️  No pending states to mark as important")
+                return
 
-                # Snapshot what we need for segmentation, then release the lock
-                episode_id_local = latest_episode_id
-                state_id_local = latest_state_id
-                view_paths_local = dict(self.pending_states_by_episode[latest_episode_id][latest_state_id].get("view_paths", {}))
-                joints_local = dict(self.pending_states_by_episode[latest_episode_id][latest_state_id]["state"].get("joint_positions", {}))
-        # unlock before heavy work
-        # (close the with self.state_lock: block here)
-        # -------------------------------------------------------------
-        # IMPORTANT: this 'with' ends here, then we do segmentation, then re-acquire to store
-        # -------------------------------------------------------------
-        try:
-            seg_paths = self._segment_views_for_state(
-                episode_id_local, state_id_local, view_paths_local, joints_local
-            )
-        except Exception as e:
-            print(f"⚠️ segmentation failed for state {state_id_local}: {e}")
-            seg_paths = {}
+            info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
+            info["important"] = True
+            info["segmentation_ready"] = False
+            print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
 
-        # Write results atomically
-        with self.state_lock:
-            ep_states = self.pending_states_by_episode.get(episode_id_local, {})
-            info = ep_states.get(state_id_local)
-            if info is not None:
-                info["segmentation_paths"] = seg_paths
+            # always queue auto-labeling
+            self.auto_label_previous_states(latest_state_id)
+
+            st_obj = info["state"]
+            if not self._gripper_is_grasped(st_obj):
+                info["segmentation_paths"] = {}
                 info["segmentation_ready"] = True
-                # also mirror into global book for future serving
-                self._segmentation_paths_by_episode.setdefault(episode_id_local, {})
-                self._segmentation_paths_by_episode[episode_id_local][state_id_local] = seg_paths
-                print(f"✅ segmentation ready for important state {state_id_local} in episode {episode_id_local}")
-            else:
-                print("⚠️  No pending states found to mark as important")
+                fv = self._extract_grip_force_N(st_obj)
+                print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) — not grasped (force={fv!r})")
+                return
+
+            # snapshot inputs for background worker
+            episode_id_local = latest_episode_id
+            state_id_local = latest_state_id
+            view_paths_local = dict(info.get("view_paths", {}))
+            joints_local = dict(info["state"].get("joint_positions", {}))
+
+        # enqueue heavy work after releasing the lock
+        self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
 
     def clear_episode_data(self, episode_id: str):
         """Clear all episode-related data for a specific episode (used when rerecording)"""
@@ -1408,26 +1484,21 @@ class CrowdInterface():
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
             
-            # --- NEW: do not serve important states until segmentation is ready ---
+            # Prefer to avoid unsegmented important states, but don't starve the loop.
             if state_info.get("important", False) and not state_info.get("segmentation_ready", False):
-                # Try to find another candidate that is either not important or already segmented.
-                best_sid = None
-                best_ep = None
-                best_ts = -1.0
+                best_sid = None; best_ep = None; best_ts = -1.0
                 for ep_id, ep_states in self.pending_states_by_episode.items():
                     for sid, si in ep_states.items():
                         if si.get("important", False) and not si.get("segmentation_ready", False):
-                            continue  # skip unready important states
+                            continue  # prefer others first
                         ts = si.get("timestamp", 0.0)
                         if ts > best_ts:
                             best_ts, best_sid, best_ep, best_si = ts, sid, ep_id, si
-                if best_sid is None:
-                    # Nothing else to serve right now
-                    return {}
-                # switch to this best candidate
-                state_info = best_si
-                latest_state_id = best_sid
-                episode_states = self.pending_states_by_episode[best_ep]
+                if best_sid is not None:
+                    state_info = best_si
+                    latest_state_id = best_sid
+                    episode_states = self.pending_states_by_episode[best_ep]
+                # else: keep the original important state even though segmentation is pending
             
             # Mark state as served
             if state_info["served_during_stationary"] is None:
@@ -1454,6 +1525,9 @@ class CrowdInterface():
             state = state_info["state"].copy()
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
+            # expose pending flag so UI can show "segmenting..." without blocking
+            state["segmentation_pending"] = bool(state_info.get("important", False)
+                                                 and not state_info.get("segmentation_ready", False))
             # Attach view_paths so serializer can serve the correct snapshot for this state
             vp = state_info.get("view_paths")
             if vp:
@@ -2163,6 +2237,8 @@ class CrowdInterface():
         True if each channel is within [gray_min, gray_max] and
         max(R,G,B)-min(R,G,B) <= gray_delta (≈achromatic/neutral gray).
         """
+        if self._seg_gray_delta <= 0 or self._seg_gray_min >= self._seg_gray_max:
+            return False
         r, g, b = mean_rgb
         if not (self._seg_gray_min <= r <= self._seg_gray_max): return False
         if not (self._seg_gray_min <= g <= self._seg_gray_max): return False
@@ -2232,6 +2308,125 @@ class CrowdInterface():
         except Exception as e:
             print(f"❌ SAM2 inference failed: {e}")
             return None
+
+    def _generate_ring_points(self, u: int, v: int, W: int, H: int,
+                              base_radius_px: int, rings: int, per_ring: int) -> list[tuple[int,int]]:
+        """Return [(u,v)] (center) plus concentric rings of integer pixel points within image bounds."""
+        pts = [(u, v)]
+        for k in range(1, rings + 1):
+            r = k * base_radius_px
+            for j in range(per_ring):
+                theta = 2.0 * math.pi * (j / per_ring)
+                uu = int(round(u + r * math.cos(theta)))
+                vv = int(round(v + r * math.sin(theta)))
+                if 0 <= uu < W and 0 <= vv < H:
+                    pts.append((uu, vv))
+        return pts
+
+    def _filter_seed_points(self, img_rgb: np.ndarray,
+                            pts: list[tuple[int,int]],
+                            mode: str = "strict") -> list[tuple[int,int]]:
+        """
+        mode = 'off'   : keep all in-bounds points
+        mode = 'loose' : only reject *very* dark seeds; ignore flat-gray
+        mode = 'strict': current behavior (dark + flat-gray guards)
+        """
+        if mode not in ("off", "loose", "strict"):
+            mode = "strict"
+        out = []
+        for uu, vv in pts:
+            if mode == "off":
+                out.append((uu, vv))
+                continue
+            mean_dark = self._patch_dark_mean(img_rgb, uu, vv, self._seg_dark_patch_radius)
+            if mode == "loose":
+                if mean_dark < 0.5 * self._seg_dark_mean_thresh:  # only reject *very* dark
+                    continue
+                out.append((uu, vv))
+                continue
+            # strict
+            if mean_dark < self._seg_dark_mean_thresh:
+                continue
+            mean_rgb = self._patch_rgb_mean(img_rgb, uu, vv, self._seg_gray_patch_radius)
+            if self._is_flat_gray_seed(mean_rgb):
+                continue
+            out.append((uu, vv))
+        return out
+
+    def _sam2_segment_points(self, img_rgb: np.ndarray,
+                             pos_points: list[tuple[int,int]],
+                             neg_points: list[tuple[int,int]] | None = None,
+                             multimask_output: bool = True) -> np.ndarray | None:
+        """
+        One SAM2 forward with multi-point prompts.
+        pos_points -> label 1, neg_points -> label 0.
+        Returns a binary mask (H,W) or None.
+        """
+        self._ensure_sam2()
+        neg_points = neg_points or []
+        if not pos_points and not neg_points:
+            print("⛔ SAM2: no prompt points (need ≥1 positive or negative) → skipping")
+            return None
+        try:
+            all_pts = pos_points + neg_points
+            labels  = [1] * len(pos_points) + [0] * len(neg_points)
+            inputs = self._sam2_processor(
+                images=Image.fromarray(img_rgb),
+                input_points=[[[[float(u), float(v)] for (u, v) in all_pts]]],
+                input_labels=[[[int(l) for l in labels]]],
+                return_tensors="pt"
+            ).to(self._sam2_device)
+
+            with torch.no_grad():
+                outputs = self._sam2_model(**inputs, multimask_output=multimask_output)
+
+            masks = self._sam2_processor.post_process_masks(
+                outputs.pred_masks.detach().cpu(),
+                inputs["original_sizes"]
+            )[0]
+
+            if masks is None:
+                return None
+
+            # Collect candidate masks (1..N)
+            cand = []
+            if masks.ndim == 2:
+                cand = [masks]
+            elif masks.ndim == 3:
+                n = masks.shape[0]
+                for i in range(n):
+                    cand.append(masks[i])
+            else:
+                raise ValueError(f"SAM2 masks unexpected shape {masks.shape}")
+
+            # Score: positives inside minus 2x negatives inside
+            best_mask = None
+            best_score = -1e18
+            for m in cand:
+                mb = (np.squeeze(m) >= 0.5)
+                score = 0
+                for (u, v) in pos_points:
+                    if 0 <= v < mb.shape[0] and 0 <= u < mb.shape[1] and mb[v, u]:
+                        score += 1
+                for (u, v) in neg_points:
+                    if 0 <= v < mb.shape[0] and 0 <= u < mb.shape[1] and mb[v, u]:
+                        score -= 2
+                if score > best_score:
+                    best_score = score
+                    best_mask = mb
+
+            # Optional morphological closing
+            k = int(self._seg_mask_close_ksize)
+            if best_mask is not None and k >= 3:
+                if k % 2 == 0: k += 1
+                kernel = np.ones((k, k), np.uint8)
+                best_mask = cv2.morphologyEx(best_mask.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel) > 0
+
+            return best_mask
+
+        except Exception as e:
+            print(f"❌ SAM2 multi-point inference failed: {e}")
+            return None
         
     def _segment_views_for_state(self, episode_id: str, state_id: int, view_paths: dict[str, str], joint_positions: dict) -> dict[str, str]:
         """
@@ -2269,14 +2464,61 @@ class CrowdInterface():
                 print(f"⚠️ seed ({u},{v}) outside image for '{view_name}'")
                 continue
 
-            # 3) occlusion/dark guard
-            mean_val = self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius)
-            if mean_val < self._seg_dark_mean_thresh:
-                print(f"⛔ view '{view_name}': dark patch at seed (mean={mean_val:.1f}) → skip")
-                continue
+            # 3) multi-seed around projected center (u,v)
+            if self._seg_use_multi_seed:
+                # Decide center role
+                center_is_dark = (self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius) < self._seg_dark_mean_thresh)
+                center_is_gray = self._is_flat_gray_seed(self._patch_rgb_mean(img, u, v, self._seg_gray_patch_radius))
+                use_center_as_neg = self._seg_center_negative and (center_is_dark or center_is_gray)
 
-            # 4) SAM2
-            mask = self._sam2_segment_point(img, u, v, multimask_output=False)
+                # Build positive ring points outside the gripper
+                base_r = max(self._seg_seed_radius_px, self._seg_seed_min_radius_px)
+                ring_pts = self._generate_ring_points(
+                    u, v, W, H,
+                    base_radius_px=base_r,
+                    rings=max(1, self._seg_seed_rings),
+                    per_ring=max(6, self._seg_seed_per_ring)
+                )
+
+                # Loosen filtering on ring points so object pixels survive
+                pos_pts = self._filter_seed_points(img, ring_pts, mode=self._seg_ring_filter_mode)
+
+                # Ensure at least one positive; escalate radius if necessary
+                tries = 0
+                while len(pos_pts) < max(1, self._seg_min_valid_seeds) and tries < 2:
+                    base_r = int(round(base_r * 1.6))
+                    ring_pts = self._generate_ring_points(u, v, W, H, base_r, rings=1, per_ring=max(8, self._seg_seed_per_ring))
+                    pos_pts = self._filter_seed_points(img, ring_pts, mode=self._seg_ring_filter_mode)
+                    tries += 1
+
+                # Fallback: if still empty, accept ring points unfiltered
+                if len(pos_pts) == 0:
+                    pos_pts = ring_pts[:]  # in-bounds by construction
+
+                # Negatives: center (to reject the black gripper) plus optional outer ring
+                neg_pts = []
+                if use_center_as_neg:
+                    neg_pts.append((u, v))
+                if self._seg_use_neg_ring:
+                    outer_r = int(round(base_r * self._seg_neg_ring_scale))
+                    neg_ring = self._generate_ring_points(u, v, W, H, base_radius_px=outer_r, rings=1,
+                                                          per_ring=max(8, self._seg_seed_per_ring))
+                    neg_pts.extend(neg_ring)
+
+                # 4) SAM2 with multi-point prompt; let it return the best candidate
+                mask = self._sam2_segment_points(img, pos_pts, neg_pts, multimask_output=self._seg_multimask)
+
+                # Debugging (optional)
+                if mask is None:
+                    print(f"⛔ multi-seed produced no mask: pos={len(pos_pts)} neg={len(neg_pts)} (center_neg={use_center_as_neg})")
+
+            else:
+                # Legacy single-seed path (unchanged)
+                mean_val = self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius)
+                if mean_val < self._seg_dark_mean_thresh:
+                    print(f"⛔ view '{view_name}': dark patch at seed (mean={mean_val:.1f}) → skip")
+                    continue
+                mask = self._sam2_segment_point(img, u, v, multimask_output=False)
             if mask is None:
                 print(f"❌ SAM2 mask None for '{view_name}'")
                 continue

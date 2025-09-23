@@ -2844,7 +2844,7 @@ loader.load(
     const CROSS_BASE_LEN_M = 0.10;            // your CROSS_LEN
 
     // Target pixel sizes (tune to taste)
-    const TARGET_WHEEL_RADIUS_PX = 64;        // wheel should appear ~64 px radius
+    // const TARGET_WHEEL_RADIUS_PX = 64;        // ← no longer used
     const TARGET_CROSS_LEN_PX    = 24;        // long arm of the red cross ~24 px
 
     const _hudTmpA = new THREE.Vector3();
@@ -2940,37 +2940,42 @@ loader.load(
         const baseX = (_hudTmpA.x * 0.5 + 0.5) * rect.width;
         const baseY = (-_hudTmpA.y * 0.5 + 0.5) * rect.height;
 
-        // --- compute px-per-meter for up (Y) and right (X) on screen ---
-        // Up direction (screen-space up)
-        const upWorld = _hudTmpB.set(0,1,0).applyQuaternion(cam.quaternion).normalize();
-        const M = 0.1; // sample baseline (meters)
+        // --- compute px-per-meter along screen up/right (local to *this* view) ---
+        const upWorld    = _hudTmpB.set(0,1,0).applyQuaternion(cam.quaternion).normalize();
+        const rightWorld = _hudTmpC.set(1,0,0).applyQuaternion(cam.quaternion).normalize();
         const p0 = marker.position;
+        const M  = 0.10; // sample baseline (meters)
 
         // Y scale: move a little along world "screen-up", project, measure Δpx
-        const p1y = _hudTmpD.copy(p0).addScaledVector(upWorld, M);
+        const p1y  = _hudTmpD.copy(p0).addScaledVector(upWorld, M);
         const sp1y = _hudTmpD.clone().project(cam);
-        const py1 = (-sp1y.y * 0.5 + 0.5) * rect.height;
+        const py1  = (-sp1y.y * 0.5 + 0.5) * rect.height;
         const pxPerMeterY = Math.abs(py1 - baseY) / M || 0;
 
         // X scale: move a little along world "screen-right", project, measure Δpx
-        const rightWorld = _hudTmpC.set(1,0,0).applyQuaternion(cam.quaternion).normalize();
-        const p1x = _hudTmpD.copy(p0).addScaledVector(rightWorld, M);
+        const p1x  = _hudTmpD.copy(p0).addScaledVector(rightWorld, M);
         const sp1x = _hudTmpD.clone().project(cam);
         const px1  = (sp1x.x * 0.5 + 0.5) * rect.width;
         const pxPerMeterX = Math.abs(px1 - baseX) / M || 0;
 
-        // Use the same pixel radius we target for the wheels, so the HUD
-        // always sits just beyond the visible ring in the active view.
-        const wheelPxRadiusY = TARGET_WHEEL_RADIUS_PX;
-        const wheelPxRadiusX = TARGET_WHEEL_RADIUS_PX;
-        
-        const offsetPxY = wheelPxRadiusY + HUD_MARGIN_PX; // up
-        const offsetPxX = wheelPxRadiusX + HUD_MARGIN_PX; // right
+        // Fallback to mean px/m if either direction is degenerate (very rare)
+        const ppmMean = pixelsPerMeterAt(view, marker.position)?.mean || 0;
+        const effPxPerMeterX = pxPerMeterX || ppmMean || 0;
+        const effPxPerMeterY = pxPerMeterY || ppmMean || 0;
+
+        // --- NEW: wheel radius in pixels from actual projection (edge-aware offset) ---
+        // Keep this in sync with makeWheel(... outerR = 0.105 ...)
+        const wheelPxRadiusX = Math.max(0, effPxPerMeterX * WHEEL_OUTER_RADIUS_M);
+        const wheelPxRadiusY = Math.max(0, effPxPerMeterY * WHEEL_OUTER_RADIUS_M);
+
+        // Distance from the *edge* of the ring, not its center
+        const offsetPxX = Math.round(wheelPxRadiusX + HUD_MARGIN_PX); // right
+        const offsetPxY = Math.round(wheelPxRadiusY + HUD_MARGIN_PX); // up
 
         // position with a small screen-edge clamp
         const edge = 8;
-        const x = Math.round(baseX + offsetPxX);   // move right
-        const y = Math.round(baseY - offsetPxY);   // move up
+        const x = Math.round(baseX + offsetPxX);   // move right from center by ringEdge + margin
+        const y = Math.round(baseY - offsetPxY);   // move up    from center by ringEdge + margin
 
         el.style.left = `${Math.max(edge, Math.min(rect.width  - edge, x))}px`;
         el.style.top  = `${Math.max(edge, Math.min(rect.height - edge, y))}px`;
@@ -3589,7 +3594,7 @@ loader.load(
 
           if (response.ok) {
             console.log('✅ Task already completed response sent');
-            delayedRefresh(5000);
+            delayedRefresh(6000);
           } else {
             const errorData = await response.json().catch(() => ({}));
             console.error('❌ Failed to send task already completed response:', errorData);
@@ -3647,7 +3652,7 @@ loader.load(
 
         if (response.ok) {
           console.log('✅ goal sent (final goal joints)');
-          delayedRefresh(5000);
+          delayedRefresh(6000);
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
         }
