@@ -16,6 +16,13 @@
     display: flex;
     flex-direction: column;
     gap: 16px;                            /* a touch tighter spacing */
+    /* Make the card's width fixed (we set the pixel value from JS).
+       border-box ensures the 20px padding on each side is INCLUDED in the fixed width. */
+    box-sizing: border-box;
+    /* These are set from JS; if not set, behaves like today */
+    width: var(--viewport-total-px, auto);
+    min-width: var(--viewport-total-px, auto);
+    max-width: var(--viewport-total-px, none);
   }
 
   /* Blue prompt bar at the top */
@@ -39,6 +46,11 @@
     min-height: auto;
     padding: 0;
     margin: 0;
+    /* Make long prompt lines wrap instead of widening the card */
+    white-space: normal;          /* allow wrapping */
+    overflow-wrap: anywhere;      /* break really long tokens (URLs/base64) */
+    word-break: break-word;       /* Safari edge cases */
+    hyphens: auto;                /* nice hyphenation in supported browsers */
   }
 
   /* Content container for views and controls */
@@ -737,58 +749,53 @@
     box-shadow:none;
   }
 
-  /* Compact workbar anchored to the views */
-  #viewport .workbar {
+  /* In-view Pose Reset button (lower-right of wheels) — liquid glass look */
+  .view-container .pose-reset{
     position: absolute;
-    left: 16px;
-    bottom: 16px;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    background: rgba(255,255,255,0.85);
-    border: 1px solid rgba(0,0,0,0.08);
-    border-radius: 10px;
-    padding: 8px 10px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-    backdrop-filter: blur(6px);
-    z-index: 9;
-  }
-
-  /* Secondary compact buttons for workbar */
-  .workbar .btn-compact {
+    z-index: 3;
+    transform: translate(-50%, -50%); /* center on the computed anchor point */
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    border: 1px solid #d1d5db;
-    background: #ffffff;
-    color: #374151;
-    padding: 6px 10px;
-    border-radius: 8px;
-    font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial;
-    cursor: pointer;
-    transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
-  }
-  .workbar .btn-compact:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
-  .workbar .btn-compact:active { transform: translateY(0); }
+    justify-content: center;
 
-  .workbar .btn-compact[disabled] {
-    background: #f3f4f6;
-    color: #9ca3af;
-    border-style: dashed;
+    width: 28px;
+    height: 28px;
+
+    /* liquid glass (match grip HUD) */
+    background: linear-gradient(135deg, rgba(255,255,255,.28), rgba(255,255,255,.12));
+    border: 1px solid rgba(255,255,255,.35);
+    box-shadow: 0 8px 24px rgba(0,0,0,.20);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    color: #111827;
+    opacity: .92;
+
+    border-radius: 14px;            /* same rounding as the grip HUD */
+    font: 700 14px/1 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    cursor: pointer;
+    pointer-events: auto;
+    user-select: none;
+    transition: transform .12s ease, box-shadow .12s ease, background .12s ease, opacity .12s ease, filter .12s ease;
+  }
+
+  .view-container .pose-reset:hover{
+    transform: translate(-50%, -50%) translateY(-1px);
+    box-shadow: 0 12px 28px rgba(0,0,0,.26);
+    opacity: 1;
+  }
+
+  .view-container .pose-reset:active{
+    transform: translate(-50%, -50%) translateY(0);
+    filter: brightness(.98);
+  }
+
+  .view-container .pose-reset[disabled]{
+    opacity: .6;
     cursor: not-allowed;
     box-shadow: none;
-  }
-
-  /* Visual states that match your existing theme */
-  .workbar .btn-animate.active { border-color: #dc2626; box-shadow: 0 0 0 3px rgba(239,68,68,.18); }
-  .workbar .btn-reset { border-color: #16a34a; }
-
-  /* Icon / label behavior for tight screens */
-  .workbar .icon { font-size: 14px; }
-  .workbar .label { white-space: nowrap; }
-  @media (max-width: 900px) {
-    .workbar .label { display: none; }
-    .workbar .btn-compact { padding: 8px; }
+    /* keep glass off when disabled to communicate state clearly */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* Keep Confirm prominent; pin it lower-right in the controls column */
@@ -823,6 +830,12 @@
   }
 
   /* Confirm bar under the views (lower-right) */
+  #viewport .button-bars-container{
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+
   #viewport .confirm-bar{
     display:flex;
     justify-content:flex-end;
@@ -849,6 +862,79 @@
     transform:translateY(0);
   }
 
+/* Confirm bar: place Animate to the left of Confirm with a little space */
+#viewport .confirm-bar{
+  display:flex;
+  justify-content:flex-end;
+  gap: 8px;               /* ← new: spacing between Animate and Confirm */
+}
+
+/* Buttons that match the Confirm look */
+#viewport .confirm-bar .animate-button{
+  color:#fff;
+  border:none;
+  border-radius:6px;
+  padding:12px 16px;
+  font-size:16px;
+  font-weight:600;
+  cursor:pointer;
+  transition:all .2s ease;
+}
+
+/* Light orange Animate (lower-right, left of Confirm) */
+#viewport .confirm-bar .animate-button{
+  background:#fb923c; /* orange-400 - light orange */
+}
+
+#viewport .confirm-bar .animate-button:hover{
+  transform:translateY(-1px);
+  box-shadow:0 2px 8px rgba(0,0,0,.15);
+}
+#viewport .confirm-bar .animate-button:active{
+  transform:translateY(0);
+}
+
+/* Darker orange when activated/playing */
+#viewport .confirm-bar .animate-button.active{
+  background:#ea580c; /* orange-600 - darker orange */
+  box-shadow:0 0 0 3px rgba(234,88,12,.25), 0 2px 8px rgba(0,0,0,.15);
+}
+
+/* Square corners stay enforced globally (already covered by your blanket rule),
+   but include these explicitly in case you keep per-button overrides elsewhere. */
+#viewport .confirm-bar .animate-button,
+#viewport .reset-bar .reset-button{
+  border-radius:0 !important;
+}
+
+/* Reset bar (lower-left, standalone like confirm bar) */
+#viewport .reset-bar{
+  display:flex;
+  justify-content:flex-start;
+}
+
+/* Reset button styling (standalone, matching Animate and Confirm) */
+#viewport .reset-bar .reset-button{
+  background:#9ca3af; /* gray-400 - lighter gray */
+  color:#fff;
+  border:none;
+  border-radius:6px;
+  padding:12px 16px;
+  font-size:16px;
+  font-weight:600;
+  cursor:pointer;
+  transition:all .2s ease;
+}
+
+#viewport .reset-bar .reset-button:hover{
+  transform:translateY(-1px);
+  box-shadow:0 2px 8px rgba(0,0,0,.15);
+}
+
+#viewport .reset-bar .reset-button:active{
+  transform:translateY(0);
+}
+
   /* --- Full-bleed blue header inside the #viewport card --- */
   #viewport .prompt-bar{
     /* cancel the card's 20px padding on the top & sides */
@@ -864,9 +950,8 @@
   #viewport .task-completed-container,
   #statusOverlay .card,
   #refreshCountdown,
-  #viewport .workbar,
-  #viewport .workbar .btn-compact,          /* Animate & Reset buttons */
   #viewport .confirm-bar .confirm-button,    /* lower-right Confirm */
+  #viewport .reset-bar .reset-button,        /* lower-left Reset */
   .controls-container .gripper-buttons button,
   .controls-container .confirm-button,       /* (dev-mode confirm) */
   .controls-container .tac-toggle,
@@ -892,18 +977,6 @@
     border-bottom-right-radius: 0 !important;
   }
 
-  /* Square the compact workbar and its buttons (Animate / Reset) */
-  #viewport .workbar,
-  #viewport .workbar .btn-compact,
-  #viewport .workbar .btn-animate,
-  #viewport .workbar .btn-reset {
-    border-radius: 0 !important;
-    border-top-left-radius: 0 !important;
-    border-top-right-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
-    border-bottom-right-radius: 0 !important;
-  }
-
   /* Square the lower-right Confirm button (and its bar) */
   #viewport .confirm-bar,
   #viewport .confirm-bar .confirm-button,
@@ -916,8 +989,8 @@
   }
 
   /* Belt-and-suspenders: catch any other buttons in those bars */
-  #viewport .workbar button,
-  #viewport .confirm-bar button {
+  #viewport .confirm-bar button,
+  #viewport .reset-bar button {
     border-radius: 0 !important;
   }
 
@@ -1245,13 +1318,17 @@ const contentContainer = document.createElement('div');
 contentContainer.className = 'content-container';
 mount.appendChild(contentContainer);
 
-const workbar = document.createElement('div');
-workbar.className = 'workbar';
-mount.appendChild(workbar);
+const buttonBarsContainer = document.createElement('div');
+buttonBarsContainer.className = 'button-bars-container';
+mount.appendChild(buttonBarsContainer);
+
+const resetBar = document.createElement('div');
+resetBar.className = 'reset-bar';
+buttonBarsContainer.appendChild(resetBar);
 
 const confirmBar = document.createElement('div');
 confirmBar.className = 'confirm-bar';
-mount.appendChild(confirmBar);
+buttonBarsContainer.appendChild(confirmBar);
 
 // Create the views grid container
 const viewsGrid = document.createElement('div');
@@ -1349,6 +1426,17 @@ function updateViewSizes() {
   
   viewsGrid.style.width = totalWidth + 'px';
   viewsGrid.style.height = totalHeight + 'px';
+  
+  // Lock the overall card width to the grid width + the card's horizontal padding (20px + 20px).
+  // Because we set #viewport { box-sizing: border-box }, this "total" width includes the padding.
+  const cardHorizontalPadding = 40; // 20px left + 20px right
+  const fixedWidthPx = totalWidth + cardHorizontalPadding;
+
+  // Expose as a CSS variable (used by the CSS above) and hard-set width to be extra safe.
+  mount.style.setProperty('--viewport-total-px', fixedWidthPx + 'px');
+  mount.style.width    = fixedWidthPx + 'px';
+  mount.style.minWidth = fixedWidthPx + 'px';
+  mount.style.maxWidth = fixedWidthPx + 'px';
   
   views.forEach(view => {
     const model = view.model;
@@ -1546,9 +1634,12 @@ loader.load(
     function revealMinimalRobotFromPose() {
       // Idempotent — call when the user actually adjusts the pose (drag/slider)
       if (!userHasAdjustedPose) userHasAdjustedPose = true;
-      if (userHasAdjustedPose && !robotVisible) {
+      if (userHasAdjustedPose) {
+        // Show the full robot (body + gripper) and ensure it's opaque.
         robotVisible = true;
         robot.visible = true;
+        showAllRobotMeshes();
+        setGhostMode(true);    // ← keep body ghosted like during animation
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
       }
     }
@@ -1559,11 +1650,13 @@ loader.load(
     }
 
     function applyPostAnimationVisibility() {
-      // After animation stops, respect the "only after pose change" rule
+      // After animation stops, keep the full body visible (opaque) if the user
+      // has interacted with the pose; otherwise keep it hidden.
       if (userHasAdjustedPose) {
         robotVisible = true;
         robot.visible = true;
-        showMinimalRobotMeshes();
+        showAllRobotMeshes();    // full body on
+        setGhostMode(true);     // ← keep body ghosted when Animate is OFF
       } else {
         hideRobotCompletely();
       }
@@ -1656,18 +1749,20 @@ loader.load(
     let gripDir    = state.gripper ?? 0;
 
     let gripHUDs = []; // [{ view, el, badge, btn }]
+    let poseResetHUDs = []; // [{ view, el }]
 
     let hudHiddenForAnimation = false;
     function setHUDHiddenForAnimation(hidden) {
       hudHiddenForAnimation = hidden;
+      // Gripper HUDs
       gripHUDs.forEach(({ el }) => {
-        if (hidden) {
-          // Force it off even against CSS '!important'
-          el.style.setProperty('display', 'none', 'important');
-        } else {
-          // Let the stylesheet's 'display:flex !important' win again
-          el.style.removeProperty('display');
-        }
+        if (hidden) el.style.setProperty('display', 'none', 'important');
+        else el.style.removeProperty('display');
+      });
+      // Pose Reset HUDs
+      poseResetHUDs.forEach(({ el }) => {
+        if (hidden) el.style.setProperty('display', 'none', 'important');
+        else el.style.removeProperty('display');
       });
     }
 
@@ -1829,7 +1924,7 @@ loader.load(
           // Scale bar to ~1.4× the single grasp threshold
           const denom = Math.max(GRASP_THRESHOLD_N * 1.4, 1);
           fill.style.width = `${clamp01(absF / denom) * 100}%`;
-          val.textContent = `${absF.toFixed(1)} N`;
+          val.textContent = `Grip strength: ${absF.toFixed(1)} N`;
         }
       };
     }
@@ -2469,6 +2564,9 @@ loader.load(
     const _interpPos  = new THREE.Vector3();
     const _interpQuat = new THREE.Quaternion();
 
+    // --- temp for seg overlay math ---
+    const _segCurrEE = new THREE.Vector3();
+
     // Compute the *target* pose from current user params.
     // We purposely derive orientation from baseQuat + (roll,pitch,yaw)
     // instead of reusing currentQuat to avoid drift.
@@ -2529,8 +2627,7 @@ loader.load(
         goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
         // Restore pose gizmos when animation is off
         setPoseGizmosVisible(true);
-        setGhostMode(false);
-        applyPostAnimationVisibility();
+        applyPostAnimationVisibility();  // this now leaves ghosting ON
 
         animating = false;
         updateGripArrowVisibility();
@@ -2804,8 +2901,8 @@ loader.load(
         btn.classList.toggle('close', !isOpen);
         btn.setAttribute('aria-pressed', String(isOpen));
 
-        el.title  = (lastGripForceN != null) ? `${absF.toFixed(1)} N` : 'Grip force unavailable';
-        btn.title = `Click to ${isOpen ? 'Close' : 'Open'} gripper.`;
+        el.title  = (lastGripForceN != null) ? `Grip strength: ${absF.toFixed(1)} N` : 'Grip force unavailable';
+        btn.title = `Click to ${isOpen ? 'close' : 'open'} gripper`;
       });
 
       applyGripVisual(status, lastGripForceN);
@@ -2828,7 +2925,7 @@ loader.load(
         ? (taskCompletedSelected
             ? 'Disabled: “Task Already Completed” is selected.'
             : 'Disabled: pose changed. Reset to default to change gripper.')
-        : `Click to ${gripDir > 0 ? 'Close' : 'Open'} gripper.`;
+        : `Click to ${gripDir > 0 ? 'close' : 'open'} gripper`;
 
       gripHUDs.forEach(({ el, btn }) => {
         el.classList.toggle('disabled', disabled);
@@ -2836,8 +2933,29 @@ loader.load(
       });
     }
 
+    function createPoseResetHUDForView(view){
+      const btn = document.createElement('button');
+      btn.className = 'pose-reset';
+      btn.type = 'button';
+      btn.textContent = '↺'; // glyph only
+      btn.title = 'Reset to original position';
+      btn.setAttribute('aria-label', 'Reset to starting position');
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetToStartingPoseLight();
+      });
+
+      view.container.appendChild(btn);
+      poseResetHUDs.push({ view, el: btn });
+    }
+
     const WHEEL_OUTER_RADIUS_M = 0.105; // keep in sync with makeWheel(... outerR=0.105 ...)
-    const HUD_MARGIN_PX = 20;           // constant 2D gap above the wheel (increase/decrease as desired)
+
+    // OLD: const HUD_MARGIN_PX = 20;
+    // NEW (independent margins):
+    const GRIP_HUD_MARGIN_PX  = 20;  // distance from wheel edge to GRIP HUD
+    const RESET_HUD_MARGIN_PX = 0.1;   // distance from wheel edge to RESET HUD (closer)
 
     // Base geometry sizes you already use
     const WHEEL_BASE_OUTER_RADIUS_M = 0.105;  // same value you pass to makeWheel(.. outerR)
@@ -2899,24 +3017,38 @@ loader.load(
     function updateSegOverlayForView(view){
       if (!view.seg || !view.seg.el) return;
 
-      // Project the original EE (startPos) and the current target (marker.position)
+      // Project the reference (where the mask was captured): the starting EE pose
       const base = projectWorldToViewPx(view, startPos);
-      const curr = projectWorldToViewPx(view, marker.position);
+
+      // Choose what to follow on this frame:
+      // - while animating: the *actual* end-effector (moves every frame)
+      // - otherwise: the marker/goal (keeps the same 1:1 feel you have during drag)
+      let worldToFollow;
+      if (animState.enabled) {
+        eeVis.updateMatrixWorld(true);
+        eeVis.getWorldPosition(_segCurrEE);
+        worldToFollow = _segCurrEE;
+      } else {
+        worldToFollow = marker.position;
+      }
+
+      // Project the current point-to-follow
+      const curr = projectWorldToViewPx(view, worldToFollow);
       if (!base.visible || !curr.visible) return;
 
-      // 1) Translate: same as before
+      // 1) translation in pixels
       const dx = Math.round(curr.x - base.x);
       const dy = Math.round(curr.y - base.y);
 
-      // 2) Scale: ratio of camera-space depth (f / z -> pixel scale)
+      // 2) scale from relative depth (keeps your existing pixel scaling behavior)
       const zBase = cameraDepth(view, startPos);
-      const zCurr = cameraDepth(view, marker.position);
+      const zCurr = cameraDepth(view, worldToFollow);
       const s = (zBase > 1e-9 && zCurr > 1e-9) ? (zBase / zCurr) : 1;
 
       // Anchor scale around the original EE pixel so translation remains correct
       view.seg.el.style.transformOrigin = `${Math.round(base.x)}px ${Math.round(base.y)}px`;
 
-      // Order matters: translate *after* scale so dx/dy aren't scaled
+      // Order matters: translate after scale so dx/dy are not scaled
       view.seg.el.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`;
     }
 
@@ -2969,8 +3101,8 @@ loader.load(
         const wheelPxRadiusY = Math.max(0, effPxPerMeterY * WHEEL_OUTER_RADIUS_M);
 
         // Distance from the *edge* of the ring, not its center
-        const offsetPxX = Math.round(wheelPxRadiusX + HUD_MARGIN_PX); // right
-        const offsetPxY = Math.round(wheelPxRadiusY + HUD_MARGIN_PX); // up
+        const offsetPxX = Math.round(wheelPxRadiusX + GRIP_HUD_MARGIN_PX); // right
+        const offsetPxY = Math.round(wheelPxRadiusY + GRIP_HUD_MARGIN_PX); // up
 
         // position with a small screen-edge clamp
         const edge = 8;
@@ -3454,6 +3586,7 @@ loader.load(
         );
         attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
         createGripHUDForView(view);
+        createPoseResetHUDForView(view);
 
         // --- NEW: if a mask exists for this view, mount the overlay ---
         const segUrl = segmentsByView[viewInfo.name];
@@ -3564,7 +3697,7 @@ loader.load(
 
     // Create confirm button to be added to controls container
     const confirmBtn = document.createElement('button');
-    confirmBtn.textContent = 'Confirm';
+    confirmBtn.textContent = 'Verify';
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
@@ -3663,10 +3796,10 @@ loader.load(
 
 
 
-    // Animate toggle button (appears above Confirm)
+    // Animate toggle button (now sits to the LEFT of Confirm, same style but red)
     const animateBtn = document.createElement('button');
-    animateBtn.className = 'btn-compact btn-animate';
-    animateBtn.innerHTML = '<span class="icon">⏯</span><span class="label">Animate</span>';
+    animateBtn.className = 'animate-button';
+    animateBtn.textContent = 'Animate';
     animateBtn.onclick = toggleAnimation;
 
     // --- cancel helper + global listeners ---------------------------------
@@ -3687,8 +3820,7 @@ loader.load(
 
       // Restore normal visuals
       setPoseGizmosVisible(true);
-      setGhostMode(false);
-      applyPostAnimationVisibility();
+      applyPostAnimationVisibility();  // leaves ghosting ON
       setHUDHiddenForAnimation(false);
 
       if (reason) console.log('⏹️ Animate cancelled:', reason);
@@ -3702,29 +3834,21 @@ loader.load(
       cancelAnimationIfRunning('pointerdown anywhere');
     }, { capture: true });
 
-    const resetAllBtn = document.createElement('button');
-    resetAllBtn.className = 'btn-compact btn-reset';
-    resetAllBtn.innerHTML = '<span class="icon">↺</span><span class="label">Reset</span>';
+    // Reset button (lower-left): standalone like Confirm, same style but gray,
+    // and identical behavior to the in-view HUD reset button.
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'reset-button';
+    resetBtn.textContent = 'Reset';
+    resetBtn.onclick = resetToStartingPoseLight;  // ← same behavior as the HUD reset
 
-    resetAllBtn.onclick = () => {
-      // Stop any animation and show gizmos again
-      if (animState.enabled) {
-        animState.enabled = false;
-        animateBtn.classList.remove('active');
-        animating = false;
-        updateGripArrowVisibility();
-        setPoseGizmosVisible(true);
-        setGhostMode(false);
-        applyPostAnimationVisibility();
-      }
+    function resetToStartingPoseLight() {
+      // Stop any animation
+      cancelAnimationIfRunning('pose reset');
 
-      // Reset policy state: back to "not revealed"
-      userHasAdjustedPose = false;
-      hideRobotCompletely();
-
-      // Pose → back to initial
+      // Return pose to initial (does not touch gripper/TAC)
       params.x = initialParams.x; params.y = initialParams.y; params.z = initialParams.z;
       params.roll = initialParams.roll; params.pitch = initialParams.pitch; params.yaw = initialParams.yaw;
+
       prevAngles.roll = params.roll; prevAngles.pitch = params.pitch; prevAngles.yaw = params.yaw;
 
       targetPose.pos.copy(startPos);
@@ -3737,7 +3861,7 @@ loader.load(
       marker.position.copy(startPos);
       marker.quaternion.copy(startQuat);
 
-      // Robot joints → initial
+      // Snap robot back to initial joints for visual consistency
       if (initialJointPositions) {
         for (const [name, val] of Object.entries(initialJointPositions)) {
           robot.setJointValue(name, val);
@@ -3745,43 +3869,68 @@ loader.load(
         robot.updateMatrixWorld(true);
       }
 
-      // Gripper → initial (and visuals)
-      gripDir = initialGripDir;
-      drawGripArrows(gripDir);
-      updateGripArrowVisibility();
-      updateGripperButtonStates();
+      // Treat this like "no pose changes yet"
+      userHasAdjustedPose = false;
+      hideRobotCompletely();
 
-      // Dev-only: refresh slider UI if present
-      if (devMode && gui) {
-        Object.keys(sliderCtrls).forEach(k => sliderCtrls[k]?.updateDisplay());
-        ['x','y','z','roll','pitch','yaw'].forEach(updateSliderDecor);
-      }
-
-      // Task Already Completed → clear selection (back to neutral)
-      if (taskCompletedSelected) {
-        taskCompletedSelected = false;
-        if (taskCompletedBtn) {
-          taskCompletedBtn.classList.remove('active');
-          taskCompletedBtn.classList.add('inactive');
-          taskCompletedBtn.setAttribute('aria-pressed', 'false');
-        }
-      }
-
-      // Locks / availability reflect "reset to default"
-      recordLastGood(poseAxes);
+      // Refresh any UI/logic that depends on "at defaults"
       updateTaskCompletedAvailability();
       recomputeLocks();
-
-      updateGripHUDState();
       updateGripHUDInteractivity();
+    }
 
-      // Force widget + arrow accent recolor
-      if (lastGripForceN != null) {
-        const status = classifyGrip(lastGripForceN);
-        forceUI.update(lastGripForceN, status);
-        applyGripVisual(status, lastGripForceN);
-      }
-    };
+    function positionPoseResetHUDs(){
+      poseResetHUDs.forEach(({ view, el }) => {
+        const cam  = view.camera;
+        const rect = view.renderer.domElement.getBoundingClientRect();
+
+        if (hudHiddenForAnimation) {
+          el.style.setProperty('display', 'none', 'important');
+          return;
+        } else {
+          el.style.removeProperty('display');
+        }
+
+        // Project marker center
+        const c = marker.position.clone().project(cam);
+        if (c.z < -1 || c.z > 1) { el.style.display = 'none'; return; }
+        el.style.display = 'block';
+
+        const baseX = (c.x * 0.5 + 0.5) * rect.width;
+        const baseY = (-c.y * 0.5 + 0.5) * rect.height;
+
+        // Estimate pixels-per-meter along screen up & right like the grip HUD
+        const upWorld    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion).normalize();
+        const rightWorld = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion).normalize();
+        const p0 = marker.position;
+        const M  = 0.10; // sampling baseline in meters
+
+        // Move a bit in world "screen-up" and "screen-right"
+        const sp1y = p0.clone().addScaledVector(upWorld,    M).project(cam);
+        const sp1x = p0.clone().addScaledVector(rightWorld, M).project(cam);
+
+        const py1 = (-sp1y.y * 0.5 + 0.5) * rect.height;
+        const px1 = ( sp1x.x * 0.5 + 0.5) * rect.width;
+
+        const pxPerMeterY = Math.abs(py1 - baseY) / M || 0;
+        const pxPerMeterX = Math.abs(px1 - baseX) / M || 0;
+
+        // Wheel outer radius in pixels (keep in sync with makeWheel's outerR=0.105)
+        const wheelPxRadiusX = Math.max(0, pxPerMeterX * WHEEL_OUTER_RADIUS_M);
+        const wheelPxRadiusY = Math.max(0, pxPerMeterY * WHEEL_OUTER_RADIUS_M);
+
+        // Lower-right from the *edge* of the ring by the fixed margin
+        const offsetPxX = Math.round(wheelPxRadiusX + RESET_HUD_MARGIN_PX);
+        const offsetPxY = Math.round(wheelPxRadiusY + RESET_HUD_MARGIN_PX);
+
+        const edge = 8; // small screen-edge clamp
+        const x = Math.round(baseX + offsetPxX);  // right
+        const y = Math.round(baseY + offsetPxY);  // DOWN (note the +)
+
+        el.style.left = `${Math.max(edge, Math.min(rect.width  - edge, x))}px`;
+        el.style.top  = `${Math.max(edge, Math.min(rect.height - edge, y))}px`;
+      });
+    }
 
     const spanDefs = [
       ['x',     0.20],   // meters
@@ -3877,31 +4026,33 @@ loader.load(
     // Evaluate initial interactivity (usually enabled because sliders = defaults)
     updateGripperInteractivity();
 
-    workbar.appendChild(animateBtn);
-
-    workbar.appendChild(resetAllBtn);
+    // Add reset button to its own bar (lower-left, standalone like confirm)
+    resetBar.appendChild(resetBtn);
 
     // Add confirm button at the bottom
     confirmBar.appendChild(confirmBtn);
 
-    /* === NEW: keep workbar buttons in sync with TAC / locks === */
-    function reflectWorkbarInteractivity(){
+    // Place Animate to the LEFT of Confirm
+    confirmBar.insertBefore(animateBtn, confirmBtn);
+
+    /* === NEW: keep buttons in sync with TAC / locks === */
+    function reflectButtonInteractivity(){
       const tacOn = taskCompletedSelected === true;
       if (animateBtn) {
         animateBtn.disabled = tacOn;         // disable Animate when TAC is on
         if (tacOn) animateBtn.classList.remove('active');
       }
-      if (resetAllBtn) resetAllBtn.disabled = false; // Reset stays enabled
+      // Reset stays enabled
     }
 
-    // Patch recomputeLocks to also update the workbar
+    // Patch recomputeLocks to also update the buttons
     (function patchRecomputeLocks(){
       const _recomputeLocks = recomputeLocks;
       recomputeLocks = function(){
         _recomputeLocks();
-        reflectWorkbarInteractivity();
+        reflectButtonInteractivity();
       };
-      reflectWorkbarInteractivity(); // initialize once
+      reflectButtonInteractivity(); // initialize once
     })();
 
 
@@ -4032,6 +4183,7 @@ loader.load(
       })();
 
       positionGripHUDs();
+      positionPoseResetHUDs();
 
       // ----- render all views -----
       views.forEach(view => {

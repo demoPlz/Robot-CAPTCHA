@@ -1,0 +1,28 @@
+High level:
+
+1. Check if any items are close to the drawer (the items should all be entirely on the left of the robot, to leave ample space), such that they risk being covered underneath the drawer if the drawer opens. If they are, move them to be entirely on the left of the robot one by one.
+
+2. Open the drawer.
+
+3. Pick and place each item into the drawer.
+
+4. Close the drawer.
+
+
+Low level:
+
+Move objects left protocol:
+
+1.
+
+Open drawer protocol:
+
+1.
+
+Pick and place item into drawer protocol:
+
+1. 
+
+Close drawer protocol:
+
+1.

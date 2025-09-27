@@ -12,6 +12,7 @@ import queue
 import json
 import traceback
 import datasets
+import re
 # --- VLM (Azure OpenAI GPT-5) integration ------------------------------------
 import mimetypes
 
@@ -123,7 +124,11 @@ class CrowdInterface():
                  required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
                  autofill_important_states: bool = False,
                  num_autofill_actions: int | None = None,
-                 use_vlm_prompt: bool = False):
+                 use_vlm_prompt: bool = False,
+                 # --- NEW: saving important-state cam_main frames ---
+                 save_maincam_sequence: bool = False,
+                 prompt_sequence_dir: str | None = None,
+                 prompt_sequence_clear: bool = False):
 
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
@@ -337,6 +342,29 @@ class CrowdInterface():
 
         # Use a larger minimum ring radius so we click outside the gripper
         self._seg_seed_min_radius_px = int(os.getenv("SEG_SEED_MIN_RADIUS_PX", "12"))  # >= gripper radius in px
+
+        # --- NEW: Important-state cam_main image sequence sink ---
+        self.save_maincam_sequence = bool(save_maincam_sequence)
+        self._prompt_seq_dir = Path(prompt_sequence_dir or "prompt/demos/drawer").resolve()
+        self._prompt_seq_lock = Lock()
+        self._prompt_seq_index = 1
+        if self.save_maincam_sequence:
+            try:
+                self._prompt_seq_dir.mkdir(parents=True, exist_ok=True)
+                if prompt_sequence_clear:
+                    removed = 0
+                    for p in self._prompt_seq_dir.glob("*"):
+                        try:
+                            if p.is_file():
+                                p.unlink()
+                                removed += 1
+                        except Exception:
+                            pass
+                    print(f"🧹 Cleared {removed} files in {self._prompt_seq_dir}")
+                self._prompt_seq_index = self._compute_next_prompt_seq_index()
+                print(f"📸 Important-state capture → {self._prompt_seq_dir} (next index {self._prompt_seq_index:06d})")
+            except Exception as e:
+                print(f"⚠️ Could not prepare sequence directory '{self._prompt_seq_dir}': {e}")
 
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
@@ -889,6 +917,53 @@ class CrowdInterface():
                 return self._to_uint8_rgb(obs[k])
         return None
 
+    # --- NEW: helpers for important-state image sequence ---
+    def _compute_next_prompt_seq_index(self) -> int:
+        """
+        Scan the target directory and return next numeric index (1-based).
+        Accepts files like 000001.jpg / 42.png / 7.jpeg, ignoring non-numeric stems.
+        """
+        try:
+            nums = []
+            for p in self._prompt_seq_dir.iterdir():
+                if not p.is_file():
+                    continue
+                m = re.match(r"^(\d+)$", p.stem)
+                if m:
+                    nums.append(int(m.group(1)))
+            return (max(nums) + 1) if nums else 1
+        except Exception:
+            return 1
+
+    def _save_important_maincam_frame(self, episode_id: str, state_id: int, obs_path: str | None):
+        """
+        If enabled, load the state's obs from disk, extract cam_main, and save as
+        an ordered JPEG: <dir>/<zero-padded-index>.jpg
+        """
+        if not self.save_maincam_sequence:
+            return
+        try:
+            obs = self._load_obs_from_disk(obs_path)
+            img = self._load_main_cam_from_obs(obs)
+            if img is None:
+                print(f"⚠️ No cam_main image for IMPORTANT state {state_id} (ep {episode_id})")
+                return
+            # Thread-safe index assignment
+            with self._prompt_seq_lock:
+                idx = self._prompt_seq_index
+                self._prompt_seq_index += 1
+            fname = f"{idx:06d}.jpg"
+            out_path = self._prompt_seq_dir / fname
+            # Write JPEG with current quality setting
+            bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            ok = cv2.imwrite(str(out_path), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(self._jpeg_quality)])
+            if ok:
+                print(f"🖼️  Saved IMPORTANT cam_main → {out_path}")
+            else:
+                print(f"⚠️ Failed to write {out_path}")
+        except Exception as e:
+            print(f"⚠️ Error saving IMPORTANT cam_main frame: {e}")
+
     def _build_episode_maincam_video(self, episode_id: str, up_to_state_id: int) -> str | None:
         """
         Assemble MP4 from cam_main frames for states in [start .. up_to_state_id] of `episode_id`.
@@ -1011,7 +1086,7 @@ class CrowdInterface():
     def _get_episode_history_prompt(self) -> str:
         """Get prompt text for episode history (maincam sequence)."""
         template = self._load_prompt_text(
-            "episode_history.txt", 
+            "history.txt", 
             "these are the important-state cam_main frames in chronological order"
         )
         # Replace {self.task} with the actual task value
@@ -1026,7 +1101,7 @@ class CrowdInterface():
     def _get_current_state_prompt(self) -> str:
         """Get prompt text for current state (four views)."""
         return self._load_prompt_text(
-            "current_state.txt", 
+            "current.txt", 
             "these are four views"
         )
 
@@ -1791,20 +1866,26 @@ class CrowdInterface():
             state_id_local = latest_state_id
             view_paths_local = dict(info.get("view_paths", {}))
             joints_local = dict(info["state"].get("joint_positions", {}))
+            obs_path_local = info.get("obs_path")
 
             if self._vlm_enabled:
                 self._enqueue_vlm_job(episode_id_local, state_id_local, view_paths_local)
 
             st_obj = info["state"]
+            # Do not return early — we want to save the important-state image regardless.
+            segmentation_needed = True
             if not self._gripper_is_grasped(st_obj):
                 info["segmentation_paths"] = {}
                 info["segmentation_ready"] = True
                 fv = self._extract_grip_force_N(st_obj)
                 print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) — not grasped (force={fv!r})")
-                return
+                segmentation_needed = False
 
         # enqueue heavy work after releasing the lock
-        self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
+        # NEW: save cam_main frame for this IMPORTANT state (ordered sequence)
+        self._save_important_maincam_frame(episode_id_local, state_id_local, obs_path_local)
+        if segmentation_needed:
+            self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
 
     def clear_episode_data(self, episode_id: str):
         """Clear all episode-related data for a specific episode (used when rerecording)"""

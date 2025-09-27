@@ -35,6 +35,7 @@ from lerobot.configs import parser
 
 from crowd_interface import *
 import cv2  # for closing display windows
+from pathlib import Path
 
 def _stop_display_only(listener, display_cameras: bool):
     """
@@ -66,6 +67,33 @@ def _pop_crowd_cli_overrides(argv=None):
     ap.add_argument(
         "--use-vlm-prompt", action="store_true", dest="crowd_use_vlm_prompt",
         help="If set, the UI will use VLM-generated prompts (requires Azure OpenAI). Otherwise the simple task prompt is used.")
+    # --- NEW: save cam_main frames for important states as an ordered image sequence ---
+    ap.add_argument(
+        "--save-important-maincam-sequence",
+        action="store_true",
+        dest="crowd_save_seq",
+        help="If set, save observation.images.cam_main at each IMPORTANT state to a directory as 000001.jpg, 000002.jpg, ...",
+    )
+    ap.add_argument(
+        "--sequence-dir",
+        type=str,
+        dest="crowd_seq_dir",
+        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demos/drawer').",
+    )
+    ap.add_argument(
+        "--sequence-clear",
+        action="store_true",
+        dest="crowd_seq_clear",
+        help="If set, clear the sequence directory at startup before saving new frames.",
+    )
+    # --- NEW: one-word task name -> derive sequence dir at <repo>/prompts/demos/{task_name} ---
+    ap.add_argument(
+        "--task-name",
+        type=str,
+        dest="crowd_task_name",
+        help="One-word task name used to derive sequence dir as '<repo>/prompts/demos/{task_name}' "
+             "(ignored if --sequence-dir is provided).",
+    )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -216,6 +244,33 @@ def control_robot(cfg: ControlPipelineConfig):
         ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
     if getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
         ci_kwargs["use_vlm_prompt"] = True
+    # NEW: image sequence saving controls
+    if getattr(_CROWD_OVERRIDES, "crowd_save_seq", False):
+        ci_kwargs["save_maincam_sequence"] = True
+    if getattr(_CROWD_OVERRIDES, "crowd_seq_dir", None) is not None:
+        ci_kwargs["prompt_sequence_dir"] = _CROWD_OVERRIDES.crowd_seq_dir
+    else:
+        # Derive prompts/demos/{task_name} if provided and no explicit --sequence-dir was given
+        task_name = getattr(_CROWD_OVERRIDES, "crowd_task_name", None)
+        if task_name:
+            # sanitize to a safe folder component (letters, digits, _ and -)
+            safe = "".join(c for c in task_name if (c.isalnum() or c in ("_", "-"))).strip()
+            if safe:
+                repo_root = Path(__file__).resolve().parent / ".."
+                seq_dir = (repo_root / "prompts" / "demos" / safe).resolve()
+                ci_kwargs["prompt_sequence_dir"] = str(seq_dir)
+                try:
+                    logging.info(f"Using derived prompt sequence dir from --task-name='{safe}': {seq_dir}")
+                except Exception:
+                    pass
+            else:
+                try:
+                    logging.warning(f"--task-name='{task_name}' produced an empty/invalid folder name; "
+                                    "falling back to default sequence directory.")
+                except Exception:
+                    pass
+    if getattr(_CROWD_OVERRIDES, "crowd_seq_clear", False):
+        ci_kwargs["prompt_sequence_clear"] = True
     crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()
 
