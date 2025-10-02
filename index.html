@@ -1148,6 +1148,48 @@
   #recPreflight .title{ font-weight:700; margin:0 0 6px; font-size: 16px; }
   #recPreflight .hint { opacity:.9 }
 
+/* === Mini Recording UI (shown only when --record-demo-videos is on) === */
+#recMini{
+  position: fixed;
+  right: 12px; bottom: 12px;
+  display: none;                 /* toggled by JS -> .visible */
+  align-items: center; gap: 8px;
+  padding: 8px 10px;
+  background: rgba(17,24,39,0.92);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  z-index: 10006;
+  font: 600 13px/1.1 system-ui, -apple-system, Segoe UI, Roboto;
+  border-radius: 0 !important;   /* square corners to match your theme */
+}
+#recMini.visible { display: inline-flex; }
+#recMini .dot{
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #9ca3af; box-shadow: 0 0 0 2px rgba(255,255,255,.18);
+}
+#recMini .dot.recording{
+  background: var(--rec-accent, #ef4444);
+  animation: recPulse 1.2s ease-in-out infinite;
+}
+#recMini .state{ text-transform: uppercase; font-weight: 800; letter-spacing: .02em; opacity:.9; }
+#recMini .time{ min-width: 52px; text-align: right; opacity:.9; }
+#recMini .btn{
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.04);
+  color: #fff;
+  padding: 6px 8px;
+  font: 700 13px / 1 system-ui, -apple-system, Segoe UI, Roboto;
+  cursor: pointer;
+  border-radius: 0 !important;
+}
+#recMini .btn[disabled]{ opacity:.5; cursor:not-allowed; border-style: dashed; }
+#recMini .btn:hover:not([disabled]){ transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+#recMini .btn:active:not([disabled]){ transform: translateY(0); }
+#recMini .saved-badge{ margin-left: 4px; font-weight: 700; opacity: .9; display: none; }
+#recMini.saved .saved-badge{ display: inline; }
+
 
 </style>
 
@@ -1514,6 +1556,9 @@ const CanvasRecording = (() => {
   let layout = null;            // {W,H, cells:[{x,y,w,h, view}]}
   let cursor = { x: -1, y: -1, down: false };
   let recScale = 1;  // logical→pixel scale used by the compositor
+  let mimeTypeRef = '';          // NEW: remember chosen mime
+  let bufferedMode = false;      // NEW: buffer locally until Save when RECORDING_ALLOWED
+  let uploaded = false;          // NEW: has the current take been uploaded to server yet?
 
   function pickMime(){
     for (const t of HQ_REC.codecPrefs) {
@@ -1853,14 +1898,16 @@ const CanvasRecording = (() => {
     // Start composition loop first (so first frame is ready quickly)
     compose();
 
+    // Buffer-only when demo-video mode is on:
+    bufferedMode = !!RECORDING_ALLOWED;
+    uploaded = false;
+
     // Start recorder on the compositor canvas stream
     const mime = pickMime();
-    // Record the high‑res canvas at HQ fps
     stream = canvas.captureStream(HQ_REC.fps);
     const bps = HQ_REC.bitrateFor(canvas.width, canvas.height);
-
-    // Stronger bitrate than the old 6 Mbps:
     mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bps });
+    mimeTypeRef = mr.mimeType || mime;
     id = `rec-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
     LAST_RECORDING_ID  = id;
     LAST_RECORDING_EXT = 'webm';
@@ -1868,34 +1915,40 @@ const CanvasRecording = (() => {
     startedAt = Date.now();
     active = true;
 
-    // Backend session (same contract as your old Recording)
-    let uploadOk = false;
-    try {
-      const rect = { width: canvas.width, height: canvas.height };
-      const meta = {
-        recording_id: id, sid: SID, started_at: new Date().toISOString(),
-        trigger, fps: FPS, viewport: { ...rect, dpr: 1 },
-        cursor_overlay: true,
-        state_id: window.__INIT_STATE?.state_id,
-        episode_id: window.__INIT_STATE?.episode_id,
-        task_name: window.__INIT_STATE?.task_name,
-        container: 'quad-views',
-        ext: 'webm'
-      };
-      const resp = await apiFetch('/api/record/start', {
-        method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(meta)
-      });
-      uploadOk = resp.ok;
-    } catch { uploadOk = false; }
+    // Broadcast start (for the mini HUD)
+    try { window.dispatchEvent(new CustomEvent('rec:started', { detail: { id, startedAt } })); } catch(_){}
 
-    if (!uploadOk && RECORDING_ALLOWED) {
-      alert('The server is not accepting demo video uploads right now. Verify will be blocked from saving a video.');
+    // Backend session (LIVE streaming) only if NOT in bufferedMode
+    let uploadOk = false;
+    if (!bufferedMode) {
+      try {
+        const rect = { width: canvas.width, height: canvas.height };
+        const meta = {
+          recording_id: id, sid: SID, started_at: new Date().toISOString(),
+          trigger, fps: FPS, viewport: { ...rect, dpr: 1 },
+          cursor_overlay: true,
+          state_id: window.__INIT_STATE?.state_id,
+          episode_id: window.__INIT_STATE?.episode_id,
+          task_name: window.__INIT_STATE?.task_name,
+          container: 'quad-views',
+          ext: 'webm'
+        };
+        const resp = await apiFetch('/api/record/start', {
+          method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(meta)
+        });
+        uploadOk = resp.ok;
+      } catch { uploadOk = false; }
+      
+      // Only show error if we're in LIVE mode and server rejected
+      if (!uploadOk) {
+        alert('The server is not accepting demo video uploads right now. Verify will be blocked from saving a video.');
+      }
     }
 
     mr.ondataavailable = async (ev) => {
       if (!ev.data || ev.data.size === 0) return;
-      // stream to backend in 1s chunks to match your contract
-      if (uploadOk) {
+      // LIVE stream (non-buffered), otherwise keep in memory
+      if (!bufferedMode && uploadOk) {
         try {
           const qs = new URLSearchParams({ rid: id, seq: String(chunks.length), sid: SID });
           await apiFetch(`/api/record/chunk?${qs}`, {
@@ -1905,46 +1958,24 @@ const CanvasRecording = (() => {
           return;
         } catch(_) {}
       }
-      chunks.push(ev.data); // fallback buffer
+      chunks.push(ev.data); // buffer
     };
 
     mr.onstop = async () => {
       cancelAnimationFrame(rafId); rafId = 0;
-
-      // Always try to close the server-side session if we think we had one
-      try {
-        await apiFetch('/api/record/stop', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ recording_id: id, duration_ms: Date.now()-startedAt })
-        });
-      } catch(_){ /* non-fatal */ }
-
-      // If streaming worked, we're done.
-      if (uploadOk) {
-        active = false;
-        return;
+      // Close server session only in live-stream mode
+      if (!bufferedMode && uploadOk) {
+        try {
+          await apiFetch('/api/record/stop', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ recording_id: id, duration_ms: Date.now()-startedAt })
+          });
+        } catch(_){}
       }
-
-      // From here on, the backend did NOT accept our stream.
-      // If demo video recording is required, do NOT save locally; surface the error.
-      if (RECORDING_ALLOWED) {
-        console.error('❌ Recording persistence required, but upload failed. No local fallback.');
-        alert('Recording could not be saved to the server. Please ensure the data collection server is reachable and try again.');
-        active = false;
-        return;
-      }
-
-      // Legacy/dev fallback: allow the browser to download if recording is NOT required
-      if (chunks.length && chunks[0] instanceof Blob) {
-        const mime = mr.mimeType || 'video/webm';
-        const blob = new Blob(chunks, { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `${id}.webm`; a.click();
-        URL.revokeObjectURL(url);
-      }
+      // Buffered mode: do nothing here; we will upload on Save.
       active = false;
+      try { window.dispatchEvent(new CustomEvent('rec:stopped', { detail: { id, durationMs: Date.now() - startedAt } })); } catch(_){}
     };
 
     mr.start(1000);
@@ -1970,7 +2001,43 @@ const CanvasRecording = (() => {
     await stopCompletePromise;
   }
 
-  return { ensureStart: start, stop, isActive: ()=>active };
+  // NEW: upload buffered chunks to backend now (called by Save)
+  async function flushToServer(){
+    if (uploaded) return false;                      // already uploaded
+    if (!chunks.length || !(chunks[0] instanceof Blob)) return false; // nothing buffered
+    const rect = { width: canvas?.width || 0, height: canvas?.height || 0 };
+    const meta = {
+      recording_id: id, sid: SID, started_at: new Date(startedAt || Date.now()).toISOString(),
+      trigger: 'manual-save', fps: FPS, viewport: { ...rect, dpr: 1 },
+      cursor_overlay: true,
+      state_id: window.__INIT_STATE?.state_id,
+      episode_id: window.__INIT_STATE?.episode_id,
+      task_name: window.__INIT_STATE?.task_name,
+      container: 'quad-views',
+      ext: 'webm'
+    };
+    const begin = await apiFetch('/api/record/start', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(meta)
+    });
+    if (!begin.ok) throw new Error('record/start failed');
+    for (let i = 0; i < chunks.length; i++){
+      const qs = new URLSearchParams({ rid: id, seq: String(i), sid: SID });
+      const chunk = chunks[i];
+      const r = await apiFetch(`/api/record/chunk?${qs}`, {
+        method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: chunk
+      });
+      if (!r.ok) throw new Error(`record/chunk ${i} failed`);
+    }
+    const fin = await apiFetch('/api/record/stop', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ recording_id: id, duration_ms: Math.max(0, Date.now()-startedAt) })
+    });
+    if (!fin.ok) throw new Error('record/stop failed');
+    uploaded = true;
+    return true;
+  }
+
+  return { ensureStart: start, stop, isActive: ()=>active, flushToServer };
 })();
 
 const Recording = (() => {
@@ -2244,44 +2311,220 @@ let RECORDING_ALLOWED = false;
 let LAST_RECORDING_ID  = null;
 let LAST_RECORDING_EXT = 'webm'; // MediaRecorder → webm in browsers
 
+// Explicit user "Save" state for the current take
+let RECORDING_MARKED_SAVED = false;
+
+// Format mm:ss
+function _fmt(ms){
+  const s = Math.max(0, Math.floor(ms/1000));
+  const mm = String(Math.floor(s/60)).padStart(2,'0');
+  const ss = String(s%60).padStart(2,'0');
+  return `${mm}:${ss}`;
+}
+
 // --- Recording hotkeys (bound only when recording is enabled) -----------------
 let RECORDING_HOTKEYS_BOUND = false;
 
 function bindRecordingHotkeysOnce() {
-  if (RECORDING_HOTKEYS_BOUND || !RECORDING_ALLOWED) return;
+  if (RECORDING_HOTKEYS_BOUND) return;
   RECORDING_HOTKEYS_BOUND = true;
 
   window.addEventListener('keydown', async (e) => {
-    // ignore modifiers, IME composition, or typing in inputs
     if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
     const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.defaultPrevented) return;
 
     const k = (e.key || '').toLowerCase();
 
-    if (k === 'q') {
-      // Stop recording
-      if (CanvasRecording.isActive()) {
+    if (k === 'a') {
+      // Start (manual mode only)
+      if (RECORDING_ALLOWED) {
         e.preventDefault();
-        try { await CanvasRecording.stop(); } catch (_) {}
-        console.log('🛑 Recording stopped via "q".');
+        await startRecordingManual('hotkey-a');
+      }
+    } else if (k === 'q') {
+      // Stop only (never save)
+      e.preventDefault();
+      if (RECORDING_ALLOWED) {
+        await stopRecordingManual();
+      } else if (CanvasRecording.isActive()) {
+        await CanvasRecording.stop();
       }
     } else if (k === 'r') {
-      // Re-record: stop (if needed) and start a fresh session
+      // Re-record
       e.preventDefault();
-      try { if (CanvasRecording.isActive()) await CanvasRecording.stop(); } catch (_) {}
-      try {
+      if (RECORDING_ALLOWED) {
+        await rerecordManual();
+      } else {
+        try { if (CanvasRecording.isActive()) await CanvasRecording.stop(); } catch(_){}
         await CanvasRecording.ensureStart('hotkey-rerecord');
-        console.log('⏺️ Re-record started via "r".');
-      } catch (err) {
-        console.warn('Could not start re-recording:', err);
+      }
+    } else if (k === 's') {
+      // Save (manual mode only)
+      if (RECORDING_ALLOWED) {
+        e.preventDefault();
+        await saveRecordingManual();
       }
     }
   });
 }
 
 function maybeRecord(trigger) {
-  if (RECORDING_ALLOWED) CanvasRecording.ensureStart(trigger);
+  // Don't auto-record when demo videos are disabled or when in buffered demo-video mode
+  // (in buffered mode, recording only starts manually via 'a' key or UI)
+  return;
+}
+
+function createRecordingMiniUI(){
+  let el = document.getElementById('recMini');
+  if (el) return el;
+
+  el = document.createElement('div');
+  el.id = 'recMini';
+  el.innerHTML = `
+    <span class="dot" aria-hidden="true"></span>
+    <span class="state" id="recMiniState">Idle</span>
+    <span class="time" id="recMiniTime">00:00</span>
+    <button class="btn" id="recMiniStart" title="Start (a)" aria-label="Start">▶</button>
+    <button class="btn" id="recMiniStop"  title="Stop (q)"  aria-label="Stop">■</button>
+    <button class="btn" id="recMiniRerec" title="Re-record (r)" aria-label="Re-record">⟲</button>
+    <button class="btn" id="recMiniSave"  title="Save (s)"  aria-label="Save">💾</button>
+    <span class="saved-badge" id="recMiniSaved">Saved ✓</span>
+  `;
+  document.body.appendChild(el);
+
+  el.querySelector('#recMiniStart').addEventListener('click', ()=> startRecordingManual('ui-start'));
+  el.querySelector('#recMiniStop' ).addEventListener('click', ()=> stopRecordingManual());
+  el.querySelector('#recMiniRerec').addEventListener('click', ()=> rerecordManual());
+  el.querySelector('#recMiniSave' ).addEventListener('click', ()=> saveRecordingManual());
+
+  // Live wiring to recording lifecycle
+  window.addEventListener('rec:started', (e)=>{
+    _recMiniUpdate('recording', e.detail?.startedAt || Date.now());
+  });
+  window.addEventListener('rec:stopped', (e)=>{
+    _recMiniUpdate('stopped', null, e.detail?.durationMs ?? null);
+  });
+
+  // Initialize view
+  if (RECORDING_ALLOWED) el.classList.add('visible');
+  _recMiniUpdate('idle');
+  return el;
+}
+
+let _recMiniTimerRAF = 0;
+let _recMiniStartedAt = 0;
+
+function _recMiniUpdate(state, startedAt = null, stoppedDurationMs = null){
+  const el = document.getElementById('recMini');
+  if (!el) return;
+
+  const dot   = el.querySelector('.dot');
+  const stTxt = el.querySelector('#recMiniState');
+  const tTxt  = el.querySelector('#recMiniTime');
+  const saved = el.querySelector('#recMiniSaved');
+  const start = el.querySelector('#recMiniStart');
+  const stop  = el.querySelector('#recMiniStop');
+  const rerec = el.querySelector('#recMiniRerec');
+  const save  = el.querySelector('#recMiniSave');
+
+  if (_recMiniTimerRAF) cancelAnimationFrame(_recMiniTimerRAF), _recMiniTimerRAF = 0;
+
+  if (state === 'recording') {
+    dot.classList.add('recording');
+    stTxt.textContent = 'REC';
+    _recMiniStartedAt = startedAt || Date.now();
+    const tick = ()=>{ tTxt.textContent = _fmt(Date.now() - _recMiniStartedAt); _recMiniTimerRAF = requestAnimationFrame(tick); };
+    _recMiniTimerRAF = requestAnimationFrame(tick);
+    start.disabled = true;  stop.disabled = false; rerec.disabled = false; save.disabled = true;
+    el.classList.toggle('saved', false);
+  } else if (state === 'stopped') {
+    dot.classList.remove('recording');
+    stTxt.textContent = 'Stopped';
+    const dur = (typeof stoppedDurationMs === 'number') ? stoppedDurationMs : (_recMiniStartedAt ? Date.now() - _recMiniStartedAt : 0);
+    tTxt.textContent = _fmt(dur);
+    start.disabled = false; stop.disabled = true; rerec.disabled = false; save.disabled = RECORDING_MARKED_SAVED;
+  } else {
+    dot.classList.remove('recording');
+    stTxt.textContent = 'Idle';
+    tTxt.textContent = '00:00';
+    start.disabled = false; stop.disabled = true; rerec.disabled = !LAST_RECORDING_ID; save.disabled = RECORDING_MARKED_SAVED;
+    el.classList.toggle('saved', false);
+  }
+
+  saved.style.display = RECORDING_MARKED_SAVED ? 'inline' : 'none';
+}
+
+// Button actions (manual mode)
+async function startRecordingManual(trigger='manual'){
+  if (CanvasRecording.isActive()) return;
+  RECORDING_MARKED_SAVED = false;           // new take, clear previous saved state
+  _recMiniUpdate('idle');
+  await CanvasRecording.ensureStart(trigger);
+  if (!CanvasRecording.isActive()) _recMiniUpdate('idle'); // start failed
+}
+
+async function stopRecordingManual(){
+  if (!CanvasRecording.isActive()) return;
+  await CanvasRecording.stop();             // stop only; do NOT save
+  _recMiniUpdate('stopped');
+}
+
+async function rerecordManual(){
+  try { if (CanvasRecording.isActive()) await CanvasRecording.stop(); } catch(_){}
+  RECORDING_MARKED_SAVED = false;
+  _recMiniUpdate('idle');
+  await CanvasRecording.ensureStart('manual-rerecord');
+}
+
+async function saveRecordingManual(){
+  // In the new manual save system, 's' saves the current episode to the dataset
+  // We don't need to check for LAST_RECORDING_ID since episodes can be saved without recordings
+  if (CanvasRecording.isActive()) {
+    alert('Cannot save while recording is active. Stop recording first with "q".');
+    return;
+  }
+
+  // 1) Upload buffered recording only now (demo-video mode)
+  try {
+    const didUpload = await CanvasRecording.flushToServer();
+    if (didUpload) {
+      console.log('✅ Uploaded recording on Save:', LAST_RECORDING_ID);
+    }
+  } catch (e) {
+    console.error('❌ Upload failed on Save:', e);
+    alert('Could not upload the recording to the server. Please try again.');
+    return;
+  }
+
+  // 2) Then persist episodes/metadata as before
+  try {
+    const resp = await apiFetch('/api/control/save', { 
+      method: 'POST', 
+      headers: {'Content-Type': 'application/json'}, 
+      body: JSON.stringify({}) // Save all pending episodes
+    });
+    if (resp.ok) {
+      const result = await resp.json();
+      if (result.status === 'success' && result.saved_episodes && result.saved_episodes.length > 0) {
+        RECORDING_MARKED_SAVED = true;
+        _recMiniUpdate('stopped');
+        console.log('✅ Episodes saved:', result.saved_episodes);
+      } else if (result.status === 'noop') {
+        // Nothing to save is OK - don't show error
+        console.log('ℹ️ No episodes were pending save');
+        RECORDING_MARKED_SAVED = true;
+        _recMiniUpdate('stopped');
+      } else {
+        alert('No episodes were ready to save. Complete an episode first.');
+      }
+    } else {
+      const errorText = await resp.text().catch(() => String(resp.status));
+      alert('Could not save episodes to the dataset. Please try again.\n' + errorText.slice(0,200));
+    }
+  } catch(e) {
+    alert('Could not save episodes to the dataset. Please try again.\n' + (e?.message || String(e)).slice(0,200));
+  }
 }
 
 // Create a blue prompt bar that contains the prompt text
@@ -2745,6 +2988,7 @@ loader.load(
     console.log(`[recording] ${RECORDING_ALLOWED ? 'enabled (backend flag)' : 'disabled'}`);
     
     bindRecordingHotkeysOnce();
+    if (RECORDING_ALLOWED) createRecordingMiniUI();
     const cameraModels = state.camera_models ?? {};
     // If the data collection server isn't available, stop building UI
     if (!state || Object.keys(state).length === 0 || !cameraModels) {
@@ -4811,17 +5055,20 @@ loader.load(
       // NEW: If "Task Already Completed" is selected, POST that and exit early.
       if (taskCompletedSelected) {
         try {
+          const payload = {
+            state_id: state.state_id,
+            episode_id: state.episode_id,
+            task_already_completed: true
+          };
+          if (RECORDING_MARKED_SAVED && LAST_RECORDING_ID) {
+            payload.recording_id  = LAST_RECORDING_ID;
+            payload.recording_ext = LAST_RECORDING_EXT;
+          }
+          
           const response = await apiFetch(`/api/task-already-completed`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              state_id: state.state_id,
-              episode_id: state.episode_id,
-              task_already_completed: true,
-              // NEW: bind this submission to the video the user just recorded
-              recording_id:  LAST_RECORDING_ID,
-              recording_ext: LAST_RECORDING_EXT
-            })
+            body: JSON.stringify(payload)
           });
 
           if (response.ok) {
@@ -4865,24 +5112,24 @@ loader.load(
       const slidersChangedAxes = getChangedAxes();
 
       try {
+        const payload = {
+          joint_positions: jointMap,
+          gripper: gripDir,
+          ee_pose: { position: [tgtPos.x, tgtPos.y, tgtPos.z], rpy: [eeEuler.x, eeEuler.y, eeEuler.z] },
+          state_id: state.state_id,
+          episode_id: state.episode_id,
+          pose_reset_to_default: poseResetToDefault,
+          sliders_changed_axes: slidersChangedAxes
+        };
+        if (RECORDING_MARKED_SAVED && LAST_RECORDING_ID) {
+          payload.recording_id  = LAST_RECORDING_ID;
+          payload.recording_ext = LAST_RECORDING_EXT;
+        }
+
         const response = await apiFetch(`/api/submit-goal`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            joint_positions: jointMap,
-            gripper: gripDir,
-            ee_pose: {
-              position: [tgtPos.x, tgtPos.y, tgtPos.z],
-              rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
-            },
-            state_id: state.state_id,
-            episode_id: state.episode_id,
-            pose_reset_to_default: poseResetToDefault,
-            sliders_changed_axes: slidersChangedAxes,
-            // NEW: bind this submission to the video the user just recorded
-            recording_id:  LAST_RECORDING_ID,
-            recording_ext: LAST_RECORDING_EXT
-          })
+          body: JSON.stringify(payload)
         });
 
         if (response.ok) {

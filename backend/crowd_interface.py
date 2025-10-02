@@ -49,8 +49,8 @@ REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
-    "front":       4,   # change indices / paths as needed
-    "left":        13,
+    "front":       12,   # change indices / paths as needed
+    "left":        4,
     "right":       2,
     "perspective": 0,
 }
@@ -128,7 +128,7 @@ class CrowdInterface():
                  # --- NEW: saving important-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
-                 prompt_sequence_clear: bool = False,
+                 prompt_sequence_clear: bool = True,
                  # NEW: used ONLY for prompt substitution and demo assets
                  prompt_task_name: str | None = None,
                  # --- NEW: demo video recording ---
@@ -422,6 +422,10 @@ class CrowdInterface():
             except Exception as e:
                 print(f"⚠️ Could not prepare demo videos directory '{self._demo_videos_dir}': {e}")
                 self.record_demo_videos = False
+
+        # --- Manual save system: require explicit 'save' before committing an episode ---
+        # Episodes are kept in a pending state until /api/control/save (or 's') is pressed.
+        self._episodes_pending_save: set[str] = set()
 
     # ---------- Demo video config helpers (tell the frontend where to save) ----------
     def _repo_root(self) -> Path:
@@ -1682,7 +1686,7 @@ class CrowdInterface():
     def _finalize_episode_if_still_empty(self, episode_id: str):
         """
         Timer callback: finalize the episode iff it remained empty through the grace period.
-        Runs without holding the lock initially; acquires it to re-check and finalize.
+        If manual_save_only is enabled, DO NOT persist yet; mark it "pending save" and advance.
         """
         if self._shutting_down:
             return
@@ -1696,49 +1700,38 @@ class CrowdInterface():
                 print(f"🛑 Finalize aborted for episode {episode_id} — new states arrived.")
                 return
 
-            # Proceed with your existing inline finalize logic (kept under lock for correctness)
             self.episodes_being_completed.add(episode_id)
-            print(f"🎬 Episode {episode_id} completed (after grace). Saving episode to dataset...")
 
             try:
-                if episode_id in self.completed_states_buffer_by_episode:
-                    buffered_states = self.completed_states_buffer_by_episode[episode_id]
-                    for sid in sorted(buffered_states.keys()):
-                        entry = buffered_states[sid]
-                        if isinstance(entry, dict) and entry.get("_manifest"):
-                            obs = self._load_obs_from_disk(entry.get("obs_path"))
-                            frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                            self.dataset.add_frame(frame)
-                            self._delete_obs_from_disk(entry.get("obs_path"))
-                        else:
-                            self.dataset.add_frame(entry)
-                    print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
-                    del self.completed_states_buffer_by_episode[episode_id]
-                    self._purge_episode_cache(episode_id)
-
+                # --- MANUAL SAVE ONLY: defer saving until explicit 's' ---
+                print(f"🎬 Episode {episode_id} completed (after grace). Deferring SAVE until explicit 's'.")
+                # Mark as completed & pending save; leave buffered states and on-disk obs intact
                 self.episodes_completed.add(episode_id)
-                self.dataset.save_episode()
+                self._episodes_pending_save.add(episode_id)
 
-                # Clean up episode data structures
+                # Clean up episode containers that affect serving
                 if episode_id in self.pending_states_by_episode:
                     del self.pending_states_by_episode[episode_id]
                 if episode_id in self.served_states_by_episode:
                     del self.served_states_by_episode[episode_id]
-                if episode_id in self.completed_states_by_episode:
-                    del self.completed_states_by_episode[episode_id]
-                print(f"🧹 Dropped completed episode {episode_id} from monitor memory")
 
                 # Advance serving pointer
                 if self.current_serving_episode == episode_id:
-                    available_episodes = [ep_id for ep_id in self.pending_states_by_episode.keys()
-                                        if ep_id not in self.episodes_completed and
-                                            self.pending_states_by_episode[ep_id] and ep_id is not None]
+                    available_episodes = [
+                        ep_id for ep_id in self.pending_states_by_episode.keys()
+                        if ep_id not in self.episodes_completed
+                        and self.pending_states_by_episode[ep_id]
+                        and ep_id is not None
+                    ]
                     if available_episodes:
                         self.current_serving_episode = min(available_episodes)
                         print(f"🎬 Now serving next episode {self.current_serving_episode}")
                     else:
                         self.current_serving_episode = None
                         print("🏁 All episodes completed, no more episodes to serve")
+
+                # Note: DO NOT purge cache, DO NOT add frames to dataset, DO NOT save.
+                return
             finally:
                 self.episodes_being_completed.discard(episode_id)
 
@@ -2339,6 +2332,66 @@ class CrowdInterface():
             # Clear the episode cache directory
             self._purge_episode_cache(episode_id)
 
+    # --- NEW: explicit commit of completed episodes ---
+    def save_completed_episodes(self, episode_ids: list[str] | None = None) -> list[str]:
+        """
+        Persist (commit) one or more *already completed* episodes to the dataset.
+        - Adds buffered frames in chronological order
+        - Calls dataset.save_episode() once per episode
+        - Purges episode cache and memory bookkeeping
+        Returns a list of episode_ids that were saved.
+        """
+        saved: list[str] = []
+        if self.dataset is None:
+            print("⚠️ save_completed_episodes: dataset is not initialized")
+            return saved
+
+        with self.state_lock:
+            # Compute which episodes we can save
+            if episode_ids is None:
+                to_save = sorted(list(self._episodes_pending_save))
+            else:
+                to_save = [ep for ep in episode_ids if ep in self._episodes_pending_save]
+
+            for ep in to_save:
+                # Only save episodes that have no pending states
+                if self.pending_states_by_episode.get(ep):
+                    print(f"⏭️ Episode {ep} still has pending states; skipping save.")
+                    continue
+
+                buf = self.completed_states_buffer_by_episode.get(ep, {})
+                print(f"💾 Saving episode {ep}: {len(buf)} buffered states")
+                # Add frames in chronological order
+                for sid in sorted(buf.keys()):
+                    entry = buf[sid]
+                    if isinstance(entry, dict) and entry.get("_manifest"):
+                        obs = self._load_obs_from_disk(entry.get("obs_path"))
+                        frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                        self.dataset.add_frame(frame)
+                        self._delete_obs_from_disk(entry.get("obs_path"))
+                    else:
+                        self.dataset.add_frame(entry)
+
+                # Commit this episode
+                self.dataset.save_episode()
+                print(f"✅ Episode {ep} saved to dataset")
+
+                # Clean up memory/cache
+                self._episodes_pending_save.discard(ep)
+                if ep in self.completed_states_buffer_by_episode:
+                    del self.completed_states_buffer_by_episode[ep]
+                # Keep completed_states_by_episode for counts if you want, or clear to free RAM
+                if ep in self.completed_states_by_episode:
+                    del self.completed_states_by_episode[ep]
+                try:
+                    self._purge_episode_cache(ep)
+                except Exception:
+                    pass
+
+                saved.append(ep)
+
+        return saved
+
     def auto_label_previous_states(self, important_state_id):
         """
         Queue an auto-labeling task for unimportant pending states that are 
@@ -2735,7 +2788,9 @@ class CrowdInterface():
                     "pending_count": len(self.pending_states_by_episode.get(episode_id, {})),
                     "completed_count": len(self.completed_states_by_episode.get(episode_id, {})),
                     "is_current_serving": episode_id == self.current_serving_episode,
-                    "is_completed": episode_id in self.episodes_completed
+                    "is_completed": episode_id in self.episodes_completed,
+                    # --- NEW: tell the monitor if this episode is waiting for an explicit save
+                    "pending_save": episode_id in self._episodes_pending_save
                 }
             
             return {
@@ -3730,6 +3785,30 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             else:
                 return jsonify({"status": "error", "message": "Not currently in reset state"})
         except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/control/save", methods=["POST"])
+    def save_episodes():
+        """
+        Explicitly persist completed episodes (equivalent to pressing 's' in the UI).
+        Optional body: {"episode_ids": ["<ep1>", "<ep2>", ...]} to save specific ones.
+        Without a body, saves *all* episodes that are pending save.
+        """
+        try:
+            if crowd_interface._shutting_down:
+                return jsonify({"status": "shutting_down"}), 503
+
+            data = request.get_json(force=True, silent=True) or {}
+            episode_ids = data.get("episode_ids")
+            if episode_ids is not None and not isinstance(episode_ids, list):
+                return jsonify({"status": "error", "message": "episode_ids must be a list"}), 400
+
+            saved = crowd_interface.save_completed_episodes(episode_ids)
+            if not saved:
+                return jsonify({"status": "noop", "message": "nothing to save", "saved_episodes": []}), 200
+            return jsonify({"status": "success", "saved_episodes": saved})
+        except Exception as e:
+            print(f"❌ Error saving episodes: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
     
     @app.route("/api/save-calibration", methods=["POST"])
