@@ -31,3 +31,6 @@ __pycache__/
 *.pyd
 # Local Netlify folder
 .netlify
+
+# Large files
+**/videos/
