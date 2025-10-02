@@ -50,7 +50,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       4,   # change indices / paths as needed
-    "left":        12,
+    "left":        13,
     "right":       2,
     "perspective": 0,
 }
@@ -361,7 +361,7 @@ class CrowdInterface():
 
         # --- NEW: Important-state cam_main image sequence sink ---
         self.save_maincam_sequence = bool(save_maincam_sequence)
-        self._prompt_seq_dir = Path(prompt_sequence_dir or "prompts/demo/drawer").resolve()
+        self._prompt_seq_dir = Path(prompt_sequence_dir or "prompts/drawer/snapshots").resolve()
         self._prompt_seq_lock = Lock()
         self._prompt_seq_index = 1
         # If a sequence dir was set but no prompt_task_name, infer prompt task from the leaf folder
@@ -1351,7 +1351,55 @@ class CrowdInterface():
         with state_id <= up_to_state_id, in ascending order of state_id.
         Each image is a data URL (data:image/jpeg;base64,...) produced from
         observation.images.cam_main (or the fallbacks handled by _load_main_cam_from_obs).
+        
+        If save_maincam_sequence is enabled, read from the saved sequence directory.
+        Otherwise, read from the observation disk cache.
         """
+        
+        # If we have a saved sequence directory, prefer reading from there
+        if self.save_maincam_sequence and self._prompt_seq_dir.exists():
+            return self._gather_from_sequence_directory(up_to_state_id)
+        
+        # Fallback: collect from observation disk cache
+        return self._gather_from_obs_cache(episode_id, up_to_state_id)
+    
+    def _gather_from_sequence_directory(self, up_to_state_id: int) -> tuple[list[str], list[int]]:
+        """Read important main camera frames from the saved sequence directory."""
+        seq_urls: list[str] = []
+        seq_ids: list[int] = []
+        
+        try:
+            # Get all JPEG files in the sequence directory
+            jpg_files = sorted(self._prompt_seq_dir.glob("*.jpg"))
+            
+            for jpg_file in jpg_files:
+                try:
+                    # Extract sequence index from filename (000001.jpg -> 1)
+                    seq_idx = int(jpg_file.stem)
+                    
+                    # For now, use the sequence index as state_id
+                    # In a more complete implementation, you might want to maintain
+                    # a mapping from sequence index to actual state_id
+                    if seq_idx <= up_to_state_id:
+                        # Read and encode the image
+                        img_bgr = cv2.imread(str(jpg_file))
+                        if img_bgr is not None:
+                            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                            data_url = self._encode_jpeg_base64(img_rgb)
+                            seq_urls.append(data_url)
+                            seq_ids.append(seq_idx)
+                        
+                except (ValueError, cv2.error):
+                    # Skip files that don't follow the expected naming pattern
+                    continue
+                    
+        except Exception as e:
+            print(f"⚠️ Error reading from sequence directory {self._prompt_seq_dir}: {e}")
+            
+        return seq_urls, seq_ids
+    
+    def _gather_from_obs_cache(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
+        """Read important main camera frames from the observation disk cache."""
         # Collect (sid -> obs_path) for important states from both pending and completed buffers
         paths_by_sid: dict[int, str] = {}
 
@@ -3907,6 +3955,132 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             print(f"❌ Error uploading demo video: {e}")
             traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+    
+    # Streaming recording endpoints for canvas-based recording
+    # In-memory storage for active recording sessions
+    recording_sessions = {}  # recording_id -> {task_name, ext, chunks: [bytes]}
+    
+    @app.route("/api/record/start", methods=["POST"])
+    def record_start():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface.record_demo_videos:
+            return jsonify({"error": "Demo video recording is not enabled"}), 400
+        
+        try:
+            data = request.get_json() or {}
+            recording_id = data.get('recording_id')
+            task_name = data.get('task_name') or crowd_interface._task_name() or 'default'
+            ext = data.get('ext', 'webm')
+            
+            if not recording_id:
+                return jsonify({"error": "missing recording_id"}), 400
+            
+            # Initialize session
+            recording_sessions[recording_id] = {
+                'task_name': task_name,
+                'ext': ext,
+                'chunks': [],
+                'started_at': data.get('started_at'),
+                'metadata': data
+            }
+            
+            return jsonify({"ok": True})
+            
+        except Exception as e:
+            print(f"❌ Error starting recording: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/record/chunk", methods=["POST"])
+    def record_chunk():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface.record_demo_videos:
+            return jsonify({"error": "Demo video recording is not enabled"}), 400
+        
+        try:
+            recording_id = request.args.get('rid')
+            seq = request.args.get('seq', '0')
+            
+            if not recording_id or recording_id not in recording_sessions:
+                return jsonify({"error": "unknown recording_id"}), 404
+            
+            # Get the raw bytes from the request
+            chunk_data = request.get_data()
+            if not chunk_data:
+                return jsonify({"error": "no data"}), 400
+            
+            # Store chunk in memory (ordered by sequence)
+            session = recording_sessions[recording_id]
+            session['chunks'].append((int(seq), chunk_data))
+            
+            return jsonify({"ok": True})
+            
+        except Exception as e:
+            print(f"❌ Error storing chunk: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/record/stop", methods=["POST"])
+    def record_stop():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface.record_demo_videos:
+            return jsonify({"error": "Demo video recording is not enabled"}), 400
+        
+        try:
+            data = request.get_json() or {}
+            recording_id = data.get('recording_id')
+            
+            if not recording_id or recording_id not in recording_sessions:
+                return jsonify({"error": "unknown recording_id"}), 404
+            
+            session = recording_sessions[recording_id]
+            
+            # Sort chunks by sequence number
+            chunks = sorted(session['chunks'], key=lambda x: x[0])
+            
+            if not chunks:
+                recording_sessions.pop(recording_id, None)
+                return jsonify({"error": "no chunks received"}), 400
+            
+            # Combine all chunks into a single video file
+            try:
+                # Get next filename using the counter system
+                ext = session['ext']
+                filename, index = crowd_interface._next_video_filename(ext)
+                file_path = crowd_interface._demo_videos_dir / filename
+                
+                # Write all chunks to the file
+                with open(file_path, 'wb') as f:
+                    for seq, chunk_data in chunks:
+                        f.write(chunk_data)
+                
+                # Clean up session
+                recording_sessions.pop(recording_id, None)
+                
+                # Optionally upload to blob storage (if configured)
+                public_url = crowd_interface._maybe_upload_to_blob(str(file_path))
+                
+                return jsonify({
+                    "ok": True,
+                    "filename": filename,
+                    "path": str(file_path),
+                    "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
+                    "public_url": public_url,
+                    "index": index
+                })
+                
+            except Exception as e:
+                print(f"❌ Error finalizing recording: {e}")
+                recording_sessions.pop(recording_id, None)
+                return jsonify({"error": f"failed to save: {e}"}), 500
+            
+        except Exception as e:
+            print(f"❌ Error stopping recording: {e}")
             return jsonify({"error": str(e)}), 500
     
     return app

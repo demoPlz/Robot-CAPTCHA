@@ -79,7 +79,7 @@ def _pop_crowd_cli_overrides(argv=None):
         "--sequence-dir",
         type=str,
         dest="crowd_seq_dir",
-        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demo/{--task-name}').",
+        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demo/{--task-name}/snapshots').",
     )
     ap.add_argument(
         "--sequence-clear",
@@ -93,7 +93,7 @@ def _pop_crowd_cli_overrides(argv=None):
         type=str,
         dest="crowd_task_name",
         help="One-word task name used for prompt placeholder substitution and, if --sequence-dir is not provided, "
-             "to derive the sequence dir as '<repo>/prompts/demo/{task_name}' "
+             "to derive the sequence dir as '<repo>/prompts/demo/{task_name}/snapshots' "
              "(ignored if --sequence-dir is provided).",
     )
     # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
@@ -274,10 +274,10 @@ def control_robot(cfg: ControlPipelineConfig):
     if getattr(_CROWD_OVERRIDES, "crowd_seq_dir", None) is not None:
         ci_kwargs["prompt_sequence_dir"] = _CROWD_OVERRIDES.crowd_seq_dir
     else:
-        # Derive prompts/demo/{task_name} if provided and no explicit --sequence-dir was given
+        # Derive prompts/{task_name}/snapshots if provided and no explicit --sequence-dir was given
         if safe:
             repo_root = Path(__file__).resolve().parent / ".."
-            seq_dir = (repo_root / "prompts" / "demo" / safe).resolve()
+            seq_dir = (repo_root / "prompts" / safe / "snapshots").resolve()
             ci_kwargs["prompt_sequence_dir"] = str(seq_dir)
             try:
                 logging.info(f"Using derived prompt sequence dir from --task-name='{safe}': {seq_dir}")
@@ -289,14 +289,14 @@ def control_robot(cfg: ControlPipelineConfig):
     # --- NEW: demo video recording controls ---
     if getattr(_CROWD_OVERRIDES, "crowd_record_videos", False):
         ci_kwargs["record_demo_videos"] = True
-        # If a custom dir isn't provided, CrowdInterface will derive prompts/demos/{task}/videos
+        # If a custom dir isn't provided, CrowdInterface will derive prompts/{task}/videos
         if getattr(_CROWD_OVERRIDES, "crowd_videos_dir", None) is not None:
             ci_kwargs["demo_videos_dir"] = _CROWD_OVERRIDES.crowd_videos_dir
         else:
             # Derive default if we have a sanitized task name
             if safe:
                 repo_root = Path(__file__).resolve().parent / ".."
-                default_vdir = (repo_root / "prompts" / "demos" / safe / "videos").resolve()
+                default_vdir = (repo_root / "prompts" / safe / "videos").resolve()
                 ci_kwargs["demo_videos_dir"] = str(default_vdir)
 
     crowd_interface = CrowdInterface(**ci_kwargs)

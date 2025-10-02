@@ -1179,6 +1179,39 @@
   </div>
 <script type="module">
 
+// === High‑quality recording profile ==========================================
+const HQ_REC = {
+  // Render more frames so motion & pointer look smooth
+  fps: 60,
+
+  // Pixel up‑scale for the compositor (independent from the on‑screen UI size)
+  // Final recorded size = layout.W×layout.H, then multiplied by this effective scale.
+  baseScale: 2.0,
+
+  // Output size targets/caps. We scale up to at least ~1080p if the layout allows.
+  targetWidth: 1920,      // aim for ≥1080p width
+  maxWidth:   2560,       // safety caps (≈1440p when aspect isn't 16:9)
+  maxHeight:  1440,
+
+  // Prefer newer codecs; fall back gracefully.
+  codecPrefs: [
+    'video/webm;codecs=av01.0.08M.08',  // AV1 (Chrome/Edge newish)
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ],
+
+  // Bitrate ladder (scale with output area). Adjust to taste.
+  bitrateFor(w, h) {
+    const px = w * h;
+    if (px >= 2560*1440) return 22_000_000;  // ~22 Mbps for QHD
+    if (px >= 1920*1080) return 16_000_000;  // 16 Mbps for 1080p
+    if (px >= 1280*720 ) return 10_000_000;  // 10 Mbps for 720p
+    return 8_000_000;                         // smaller canvases
+  }
+};
+// ============================================================================
+
 /* ---------- stable per-browser session id + fetch helper ---------- */
 const SID_STORAGE_KEY = 'crowd_sid';
 function getStableSID() {
@@ -1480,11 +1513,13 @@ const CanvasRecording = (() => {
   let canvas, ctx, stream, mr, chunks = [], active = false, id, startedAt = 0;
   let layout = null;            // {W,H, cells:[{x,y,w,h, view}]}
   let cursor = { x: -1, y: -1, down: false };
+  let recScale = 1;  // logical→pixel scale used by the compositor
 
   function pickMime(){
-    const tryTypes = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
-    for (const t of tryTypes) if (MediaRecorder.isTypeSupported(t)) return t;
-    return '';
+    for (const t of HQ_REC.codecPrefs) {
+      try { if (MediaRecorder.isTypeSupported(t)) return t; } catch (_) {}
+    }
+    return ''; // let the browser pick
   }
 
   // Mirror your grid sizing so the compositor matches the on-screen look
@@ -1522,6 +1557,9 @@ const CanvasRecording = (() => {
     canvas.style.top  = '-10000px';
     document.body.appendChild(canvas);
     ctx = canvas.getContext('2d', { alpha: false });
+    // Prefer the best resampling:
+    ctx.imageSmoothingEnabled = true;
+    try { ctx.imageSmoothingQuality = 'high'; } catch(_) {}
   }
 
   // Cover-fit draw (like CSS background-size: cover)
@@ -1597,12 +1635,161 @@ const CanvasRecording = (() => {
     view._snapshotImg = img;
   }
 
+  // ▶ NEW: draw DOM HUDs into the compositor
+  const DRAW_HUDS_IN_CANVAS = true;
+
+  // SVG paths for icons so we can draw crisp vectors on canvas
+  const RESET_SVG_PATH = 'M22.719 12A10.719 10.719 0 0 1 1.28 12h.838a9.916 9.916 0 1 0 1.373-5H8v1H2V2h1v4.2A10.71 10.71 0 0 1 22.719 12z';
+  const HOME_SVG_PATH  = 'M 24.962891 1.0546875 A 1.0001 1.0001 0 0 0 24.384766 1.2636719 L 1.3847656 19.210938 A 1.0005659 1.0005659 0 0 0 2.6152344 20.789062 L 4 19.708984 L 4 46 A 1.0001 1.0001 0 0 0 5 47 L 18.832031 47 A 1.0001 1.0001 0 0 0 19.158203 47 L 30.832031 47 A 1.0001 1.0001 0 0 0 31.158203 47 L 45 47 A 1.0001 1.0001 0 0 0 46 46 L 46 19.708984 L 47.384766 20.789062 A 1.0005657 1.0005657 0 1 0 48.615234 19.210938 L 41 13.269531 L 41 6 L 35 6 L 35 8.5859375 L 25.615234 1.2636719 A 1.0001 1.0001 0 0 0 24.962891 1.0546875 z M 25 3.3222656 L 44 18.148438 L 44 45 L 32 45 L 32 26 L 18 26 L 18 45 L 6 45 L 6 18.148438 L 25 3.3222656 z M 37 8 L 39 8 L 39 11.708984 L 37 10.146484 L 37 8 z M 20 28 L 30 28 L 30 45 L 20 45 L 20 28 z';
+
+  function isVisible(el){
+    if (!el) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && +cs.opacity !== 0;
+  }
+  function relRect(el, container){
+    const er = el.getBoundingClientRect();
+    const cr = container.getBoundingClientRect();
+    return { x: er.left - cr.left, y: er.top - cr.top, w: er.width, h: er.height };
+  }
+  function roundRect(ctx, x, y, w, h, r){
+    const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x+rr, y);
+    ctx.lineTo(x+w-rr, y);
+    ctx.quadraticCurveTo(x+w, y, x+w, y+rr);
+    ctx.lineTo(x+w, y+h-rr);
+    ctx.quadraticCurveTo(x+w, y+h, x+w-rr, y+h);
+    ctx.lineTo(x+rr, y+h);
+    ctx.quadraticCurveTo(x, y+h, x, y+h-rr);
+    ctx.lineTo(x, y+rr);
+    ctx.quadraticCurveTo(x, y, x+rr, y);
+    ctx.closePath();
+  }
+
+  function drawGripHUD(ctx, view, baseX, baseY){
+    const hud = view.hudGrip?.el; if (!hud || !isVisible(hud)) return;
+    const badgeEl = view.hudGrip.badge;
+    const btnEl   = view.hudGrip.btn;
+
+    const H = relRect(hud, view.container);
+    const B = relRect(badgeEl, view.container);
+    const T = relRect(btnEl, view.container);
+
+    const gx = baseX + H.x, gy = baseY + H.y;
+
+    // Glass card
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    roundRect(ctx, gx, gy, H.w, H.h, 14);
+    ctx.fillStyle = 'rgba(255,255,255,0.24)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.stroke();
+
+    // Badge (status)
+    const status =
+      badgeEl.classList.contains('grasped') ? 'grasped' :
+      badgeEl.classList.contains('contact') ? 'contact' : 'free';
+    const badgeColor =
+      status === 'grasped' ? '#22c55e' :
+      status === 'contact' ? '#f59e0b' : '#9ca3af';
+
+    roundRect(ctx, baseX + B.x, baseY + B.y, B.w, B.h, Math.min(B.h/2, 11));
+    ctx.fillStyle = badgeColor;
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 11px system-ui, -apple-system, Segoe UI, Roboto';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(status, baseX + B.x + B.w/2, baseY + B.y + B.h/2);
+
+    // Toggle (Open/Close)
+    const isOpen = btnEl.classList.contains('open');
+    const btnColor = isOpen ? '#10b981' : '#ef4444';
+    roundRect(ctx, baseX + T.x, baseY + T.y, T.w, T.h, 9);
+    ctx.fillStyle = btnColor;
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 12px system-ui, -apple-system, Segoe UI, Roboto';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(btnEl.textContent?.trim() || (isOpen ? 'Open' : 'Close'),
+                 baseX + T.x + T.w/2, baseY + T.y + T.h/2);
+
+    ctx.restore();
+  }
+
+  function drawIconButton(ctx, view, el, baseX, baseY, pathStr, viewBoxSize){
+    if (!el || !isVisible(el)) return;
+    const R = relRect(el, view.container);
+    const x = baseX + R.x, y = baseY + R.y, w = R.w, h = R.h;
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    // glass box
+    roundRect(ctx, x, y, w, h, 14);
+    ctx.fillStyle = 'rgba(255,255,255,0.24)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.stroke();
+
+    // icon
+    const vb = viewBoxSize; // e.g., 24 for reset, 50 for home
+    const scale = Math.min(w, h) / vb * 0.82; // slight inset
+    ctx.translate(x + w/2, y + h/2);
+    ctx.scale(scale, scale);
+    ctx.translate(-vb/2, -vb/2);
+    ctx.fillStyle = '#111827';
+    try {
+      const p = new Path2D(pathStr);
+      ctx.fill(p);
+    } catch {
+      // Fallback: simple emoji if Path2D path parsing isn't supported
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.fillStyle = '#111827';
+      ctx.font = `${Math.round(Math.min(w,h)*0.7)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⌁', x + w/2, y + h/2);
+    }
+    ctx.restore();
+  }
+
+  function drawHUDs(ctx, layout){
+    // Iterate each cell and paint visible HUDs at their DOM-computed positions
+    for (const cell of layout.cells){
+      const v = cell.view;
+      if (!v || !v.container) continue;
+
+      // Gripper HUD (status pill + toggle)
+      if (v.hudGrip) drawGripHUD(ctx, v, cell.x, cell.y);
+
+      // Reset icon (24x24 viewBox)
+      if (v.hudResetEl) drawIconButton(ctx, v, v.hudResetEl, cell.x, cell.y, RESET_SVG_PATH, 24);
+
+      // Home icon (50x50 viewBox)
+      if (v.hudHomeEl)  drawIconButton(ctx, v, v.hudHomeEl,  cell.x, cell.y, HOME_SVG_PATH, 50);
+    }
+  }
+
   let rafId = 0;
   function compose(){
     rafId = requestAnimationFrame(compose);
     if (!layout) return;
 
-    ctx.clearRect(0,0,canvas.width, canvas.height);
+    // Clear in device pixels
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    // Ensure our scaled logical transform is active
+    ctx.setTransform(recScale, 0, 0, recScale, 0, 0);
 
     // Draw each cell: camera image → renderer canvas
     for (const cell of layout.cells){
@@ -1616,6 +1803,9 @@ const CanvasRecording = (() => {
       }
       // (If you also want to draw the translucent seg mask, see note below.)
     }
+
+    // ▶ NEW: draw HUD overlays (gripper, reset, home) into the compositor
+    if (DRAW_HUDS_IN_CANVAS) drawHUDs(ctx, layout);
 
     // 3) synthetic cursor (draw last so it sits on top)
     drawCursor();
@@ -1631,8 +1821,27 @@ const CanvasRecording = (() => {
     layout = computeLayout();
     if (!layout) return false;
 
-    canvas.width  = layout.W;
-    canvas.height = layout.H;
+    // Choose a scale that reaches ≥1080p when possible, within safety caps.
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const minScaleFor1080 = HQ_REC.targetWidth / layout.W;
+    const maxScaleAllowed = Math.min(HQ_REC.maxWidth / layout.W, HQ_REC.maxHeight / layout.H);
+
+    // Effective scale = base × DPR, but at least the 1080p scale, capped by max.
+    recScale = Math.min(
+      Math.max(HQ_REC.baseScale * dpr, minScaleFor1080),
+      maxScaleAllowed
+    );
+
+    // Backing pixels (recording resolution)
+    canvas.width  = Math.round(layout.W * recScale);
+    canvas.height = Math.round(layout.H * recScale);
+
+    // Keep logical size unchanged (we hide the canvas off-screen anyway)
+    canvas.style.width  = layout.W + 'px';
+    canvas.style.height = layout.H + 'px';
+
+    // Draw everything in "logical units" and scale to pixels
+    ctx.setTransform(recScale, 0, 0, recScale, 0, 0);
 
     // Make sure each view has a snapshot <img>
     // We have the dataURL in the state; your code passed it into createViewRenderer as imageSrc
@@ -1646,9 +1855,15 @@ const CanvasRecording = (() => {
 
     // Start recorder on the compositor canvas stream
     const mime = pickMime();
-    stream = canvas.captureStream(FPS);
-    mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+    // Record the high‑res canvas at HQ fps
+    stream = canvas.captureStream(HQ_REC.fps);
+    const bps = HQ_REC.bitrateFor(canvas.width, canvas.height);
+
+    // Stronger bitrate than the old 6 Mbps:
+    mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bps });
     id = `rec-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+    LAST_RECORDING_ID  = id;
+    LAST_RECORDING_EXT = 'webm';
     chunks = [];
     startedAt = Date.now();
     active = true;
@@ -1673,6 +1888,10 @@ const CanvasRecording = (() => {
       uploadOk = resp.ok;
     } catch { uploadOk = false; }
 
+    if (!uploadOk && RECORDING_ALLOWED) {
+      alert('The server is not accepting demo video uploads right now. Verify will be blocked from saving a video.');
+    }
+
     mr.ondataavailable = async (ev) => {
       if (!ev.data || ev.data.size === 0) return;
       // stream to backend in 1s chunks to match your contract
@@ -1692,17 +1911,34 @@ const CanvasRecording = (() => {
     mr.onstop = async () => {
       cancelAnimationFrame(rafId); rafId = 0;
 
+      // Always try to close the server-side session if we think we had one
       try {
         await apiFetch('/api/record/stop', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ recording_id: id, duration_ms: Date.now()-startedAt })
         });
-      } catch(_){ /* ignore */ }
+      } catch(_){ /* non-fatal */ }
 
-      // Fallback: download if backend not available
+      // If streaming worked, we're done.
+      if (uploadOk) {
+        active = false;
+        return;
+      }
+
+      // From here on, the backend did NOT accept our stream.
+      // If demo video recording is required, do NOT save locally; surface the error.
+      if (RECORDING_ALLOWED) {
+        console.error('❌ Recording persistence required, but upload failed. No local fallback.');
+        alert('Recording could not be saved to the server. Please ensure the data collection server is reachable and try again.');
+        active = false;
+        return;
+      }
+
+      // Legacy/dev fallback: allow the browser to download if recording is NOT required
       if (chunks.length && chunks[0] instanceof Blob) {
-        const blob = new Blob(chunks, { type: mime || 'video/webm' });
+        const mime = mr.mimeType || 'video/webm';
+        const blob = new Blob(chunks, { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = `${id}.webm`; a.click();
@@ -1717,9 +1953,21 @@ const CanvasRecording = (() => {
 
   async function stop(){
     if (!active) return;
-    const p = new Promise(res => mr.addEventListener('stop', res, {once:true}));
+    let onStopComplete;
+    const stopCompletePromise = new Promise(res => { onStopComplete = res; });
+    
+    // Wrap the existing onstop to notify when it's truly complete
+    const originalOnStop = mr.onstop;
+    mr.onstop = async function() {
+      try {
+        await originalOnStop.call(this);
+      } finally {
+        onStopComplete();
+      }
+    };
+    
     mr.stop();
-    await p;
+    await stopCompletePromise;
   }
 
   return { ensureStart: start, stop, isActive: ()=>active };
@@ -1992,6 +2240,10 @@ const Recording = (() => {
 // Global flag for recording (set after initial state fetch)
 let RECORDING_ALLOWED = false;
 
+// The last started recording, if any (used to associate with Verify)
+let LAST_RECORDING_ID  = null;
+let LAST_RECORDING_EXT = 'webm'; // MediaRecorder → webm in browsers
+
 function maybeRecord(trigger) {
   if (RECORDING_ALLOWED) CanvasRecording.ensureStart(trigger);
 }
@@ -2066,8 +2318,22 @@ function setupViewportGrid(numViews) {
 }
 
 function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(devicePixelRatio);
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: true,
+    powerPreference: 'high-performance',
+    precision: 'highp',
+    preserveDrawingBuffer: false
+  });
+
+  // Render more sharply even on standard monitors
+  renderer.setPixelRatio(Math.max(window.devicePixelRatio || 1, 2));
+
+  // Proper color management (r165 uses outputColorSpace)
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // If you use tone mapping elsewhere, leave it; otherwise:
+  renderer.toneMapping = THREE.NoToneMapping;
+
   renderer.setClearColor(0x000000, 0); // fully transparent canvas
   
   const camera = templateCamera.clone();
@@ -3646,6 +3912,9 @@ loader.load(
       // No meterFill in the stored object
       gripHUDs.push({ view, el: hud, badge, btn });
 
+      // ▶ NEW: expose on the view for the compositor
+      view.hudGrip = { el: hud, badge, btn };
+
       updateGripHUDState();
       updateGripHUDInteractivity();
     }
@@ -3715,6 +3984,9 @@ loader.load(
 
       view.container.appendChild(btn);
       poseResetHUDs.push({ view, el: btn });
+
+      // ▶ NEW: expose on the view for the compositor
+      view.hudResetEl = btn;
     }
 
     function createHomeHUDForView(view){
@@ -3733,6 +4005,9 @@ loader.load(
 
       view.container.appendChild(btn);
       homeHUDs.push({ view, el: btn });
+
+      // ▶ NEW: expose on the view for the compositor
+      view.hudHomeEl = btn;
     }
 
     const WHEEL_OUTER_RADIUS_M = 0.105; // keep in sync with makeWheel(... outerR=0.105 ...)
@@ -4508,7 +4783,10 @@ loader.load(
             body: JSON.stringify({
               state_id: state.state_id,
               episode_id: state.episode_id,
-              task_already_completed: true
+              task_already_completed: true,
+              // NEW: bind this submission to the video the user just recorded
+              recording_id:  LAST_RECORDING_ID,
+              recording_ext: LAST_RECORDING_EXT
             })
           });
 
@@ -4567,7 +4845,10 @@ loader.load(
             state_id: state.state_id,
             episode_id: state.episode_id,
             pose_reset_to_default: poseResetToDefault,
-            sliders_changed_axes: slidersChangedAxes
+            sliders_changed_axes: slidersChangedAxes,
+            // NEW: bind this submission to the video the user just recorded
+            recording_id:  LAST_RECORDING_ID,
+            recording_ext: LAST_RECORDING_EXT
           })
         });
 
