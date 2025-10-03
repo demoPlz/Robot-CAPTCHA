@@ -1,5 +1,0 @@
-{
-  "episode_id": 0,
-  "state_id": 4,
-  "text": "Frame 1\n- State: Robot is at a central/home observation pose facing the workspace. Gripper is open. A white plastic drawer unit is on the right side of the workspace. No contact with objects; workspace in front of the robot is clear.\n- Action: Transition to observation/setup pose (no manipulation yet).\n\nStrategy assessment\n- The behavior so far matches an initialization/observation step. No failure mode is apparent in this single frame.\n\nHigh‑level next steps\n- Perceive and localize the intended target (e.g., the drawer handle/lip or any object to be grasped).\n- Plan an approach with appropriate pre‑grasp offset and orientation, ensuring clearance from the drawer frame and table.\n- Move to the pre‑grasp pose, close the gripper to secure the target, then execute the manipulation (e.g., pull to open or lift/place).\n- Monitor force/position; if contact or slip is detected, back off, adjust pose, and retry.\n\nIf additional keyframes exist, please share them so I can provide a complete frame‑by‑frame state‑action description and a more precise diagnosis."
-}

@@ -1,5 +1,0 @@
-{
-  "episode_id": 0,
-  "state_id": 4,
-  "text": "Frame 1\n- State: The workspace is visible with a plastic drawer unit on the right. The robot’s end-effector is not yet at the drawer; it appears to be at a distant/home pose. No contact with the drawer or handle.\n- Action: None yet beyond positioning; the arm is idle or in an approach-ready state.\n\nAssessment\n- The strategy (e.g., approach → align → grasp → pull) has not yet been executed. No failure mode is evident; we’re simply at the initial stage.\n\nWhat to do next (high level)\n- Move to a pre-grasp pose in front of the target drawer’s handle or lip, aligned normal to the drawer face.\n- Verify alignment with visual/pose checks; adjust yaw/roll so gripper pads are parallel to the drawer front.\n- Close the gripper on the handle/lip, apply a straight pull along the drawer’s slide axis while monitoring force.\n- If contact is missed or slip is detected, back off, re-align, and re-attempt with slower approach and higher grasp force."
-}
