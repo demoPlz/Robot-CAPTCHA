@@ -50,7 +50,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       12,   # change indices / paths as needed
-    "left":        4,
+    "left":        10,
     "right":       2,
     "perspective": 0,
 }
@@ -128,13 +128,13 @@ class CrowdInterface():
                  # --- NEW: saving important-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
-                 prompt_sequence_clear: bool = True,
+                 prompt_sequence_clear: bool = False,
                  # NEW: used ONLY for prompt substitution and demo assets
                  prompt_task_name: str | None = None,
                  # --- NEW: demo video recording ---
                  record_demo_videos: bool = False,
                  demo_videos_dir: str | None = None,
-                 demo_videos_clear: bool = True):
+                 demo_videos_clear: bool = False):
 
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
@@ -364,6 +364,9 @@ class CrowdInterface():
         self._prompt_seq_dir = Path(prompt_sequence_dir or "prompts/drawer/snapshots").resolve()
         self._prompt_seq_lock = Lock()
         self._prompt_seq_index = 1
+        # Track which states have been saved to maintain chronological ordering
+        self._saved_sequence_states: set[tuple[str, int]] = set()  # (episode_id, state_id)
+        self._max_saved_state_id: int | None = None
         # If a sequence dir was set but no prompt_task_name, infer prompt task from the leaf folder
         if (self.prompt_task_name is None) and prompt_sequence_dir:
             try:
@@ -383,6 +386,9 @@ class CrowdInterface():
                         except Exception:
                             pass
                     print(f"🧹 Cleared {removed} files in {self._prompt_seq_dir}")
+                    # Reset tracking when clearing
+                    self._saved_sequence_states.clear()
+                    self._max_saved_state_id = None
                 self._prompt_seq_index = self._compute_next_prompt_seq_index()
                 print(f"📸 Important-state capture → {self._prompt_seq_dir} (next index {self._prompt_seq_index:06d})")
             except Exception as e:
@@ -1081,14 +1087,35 @@ class CrowdInterface():
         return (self._prompts_root_dir() / tn).resolve()
 
     def _demo_images_for_task(self, task_name: str | None = None) -> list[str]:
-        """Return sorted image file paths from prompts/demo/{task-name}."""
+        """Return numerically sorted image file paths from prompts/demo/{task-name}/snapshots."""
         tn = (task_name or self._task_name())
-        demo_dir = (self._prompts_root_dir() / "demo" / tn).resolve()
+        demo_dir = (self._prompts_root_dir() / tn / "snapshots").resolve()
         if not demo_dir.exists():
             return []
         exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        imgs = [str(p) for p in sorted(demo_dir.iterdir()) if p.suffix.lower() in exts]
-        return imgs
+        
+        # Collect image files and sort them numerically by extracting numeric part
+        image_files = []
+        for p in demo_dir.iterdir():
+            if p.suffix.lower() in exts and p.is_file():
+                image_files.append(p)
+        
+        # Sort numerically by extracting the numeric part from filename
+        def numeric_sort_key(path):
+            try:
+                # Extract numeric part from filename (e.g., "000001" from "000001.jpg")
+                stem = path.stem
+                # Find all digits in the filename
+                import re
+                numbers = re.findall(r'\d+', stem)
+                if numbers:
+                    return int(numbers[0])  # Use first numeric sequence
+                return float('inf')  # Put non-numeric files at the end
+            except:
+                return float('inf')
+        
+        sorted_files = sorted(image_files, key=numeric_sort_key)
+        return [str(p) for p in sorted_files]
 
     def _load_text(self, path: Path, fallback: str = "") -> str:
         try:
@@ -1170,79 +1197,174 @@ class CrowdInterface():
         except Exception:
             pass
 
+    def _get_vlm_context_cache_path(self, task_name: str) -> Path:
+        """Get the cache file path for VLM context for a specific task."""
+        cache_dir = self._vlm_log_dir / "context_cache"
+        cache_dir.mkdir(exist_ok=True)
+        return cache_dir / f"{task_name}_context.txt"
+
+    def _load_cached_vlm_context(self, task_name: str) -> str | None:
+        """Load cached VLM context for a task if it exists."""
+        cache_path = self._get_vlm_context_cache_path(task_name)
+        if cache_path.exists():
+            try:
+                return cache_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                return None
+        return None
+
+    def _save_vlm_context_to_cache(self, task_name: str, context_text: str):
+        """Save VLM context to cache for a task."""
+        cache_path = self._get_vlm_context_cache_path(task_name)
+        try:
+            cache_path.write_text(context_text, encoding="utf-8")
+        except Exception:
+            pass
+
+    def _write_vlm_context_to_task_dir(self, task_name: str, context_text: str):
+        """Write VLM context to prompts/{task-name}/context.txt for placeholder substitution."""
+        task_dir = self._task_dir(task_name)
+        if task_dir and context_text:
+            try:
+                context_file = task_dir / "context.txt"
+                context_file.write_text(context_text, encoding="utf-8")
+            except Exception:
+                pass
+
     def _run_vlm_context_once(self):
         """
-        One-time context VLM call:
-          - Loads prompts/context.txt, applies {x} substitution from prompts/{task-name}/x.txt
-          - Reads all images under prompts/demos/{task-name}
-          - Sends a single user message with the text + all images
-          - Logs query and response to output/vlm_logs
+        One-time context VLM call with support for multiple rounds if >50 images:
+          - First checks cache for existing context for this task
+          - If cached and no force flag, uses cached context
+          - Otherwise processes images in batches of 50, only including text from previous rounds
+          - Caches the result for future use
         """
         if getattr(self, "_vlm_context_done", False):
             return
         if not (self.use_vlm_prompt and self._vlm_enabled):
             return
 
+        task_name = self._task_name()
+        if not task_name:
+            self._vlm_context_done = True
+            return
+
+        # Check if we should force regeneration
+        force_regenerate = bool(int(os.getenv("VLM_FORCE_REGENERATE_CONTEXT", "0")))
+        
+        # Try to load from cache first
+        if not force_regenerate:
+            cached_context = self._load_cached_vlm_context(task_name)
+            if cached_context:
+                print(f"🔄 Using cached VLM context for task: {task_name}")
+                self._vlm_context_text = cached_context
+                # Also write to task directory for placeholder substitution
+                self._write_vlm_context_to_task_dir(task_name, cached_context)
+                self._vlm_context_done = True
+                return
+
         client = self._ensure_azure_openai_client()
         if client is None:
             return
 
-        prompt = self._load_prompt_with_subst("context.txt",
-            "You are given demonstration images for {task}. Summarize the high-level plan.")
-        imgs = self._demo_images_for_task(self._task_name())
-        content = [{"type": "input_text", "text": prompt}] + [
-            {"type": "input_image", "image_url": self._image_file_to_data_url(p)} for p in imgs
-        ]
-        messages = [{"role": "user", "content": content}]
+        imgs = self._demo_images_for_task(task_name)
+        if not imgs:
+            self._vlm_context_done = True
+            return
+        
+        print(f"🤖 Generating new VLM context for task: {task_name} ({len(imgs)} images)")
+        
+        # Process images in batches of 50
+        batch_size = 50
+        all_responses = []
+        text_only_conversation = []  # Track only text for conversation context
+        
+        for batch_idx in range(0, len(imgs), batch_size):
+            batch_imgs = imgs[batch_idx:batch_idx + batch_size]
+            round_num = (batch_idx // batch_size) + 1
+            is_first_round = (batch_idx == 0)
+            
+            # Choose prompt based on round
+            if is_first_round:
+                prompt_file = "context.txt"
+                fallback_prompt = "You are given demonstration images for {task}. Summarize the high-level plan."
+            else:
+                prompt_file = "context_continued.txt"
+                fallback_prompt = "Here are additional demonstration images for {task}. Continue analyzing the plan."
+            
+            prompt = self._load_prompt_with_subst(prompt_file, fallback_prompt)
+            
+            # Build content for this round (images only for current batch)
+            content = [{"type": "input_text", "text": prompt}] + [
+                {"type": "input_image", "image_url": self._image_file_to_data_url(p)} for p in batch_imgs
+            ]
+            
+            # Build conversation messages (text-only from previous rounds + current round with images)
+            conversation_messages = text_only_conversation.copy()
+            conversation_messages.append({"role": "user", "content": content})
+            
+            self._vlm_log_append(f"CONTEXT_QUERY_ROUND_{round_num}", {
+                "task": task_name,
+                "round": round_num,
+                "prompt": prompt,
+                "batch_images": batch_imgs,
+                "batch_size": len(batch_imgs),
+                "total_images": len(imgs),
+                "previous_context_messages": len(text_only_conversation)
+            })
 
-        self._vlm_log_append("CONTEXT_QUERY", {
-            "task": self._task_name(),
-            "prompt": prompt,
-            "demo_images": imgs
-        })
-
-        out_text, raw_json = None, None
-        try:
-            resp = client.responses.create(model=self._aoai_deployment, input=messages)
+            # Call GPT-5 API
+            resp = client.responses.create(model=self._aoai_deployment, input=conversation_messages)
             out_text = getattr(resp, "output_text", None)
-            try:
-                raw_json = resp.model_dump_json(indent=2)
-            except Exception:
-                raw_json = str(resp)
-        except Exception as e:
-            # Text-only fallback
-            self._vlm_log_append("CONTEXT_FALLBACK", {"error": str(e)})
-            resp = client.chat.completions.create(
-                model=self._aoai_deployment,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0
-            )
-            out_text = (resp.choices[0].message.content
-                        if getattr(resp, "choices", None) else None)
-            raw_json = str(resp)
+            raw_json = resp.model_dump_json(indent=2)
+            
+            # Add to text-only conversation for next round (no images)
+            if out_text:
+                text_only_conversation.append({"role": "user", "content": prompt})
+                text_only_conversation.append({"role": "assistant", "content": out_text})
 
-        self._vlm_log_append("CONTEXT_RESPONSE", {
-            "task": self._task_name(),
-            "text": out_text
-        })
+            self._vlm_log_append(f"CONTEXT_RESPONSE_ROUND_{round_num}", {
+                "task": task_name,
+                "round": round_num,
+                "text": out_text
+            })
+            
+            all_responses.append({
+                "round": round_num,
+                "text": out_text,
+                "raw": raw_json,
+                "batch_images": batch_imgs
+            })
 
-        # Persist a fuller record for the run
+        # Combine all responses
+        combined_text = "\n\n".join([
+            f"Round {r['round']}: {r['text']}" for r in all_responses if r['text']
+        ])
+
+        # Cache the result
+        if combined_text.strip():
+            self._save_vlm_context_to_cache(task_name, combined_text.strip())
+            # Also write to task directory for placeholder substitution
+            self._write_vlm_context_to_task_dir(task_name, combined_text.strip())
+
+        # Persist record for the entire conversation
         self._ensure_vlm_log_dir()
         out_path = self._vlm_log_dir / f"{int(time.time())}_context_response.json"
-        try:
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "task": self._task_name(),
-                    "requested_at": time.time(),
-                    "prompt": prompt,
-                    "demo_images": imgs,
-                    "text": out_text,
-                    "raw": raw_json,
-                }, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "task": task_name,
+                "requested_at": time.time(),
+                "total_images": len(imgs),
+                "total_rounds": len(all_responses),
+                "batch_size": batch_size,
+                "demo_images": imgs,
+                "combined_text": combined_text,
+                "all_responses": all_responses,
+                "cached": False,
+                "force_regenerate": force_regenerate
+            }, f, indent=2, ensure_ascii=False)
 
-        self._vlm_context_text = (out_text or "").strip()
+        self._vlm_context_text = combined_text.strip() if combined_text else ""
         self._vlm_context_done = True
 
     # --- NEW: helpers for important-state image sequence ---
@@ -1263,34 +1385,62 @@ class CrowdInterface():
         except Exception:
             return 1
 
-    def _save_important_maincam_frame(self, episode_id: str, state_id: int, obs_path: str | None):
+    def _save_important_maincam_frame_on_label(self, episode_id: str, state_id: int, obs_path: str | None):
         """
-        If enabled, load the state's obs from disk, extract cam_main, and save as
-        an ordered JPEG: <dir>/<zero-padded-index>.jpg
+        Save important main camera frame when a response is received, but only if:
+        1. This state has received at least one label
+        2. No later important state has already been saved (maintain chronological order)
         """
         if not self.save_maincam_sequence:
             return
-        try:
-            obs = self._load_obs_from_disk(obs_path)
-            img = self._load_main_cam_from_obs(obs)
-            if img is None:
-                print(f"⚠️ No cam_main image for IMPORTANT state {state_id} (ep {episode_id})")
+        
+        with self._prompt_seq_lock:
+            # Check if this state was already saved
+            if (episode_id, state_id) in self._saved_sequence_states:
                 return
-            # Thread-safe index assignment
-            with self._prompt_seq_lock:
+            
+            # Check chronological ordering: don't save if a later state was already saved
+            if self._max_saved_state_id is not None and state_id < self._max_saved_state_id:
+                print(f"⏭️ Skipping cam_main save for state {state_id} - later state {self._max_saved_state_id} already saved")
+                return
+            
+            # Save the frame
+            try:
+                obs = self._load_obs_from_disk(obs_path)
+                img = self._load_main_cam_from_obs(obs)
+                if img is None:
+                    print(f"⚠️ No cam_main image for IMPORTANT state {state_id} (ep {episode_id})")
+                    return
+                
+                # Use current index and increment
                 idx = self._prompt_seq_index
                 self._prompt_seq_index += 1
-            fname = f"{idx:06d}.jpg"
-            out_path = self._prompt_seq_dir / fname
-            # Write JPEG with current quality setting
-            bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            ok = cv2.imwrite(str(out_path), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(self._jpeg_quality)])
-            if ok:
-                print(f"🖼️  Saved IMPORTANT cam_main → {out_path}")
-            else:
-                print(f"⚠️ Failed to write {out_path}")
-        except Exception as e:
-            print(f"⚠️ Error saving IMPORTANT cam_main frame: {e}")
+                
+                fname = f"{idx:06d}.jpg"
+                out_path = self._prompt_seq_dir / fname
+                
+                # Write JPEG with current quality setting
+                bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                ok = cv2.imwrite(str(out_path), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(self._jpeg_quality)])
+                
+                if ok:
+                    # Track that this state has been saved
+                    self._saved_sequence_states.add((episode_id, state_id))
+                    self._max_saved_state_id = max(self._max_saved_state_id or 0, state_id)
+                    print(f"🖼️  Saved IMPORTANT cam_main (on label) → {out_path}")
+                else:
+                    print(f"⚠️ Failed to write {out_path}")
+                    
+            except Exception as e:
+                print(f"⚠️ Error saving IMPORTANT cam_main frame on label: {e}")
+
+    def _save_important_maincam_frame(self, episode_id: str, state_id: int, obs_path: str | None):
+        """
+        Legacy function - no longer saves immediately when state becomes important.
+        Saving now happens only when labels are received via _save_important_maincam_frame_on_label.
+        """
+        # This function is now intentionally empty - saving happens on label receipt
+        pass
 
     def _build_episode_maincam_video(self, episode_id: str, up_to_state_id: int) -> str | None:
         """
@@ -1473,6 +1623,42 @@ class CrowdInterface():
             "These are four synchronized views related to {task}."
         )
 
+    def _clean_vlm_response_format(self, text: str) -> str:
+        """
+        Clean VLM response format by:
+        1. Removing surrounding quotes
+        2. Capitalizing first letter
+        3. Removing trailing comma and number (e.g., ", 26")
+        4. Ensuring text ends with a period
+        """
+        if not text:
+            return text
+        
+        # Start with stripped text
+        cleaned = text.strip()
+        
+        # Remove trailing comma and number pattern first (e.g., ", 26")
+        cleaned = re.sub(r',\s*\d+\s*$', '', cleaned).strip()
+        
+        # Remove surrounding quotes (handle both single and double quotes)
+        # Keep removing quotes until no more are found at the edges
+        while cleaned and len(cleaned) >= 2:
+            if (cleaned.startswith('"') and cleaned.endswith('"')) or \
+               (cleaned.startswith("'") and cleaned.endswith("'")):
+                cleaned = cleaned[1:-1].strip()
+            else:
+                break
+        
+        # Capitalize first letter if text exists
+        if cleaned:
+            cleaned = cleaned[0].upper() + cleaned[1:] if len(cleaned) > 1 else cleaned.upper()
+        
+        # Ensure text ends with a period if it doesn't already end with punctuation
+        if cleaned and not cleaned.endswith(('.', '!', '?', ':')):
+            cleaned += '.'
+        
+        return cleaned
+
     # ---------- VLM worker core ----------
     def _vlm_worker(self):
         """
@@ -1526,8 +1712,18 @@ class CrowdInterface():
                 episode_history_text = self._get_episode_history_prompt()
                 current_state_text   = self._get_current_state_prompt()
 
-                # (1) HISTORY CALL: maincam sequence
-                history_messages = [{
+                # Build conversation history starting with context (if available)
+                conversation_messages = []
+                
+                # Add the one-time context as the first part of the conversation
+                if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
+                    conversation_messages.append({
+                        "role": "assistant", 
+                        "content": self._vlm_context_text
+                    })
+
+                # (1) HISTORY CALL: maincam sequence (continuing the conversation)
+                history_messages = conversation_messages + [{
                     "role": "user",
                     "content": [{"type": "input_text", "text": episode_history_text}] +
                                [{"type": "input_image", "image_url": u} for u in seq_urls]
@@ -1536,7 +1732,9 @@ class CrowdInterface():
                     "episode_id": episode_id, "state_id": state_id,
                     "prompt": episode_history_text,
                     "sequence_state_ids": seq_ids,
-                    "num_images": len(seq_urls)
+                    "num_images": len(seq_urls),
+                    "includes_context": bool(hasattr(self, '_vlm_context_text') and self._vlm_context_text),
+                    "conversation_length": len(history_messages)
                 })
                 hist_text, hist_raw = None, None
                 try:
@@ -1548,10 +1746,15 @@ class CrowdInterface():
                         hist_raw = str(resp_h)
                 except Exception as e:
                     self._vlm_log_append("STATE_HISTORY_FALLBACK", {"episode_id": episode_id, "state_id": state_id, "error": str(e)})
-                    # text-only fallback
+                    # text-only fallback - also include context in conversation
+                    fallback_messages = []
+                    if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
+                        fallback_messages.append({"role": "assistant", "content": self._vlm_context_text})
+                    fallback_messages.append({"role": "user", "content": episode_history_text})
+                    
                     resp_h = client.chat.completions.create(
                         model=self._aoai_deployment,
-                        messages=[{"role": "user", "content": episode_history_text}],
+                        messages=fallback_messages,
                         temperature=0.0
                     )
                     hist_text = (resp_h.choices[0].message.content
@@ -1562,17 +1765,38 @@ class CrowdInterface():
                     "text": hist_text
                 })
 
-                # (2) CURRENT CALL: per-state multi-view (if any are present)
-                current_messages = [{
+                # (2) CURRENT CALL: per-state multi-view (continuing the conversation with history response)
+                # Build conversation: context + history query + history response + current query
+                current_conversation = conversation_messages.copy()
+                
+                # Add the history query and response to continue the conversation
+                current_conversation.append({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": episode_history_text}] +
+                               [{"type": "input_image", "image_url": u} for u in seq_urls]
+                })
+                if hist_text:
+                    current_conversation.append({
+                        "role": "assistant",
+                        "content": hist_text
+                    })
+                
+                # Add the current state query
+                current_conversation.append({
                     "role": "user",
                     "content": [{"type": "input_text", "text": current_state_text}] +
                                [{"type": "input_image", "image_url": u} for u in img_urls]
-                }]
+                })
+                
+                current_messages = current_conversation
                 self._vlm_log_append("STATE_CURRENT_QUERY", {
                     "episode_id": episode_id, "state_id": state_id,
                     "prompt": current_state_text,
                     "views": list(view_paths.keys()),
-                    "num_images": len(img_urls)
+                    "num_images": len(img_urls),
+                    "includes_context": bool(hasattr(self, '_vlm_context_text') and self._vlm_context_text),
+                    "includes_history": bool(hist_text),
+                    "conversation_length": len(current_messages)
                 })
                 curr_text, curr_raw = None, None
                 try:
@@ -1584,10 +1808,18 @@ class CrowdInterface():
                         curr_raw = str(resp_c)
                 except Exception as e:
                     self._vlm_log_append("STATE_CURRENT_FALLBACK", {"episode_id": episode_id, "state_id": state_id, "error": str(e)})
-                    # text-only fallback
+                    # text-only fallback - include full conversation context
+                    fallback_current_messages = []
+                    if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
+                        fallback_current_messages.append({"role": "assistant", "content": self._vlm_context_text})
+                    fallback_current_messages.append({"role": "user", "content": episode_history_text})
+                    if hist_text:
+                        fallback_current_messages.append({"role": "assistant", "content": hist_text})
+                    fallback_current_messages.append({"role": "user", "content": current_state_text})
+                    
                     resp_c = client.chat.completions.create(
                         model=self._aoai_deployment,
-                        messages=[{"role": "user", "content": current_state_text}],
+                        messages=fallback_current_messages,
                         temperature=0.0
                     )
                     curr_text = (resp_c.choices[0].message.content
@@ -1602,6 +1834,9 @@ class CrowdInterface():
                 combined_text = "\n\n---\n".join(
                     [t.strip() for t in [(hist_text or ""), (curr_text or "")] if t and t.strip()]
                 )
+
+                # For frontend: only use current state response with cleaned format
+                frontend_text = self._clean_vlm_response_format((curr_text or "").strip())
 
                 # Persist the VLM result (now includes both calls)
                 out_dir = self._episode_cache_dir(episode_id)
@@ -1618,6 +1853,7 @@ class CrowdInterface():
                     "text_history": hist_text,
                     "text_current": curr_text,
                     "text_combined": combined_text,
+                    "text_frontend": frontend_text,  # Only current state response for frontend
                     "raw_history": hist_raw,
                     "raw_current": curr_raw,
                 }
@@ -1625,15 +1861,14 @@ class CrowdInterface():
                     json.dump(payload, f, indent=2, ensure_ascii=False)
                 print(f"📝 Saved VLM responses (history & current) → {out_file}")
 
-                # Attach to pending state and mark ready
-                text_clean = (combined_text or "").strip()
+                # Attach to pending state and mark ready (frontend gets only current response)
                 with self.state_lock:
-                    self._vlm_text_by_episode.setdefault(episode_id, {})[state_id] = text_clean
+                    self._vlm_text_by_episode.setdefault(episode_id, {})[state_id] = frontend_text
                     ep_states = self.pending_states_by_episode.get(episode_id)
                     if ep_states and state_id in ep_states:
-                        ep_states[state_id]["vlm_text"] = text_clean
+                        ep_states[state_id]["vlm_text"] = frontend_text
                         ep_states[state_id]["vlm_ready"] = True
-                        print(f"🧠 VLM (history+current) attached to state {state_id} (ep {episode_id})")
+                        print(f"🧠 VLM (current state only) attached to state {state_id} (ep {episode_id})")
                     else:
                         print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id})")
 
@@ -2331,6 +2566,21 @@ class CrowdInterface():
             
             # Clear the episode cache directory
             self._purge_episode_cache(episode_id)
+            
+        # Clear sequence tracking for this episode (outside the state_lock)
+        with self._prompt_seq_lock:
+            # Remove all saved states for this episode
+            to_remove = {(ep, sid) for (ep, sid) in self._saved_sequence_states if ep == episode_id}
+            self._saved_sequence_states -= to_remove
+            
+            # Recalculate max saved state ID
+            if to_remove and self._saved_sequence_states:
+                self._max_saved_state_id = max(sid for (ep, sid) in self._saved_sequence_states)
+            elif not self._saved_sequence_states:
+                self._max_saved_state_id = None
+            
+            if to_remove:
+                print(f"🧹 Cleared {len(to_remove)} sequence tracking entries for episode {episode_id}")
 
     # --- NEW: explicit commit of completed episodes ---
     def save_completed_episodes(self, episode_ids: list[str] | None = None) -> list[str]:
@@ -2687,6 +2937,22 @@ class CrowdInterface():
             print(f"🔔 Response recorded for state {state_id} in episode {found_episode} "
                   f"({state_info['responses_received']}/{required_responses})")
 
+            # NEW: Prepare to save important main camera frame when first response is received
+            save_needed = False
+            save_episode_id = None
+            save_state_id = None
+            save_obs_path = None
+            
+            if state_info.get("important", False) and state_info["responses_received"] == 1:
+                # Get obs_path from state_info for later save operation
+                save_obs_path = state_info.get("obs_path")
+                if save_obs_path:
+                    save_needed = True
+                    save_episode_id = found_episode
+                    save_state_id = state_id
+                else:
+                    print(f"⚠️ No obs_path found for important state {state_id}")
+
             # --- Progressive autofill for IMPORTANT states ---
             if state_info.get("important", False) and self.autofill_important_states:
                 # Per submission, total filled should advance by `num_autofill_actions`
@@ -2745,7 +3011,16 @@ class CrowdInterface():
                         f"{self.episode_finalize_grace_s:.2f}s grace.")
                 
                 print(f"✅ State {state_id} completed in episode {found_episode}")
+                
+                # Perform save operation outside the lock if needed
+                if save_needed:
+                    self._save_important_maincam_frame_on_label(save_episode_id, save_state_id, save_obs_path)
+                
                 return True
+            
+            # Perform save operation outside the lock if needed (for non-completing responses)
+            if save_needed:
+                self._save_important_maincam_frame_on_label(save_episode_id, save_state_id, save_obs_path)
             
             return False
     
@@ -3601,7 +3876,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                        and getattr(crowd_interface, "_vlm_enabled", False))
         vlm_text = payload.get("vlm_text")
         if use_vlm and isinstance(vlm_text, str) and vlm_text.strip():
-            payload["prompt"] = f"{vlm_text.strip()} Animate to check that there's no collision."
+            payload["prompt"] = f"{vlm_text.strip()}"
         else:
             payload["prompt"] = f"Task: {crowd_interface.task}. What should the arm do next?"
 

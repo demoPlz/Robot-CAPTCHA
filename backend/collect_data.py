@@ -109,6 +109,12 @@ def _pop_crowd_cli_overrides(argv=None):
         dest="crowd_videos_dir",
         help="Override directory where demo videos are saved (default: 'prompts/demos/{task-name}/videos').",
     )
+    ap.add_argument(
+        "--auto-clear-demo",
+        action="store_true",
+        dest="crowd_auto_clear_demo",
+        help="If set, automatically clear demo videos and snapshots directories at startup.",
+    )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -285,6 +291,12 @@ def control_robot(cfg: ControlPipelineConfig):
                 pass
     if getattr(_CROWD_OVERRIDES, "crowd_seq_clear", False):
         ci_kwargs["prompt_sequence_clear"] = True
+
+    # --- NEW: auto-clear control for both demo videos and snapshots ---
+    auto_clear = getattr(_CROWD_OVERRIDES, "crowd_auto_clear_demo", False)
+    if auto_clear:
+        ci_kwargs["prompt_sequence_clear"] = True
+        ci_kwargs["demo_videos_clear"] = True
 
     # --- NEW: demo video recording controls ---
     if getattr(_CROWD_OVERRIDES, "crowd_record_videos", False):

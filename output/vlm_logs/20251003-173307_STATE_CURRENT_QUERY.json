@@ -1,0 +1,14 @@
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "prompt": "Below we provide the four views the user is currently provided. Output a text prompt that describes what the user should do next following the second part of the state-action description format, after \"thus:\". Pick the most similar description in the description bank, prioritizing similarity of the skill/verb, then the specific objects/noun. Output in the following form:\n\n\"text prompt\", 26",
+  "views": [
+    "left",
+    "right",
+    "front",
+    "perspective",
+    "obs_main",
+    "obs_wrist"
+  ],
+  "num_images": 4
+}

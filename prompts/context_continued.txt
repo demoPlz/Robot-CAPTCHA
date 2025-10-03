@@ -1,0 +1,1 @@
+Do the same with the following frames, which follow the frames from the previous query, to continue building the description bank. Output the description bank in full, including what you have outputted before.

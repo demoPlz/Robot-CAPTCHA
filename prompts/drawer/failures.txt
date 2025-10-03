@@ -1,1 +1,1 @@
-No failure mode recorded.
+No failure modes recorded yet. Follow the spirit of our strategy to react to failures modes (states not described in strategy).

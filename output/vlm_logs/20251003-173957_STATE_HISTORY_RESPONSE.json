@@ -1,0 +1,5 @@
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "text": "I only have one frame so far. Please share the remaining keyframes if you want a full frame‑by‑frame description. Based on this first frame:\n\nFrame 1\n- State: Wrist‑camera view of the workspace. A plastic multi‑drawer unit is on the right, the gripper is far from the drawers, and there’s no contact with any object.\n- Action: Navigation/positioning to a broad overview or pre‑grasp vantage; no manipulation executed yet.\n\nStrategy assessment\n- Too early to judge compliance or failure. No grasp/interaction attempts are visible.\n\nWhat to do next (high level)\n- Perceive and localize the target drawer handle: segment the drawer face, detect handle pose.\n- Move to a pre‑grasp pose aligned with the handle’s approach vector.\n- Open gripper, approach in a straight line, close on the handle, and pull with controlled force.\n- If the goal is a different drawer or a push action, adjust approach accordingly.\n- Provide the subsequent frames so I can verify whether the actions follow the planned strategy or if a failure mode (misalignment, premature contact, occlusion, slip) has occurred."
+}

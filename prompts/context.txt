@@ -8,4 +8,8 @@ Common failure modes that may lead to deviations from the strategies and how to 
 
 {failures}
 
-This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, output what has happened, and what is the next step taken.
+This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, describe what has happened, and what next step is taken to achieve the next frame. Example descriptions in "state-action description format" for the first frames are as follows. Follow the format, inluding the practice of numbering, to describe all frames (including frames described in the example).
+
+{sequence_description}
+
+Your output will be referred to as the "description bank."
