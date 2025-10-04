@@ -1,3 +1,5 @@
-Below we provide the four views the user is currently provided. Output a text prompt that describes what the user should do next following the second part of the state-action description format, after "thus:". Pick the most similar description in the description bank, prioritizing similarity of the skill/verb, then the specific objects/noun. As a reminder, the task here is {task}. If the success conditions are fulfilled, output "end" in place of "text prompt". Output in the following form:
+Below we provide the four views the user is currently provided. Output a text prompt that describes what the user should do next following the second part of the state-action description format, after "thus:". Pick the most similar description in the description bank, taking similarity of context into consideration (what the previus and following descriptions are), prioritizing similarity of the skill/verb, then the specific objects/noun. As a reminder, the task here is {task}. If the success conditions are fulfilled, output "end" in place of "text prompt". Output in the following form:
 
 "text prompt", 26
+
+Where the number is numbering of the selected text prompt from the description bank.

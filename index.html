@@ -45,7 +45,7 @@
     text-shadow: 0 2px 4px rgba(0,0,0,0.3);
     line-height: 1.4;
     min-height: auto;
-    padding: 0;
+    padding: 0 50px 0 0;           /* right padding to avoid overlapping with info button */
     margin: 0;
     /* Make long prompt lines wrap instead of widening the card */
     white-space: normal;          /* allow wrapping */
@@ -1193,25 +1193,67 @@
 
 /* --- Example video toggle + dock ----------------------------------------- */
 
-/* the cursive 'i' button on the prompt bar (center-right) */
+/* Keyframe animation for pulsing effect */
+@keyframes pulse-glow {
+  0% { 
+    filter: drop-shadow(0 0 2px rgba(255,255,255,0.2));
+    transform: translateY(-50%) scale(1);
+  }
+  50% { 
+    filter: drop-shadow(0 0 20px rgba(255,255,255,1)) drop-shadow(0 0 30px rgba(255,255,255,0.8));
+    transform: translateY(-50%) scale(1.1);
+  }
+  100% { 
+    filter: drop-shadow(0 0 2px rgba(255,255,255,0.2));
+    transform: translateY(-50%) scale(1);
+  }
+}
+
+/* the information glyph button on the prompt bar (center-right) */
 .prompt-example-toggle{
   position: absolute;
   right: 12px;
   top: 50%;
   transform: translateY(-50%);
-  width: 28px; height: 28px;
-  display: inline-grid; place-items: center;
-  background: rgba(255,255,255,0.14);
-  border: 1px solid rgba(255,255,255,0.35);
+  width: auto; height: auto;
+  display: inline-flex; 
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
   color: #ffffff;
-  font: italic 700 16px Georgia, "Times New Roman", serif;
-  cursor: pointer; user-select: none;
+  font-size: 20px;
+  cursor: pointer; 
+  user-select: none;
+  padding: 4px;
+  transition: all 0.2s ease;
 }
-.prompt-example-toggle:hover{ background: rgba(255,255,255,0.22); }
-.prompt-example-toggle:active{ filter: brightness(.95); }
-.prompt-example-toggle[disabled]{ opacity:.5; cursor:not-allowed; }
+
+/* Only pulse when never activated */
+.prompt-example-toggle.never-activated{
+  animation: pulse-glow 1.2s ease-in-out infinite;
+}
+
+.prompt-example-toggle:hover{ 
+  color: rgba(255,255,255,0.8); 
+  transform: translateY(-50%) scale(1.1);
+  animation: none; /* Stop pulsing on hover */
+}
+.prompt-example-toggle:active{ 
+  transform: translateY(-50%) scale(0.95); 
+  animation: none; /* Stop pulsing when clicked */
+}
+.prompt-example-toggle[disabled]{ 
+  opacity:.5; 
+  cursor:not-allowed;
+  animation: none; /* Stop pulsing when disabled */
+}
 .prompt-example-toggle.active{
-  box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 4px 16px rgba(0,0,0,.25);
+  color: rgba(255,255,255,1);
+  filter: drop-shadow(0 0 8px rgba(255,255,255,0.4));
+  background: rgba(255,255,255,0.3);
+  border-color: rgba(255,255,255,0.5);
+  animation: none; /* Stop pulsing when active */
 }
 
 /* the independent right-side video window */
@@ -1223,8 +1265,9 @@
   box-shadow: 0 10px 30px rgba(0,0,0,0.15);
   z-index: 10005;                /* above the card */
   overflow: hidden;
-  border-radius: 0 !important;   /* match your square corner theme */
+  padding: 12px;                 /* padding inside the white box */
 }
+
 #exampleDock video{
   display: block;
   width: 100%; height: 100%;
@@ -2587,11 +2630,15 @@ promptBar.appendChild(promptText);
 
 // ADD: cursive "i" toggle on the prompt bar
 const exampleToggle = document.createElement('button');
-exampleToggle.className = 'prompt-example-toggle';
+exampleToggle.className = 'prompt-example-toggle never-activated'; // Add class to track activation state
 exampleToggle.type = 'button';
 exampleToggle.title = 'Show example video';
 exampleToggle.setAttribute('aria-pressed', 'false');
-exampleToggle.textContent = '𝒾';
+exampleToggle.innerHTML = `
+  <svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="20" height="20" viewBox="0 0 50 50" fill="currentColor">
+    <path d="M25,2C12.297,2,2,12.297,2,25s10.297,23,23,23s23-10.297,23-23S37.703,2,25,2z M25,11c1.657,0,3,1.343,3,3s-1.343,3-3,3 s-3-1.343-3-3S23.343,11,25,11z M29,38h-2h-4h-2v-2h2V23h-2v-2h2h4v2v13h2V38z"></path>
+  </svg>
+`;
 promptBar.appendChild(exampleToggle);
 
 mount.appendChild(promptBar);
@@ -2645,20 +2692,37 @@ function createExampleDockOnce(){
 
 function updateExampleDockLayout(){
   if (!exampleDock || !viewsGrid) return;
-  const r = viewsGrid.getBoundingClientRect();
-  const gap = 12; // px between views and dock
-  exampleDock.style.top    = Math.round(r.top)    + 'px';
-  exampleDock.style.left   = Math.round(r.right + gap) + 'px';
-  exampleDock.style.width  = Math.round(r.width)  + 'px';
-  exampleDock.style.height = Math.round(r.height) + 'px';
+  
+  // Get prompt bar position for top alignment
+  const promptBar = document.querySelector('.prompt-bar');
+  const viewsRect = viewsGrid.getBoundingClientRect();
+  const promptRect = promptBar ? promptBar.getBoundingClientRect() : viewsRect;
+  
+  const gap = 24; // px between views and dock - increased for comfortable spacing
+  
+  // Make the dock 20% smaller (80% of original size)
+  const scaleFactor = 0.75;
+  const dockWidth = Math.round(viewsRect.width * scaleFactor);
+  const dockHeight = Math.round(viewsRect.height * scaleFactor);
+  
+  // Position: align top with prompt bar, right of views with gap
+  exampleDock.style.top    = Math.round(promptRect.top) + 'px';
+  exampleDock.style.left   = Math.round(viewsRect.right + gap) + 'px';
+  exampleDock.style.width  = dockWidth + 'px';
+  exampleDock.style.height = dockHeight + 'px';
 }
 
 function showExampleDock(){
+  // Mark button as activated if dock is being shown (remove never-activated class)
+  if (exampleToggle.classList.contains('never-activated')) {
+    exampleToggle.classList.remove('never-activated');
+  }
+  
   createExampleDockOnce();
   exampleDock.style.display = 'block';
   exampleToggle.classList.add('active');
   exampleToggle.setAttribute('aria-pressed', 'true');
-  exampleToggle.title = 'Hide example video';
+  exampleToggle.title = 'Hide example';
   updateExampleDockLayout();
 }
 
@@ -2667,10 +2731,15 @@ function hideExampleDock(){
   exampleDock.style.display = 'none';
   exampleToggle.classList.remove('active');
   exampleToggle.setAttribute('aria-pressed', 'false');
-  exampleToggle.title = 'Show example video';
+  exampleToggle.title = 'Show example';
 }
 
 function toggleExampleDock(force){
+  // Mark button as activated (remove never-activated class)
+  if (exampleToggle.classList.contains('never-activated')) {
+    exampleToggle.classList.remove('never-activated');
+  }
+  
   const want = (typeof force === 'boolean') ? force :
                !(exampleDock && exampleDock.style.display === 'block');
   if (want) showExampleDock(); else hideExampleDock();
@@ -3201,7 +3270,7 @@ loader.load(
       ph.className = 'placeholder';
       ph.textContent = message;
       exampleDock.appendChild(ph);
-      showExampleDock();
+      // Don't automatically show - let user click the button to open
     }
 
     // === Example video source hookup (replace your current block) ===
@@ -3240,7 +3309,8 @@ loader.load(
         });
 
         exampleDock.appendChild(exampleVideo);
-        showExampleDock();
+        // showExampleDock();
+        // show example dock initially
 
         // Try to start playback; muted=true should satisfy autoplay policies.
         exampleVideo.load();
@@ -5170,8 +5240,8 @@ loader.load(
         }
       }
       
-      // Initial placement of the example dock (if present)
-      updateExampleDockLayout();
+      // Initial placement of the example dock (if present) - delay to ensure DOM is ready
+      setTimeout(() => updateExampleDockLayout(), 100);
     }
 
     const btnBar   = document.createElement('div');
