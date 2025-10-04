@@ -250,6 +250,8 @@ class CrowdInterface():
         self._vlm_worker_thread = None
         self._aoai_client = None
         self._aoai_deployment = None
+        # Track VLM job de-duplication / in-flight pairs
+        self._vlm_jobs_inflight: set[tuple[str, int]] = set()
         if self.use_vlm_prompt:
             # Try to verify creds early; if unavailable, fall back to simple prompts.
             if self._ensure_azure_openai_client() is not None:
@@ -1022,12 +1024,35 @@ class CrowdInterface():
         print("🛑 Stopped VLM worker")
 
     def _enqueue_vlm_job(self, episode_id: str, state_id: int, view_paths: dict[str, str]):
-        """Queue a VLM job for (episode, important_state)."""
+        """Queue a VLM job for (episode, important_state) with dedupe and readiness checks."""
+        # Double-check under lock: skip if ready or already queued/in-flight
+        with self.state_lock:
+            ep_states = self.pending_states_by_episode.get(episode_id, {})
+            info = ep_states.get(state_id)
+            if info is None:
+                return False
+            if info.get("vlm_ready", False):
+                info["vlm_queued"] = False
+                return False
+            key = (episode_id, state_id)
+            if info.get("vlm_queued", False) or key in self._vlm_jobs_inflight:
+                return False
+            info["vlm_queued"] = True
+            self._vlm_jobs_inflight.add(key)
+            payload = (episode_id, state_id, dict(view_paths or {}))
         try:
-            self._vlm_queue.put_nowait((episode_id, state_id, dict(view_paths or {})))
+            self._vlm_queue.put_nowait(payload)
             print(f"🗂️ Queued VLM job ep={episode_id} sid={state_id}")
+            return True
         except queue.Full:
             print(f"⚠️ VLM queue full; skipping ep={episode_id} sid={state_id}")
+            # Undo 'queued' flag/in-flight if we couldn't enqueue
+            with self.state_lock:
+                self._vlm_jobs_inflight.discard((episode_id, state_id))
+                ep_states = self.pending_states_by_episode.get(episode_id, {})
+                if state_id in ep_states:
+                    ep_states[state_id]["vlm_queued"] = False
+            return False
 
     # ---------- Azure OpenAI client ----------
     def _ensure_azure_openai_client(self):
@@ -1660,6 +1685,17 @@ class CrowdInterface():
                 break
             episode_id, state_id, view_paths = item
             try:
+                # Belt-and-suspenders short-circuit before any heavy work.
+                with self.state_lock:
+                    ep_states = self.pending_states_by_episode.get(episode_id, {})
+                    info = ep_states.get(state_id)
+                    if info is None or info.get("vlm_ready", False):
+                        # State gone or already ready: clean up and skip.
+                        self._vlm_jobs_inflight.discard((episode_id, state_id))
+                        if info is not None:
+                            info["vlm_queued"] = False
+                        print(f"↩️ VLM skip ep={episode_id} sid={state_id} (missing or already ready)")
+                        continue
                 # 1) Gather important-state keyframes (cam_main) for this episode up to current important state
                 seq_urls, seq_ids = self._gather_important_maincam_sequence(episode_id, state_id)
                 if not seq_urls:
@@ -1799,12 +1835,20 @@ class CrowdInterface():
                     self._vlm_text_by_episode.setdefault(episode_id, {})[state_id] = frontend_text
                     ep_states = self.pending_states_by_episode.get(episode_id)
                     if ep_states and state_id in ep_states:
-                        ep_states[state_id]["vlm_text"] = frontend_text
-                        ep_states[state_id]["vlm_video_id"] = video_id  # Store video ID
-                        ep_states[state_id]["vlm_ready"] = True
-                        print(f"🧠 VLM (current state only) attached to state {state_id} (ep {episode_id})" + 
+                        info = ep_states[state_id]
+                        # Do not clobber if results already exist.
+                        if not (info.get("vlm_ready", False) and isinstance(info.get("vlm_text"), str) and info["vlm_text"].strip()):
+                            info["vlm_text"] = frontend_text
+                            info["vlm_video_id"] = video_id  # Store video ID
+                            info["video_id"] = video_id      # Alias for UI wording
+                            info["vlm_ready"] = True
+                        info["vlm_queued"] = False
+                        self._vlm_jobs_inflight.discard((episode_id, state_id))
+                        print(f"🧠 VLM attached to state {state_id} (ep {episode_id})" +
                               (f" with video {video_id}" if video_id else ""))
                     else:
+                        # state may have completed/been removed
+                        self._vlm_jobs_inflight.discard((episode_id, state_id))
                         print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id})")
 
             except Exception as e:
@@ -2380,16 +2424,19 @@ class CrowdInterface():
             pass
         
         # Deep copy obs_dict tensors (necessary for correctness) and spill to disk
-        obs_dict_deep_copy = {}
-        for key, value in obs_dict.items():
-            if isinstance(value, torch.Tensor):
-                obs_dict_deep_copy[key] = value.clone().detach()
-            else:
-                obs_dict_deep_copy[key] = value
-        # Spill heavy observations to disk now and drop from RAM
-        obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
-        # Explicitly release the deep copy to encourage GC
-        del obs_dict_deep_copy
+        if obs_dict is not None:
+            obs_dict_deep_copy = {}
+            for key, value in obs_dict.items():
+                if isinstance(value, torch.Tensor):
+                    obs_dict_deep_copy[key] = value.clone().detach()
+                else:
+                    obs_dict_deep_copy[key] = value
+            # Spill heavy observations to disk now and drop from RAM
+            obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
+            # Explicitly release the deep copy to encourage GC
+            del obs_dict_deep_copy
+        else:
+            obs_path = None
 
         state_info = {
             "state": frontend_state.copy(),
@@ -2447,16 +2494,25 @@ class CrowdInterface():
                 return
 
             info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-            if 'important' in info and info['important']:
+            if info.get('important', False):
+                # Already important: do not clobber or re-enqueue.
+                print(f"ℹ️ State {latest_state_id} already marked important; leaving VLM status unchanged.")
                 return
             info["important"] = True
             info["segmentation_ready"] = False
+            # VLM readiness handling (do not clobber existing results)
             if self._vlm_enabled:
-                info["vlm_text"] = None   # will be filled by VLM worker once ready
-                info["vlm_ready"] = False
+                has_vlm = bool(info.get("vlm_ready", False) and isinstance(info.get("vlm_text"), str) and info["vlm_text"])
+                if not has_vlm:
+                    info.setdefault("vlm_text", None)
+                    info["vlm_ready"] = False
+                    info["vlm_queued"] = info.get("vlm_queued", False)
+                else:
+                    # Already has results → leave vlm_ready/text as-is
+                    pass
             else:
-                # When VLM is disabled, treat as 'ready' so no gating occurs anywhere.
-                info["vlm_text"] = None
+                # VLM disabled → treat as ready to avoid gating
+                info.setdefault("vlm_text", None)
                 info["vlm_ready"] = True
             print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
 
@@ -2470,8 +2526,12 @@ class CrowdInterface():
             joints_local = dict(info["state"].get("joint_positions", {}))
             obs_path_local = info.get("obs_path")
 
+            # Decide whether to queue VLM after leaving the lock
+            should_queue_vlm = False
             if self._vlm_enabled:
-                self._enqueue_vlm_job(episode_id_local, state_id_local, view_paths_local)
+                info_now = self.pending_states_by_episode[latest_episode_id][latest_state_id]
+                if not info_now.get("vlm_ready", False) and not info_now.get("vlm_queued", False):
+                    should_queue_vlm = True
 
             st_obj = info["state"]
             # Do not return early — we want to save the important-state image regardless.
@@ -2488,6 +2548,11 @@ class CrowdInterface():
         self._save_important_maincam_frame(episode_id_local, state_id_local, obs_path_local)
         if segmentation_needed:
             self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
+        # Enqueue VLM (if needed) after releasing the lock
+        if self._vlm_enabled and should_queue_vlm:
+            ok = self._enqueue_vlm_job(episode_id_local, state_id_local, view_paths_local)
+            if not ok:
+                print(f"⚠️ Could not enqueue VLM job ep={episode_id_local} sid={state_id_local} (will remain pending until re-marked)")
 
     def clear_episode_data(self, episode_id: str):
         """Clear all episode-related data for a specific episode (used when rerecording)"""
@@ -2663,6 +2728,7 @@ class CrowdInterface():
                 if latest_state_id is not None:
                     state_info = self.pending_states_by_episode[latest_episode][latest_state_id]
                     episode_states = self.pending_states_by_episode[latest_episode]
+                    selected_episode = latest_episode
                 else:
                     # Fallback if no states found
                     return {}
@@ -2671,6 +2737,7 @@ class CrowdInterface():
                 random_state_id = random.choice(list(episode_states.keys()))
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
+                selected_episode = self.current_serving_episode
             
             # ---- Strict VLM gating for important states ----
             # Do not serve an important state until its VLM text has been generated.
@@ -2704,6 +2771,7 @@ class CrowdInterface():
                     _, latest_state_id, best_ep, best_si = chosen
                     state_info = best_si
                     episode_states = self.pending_states_by_episode[best_ep]
+                    selected_episode = best_ep
                 else:
                     # No safe alternatives; block serving for now
                     print(f"⏸️ VLM not ready for important state {latest_state_id}; holding back serving.")
@@ -2723,6 +2791,7 @@ class CrowdInterface():
                     state_info = best_si
                     latest_state_id = best_sid
                     episode_states = self.pending_states_by_episode[best_ep]
+                    selected_episode = best_ep
                 # else: keep the original important state even though segmentation is pending
             
             # Mark state as served
@@ -2730,7 +2799,7 @@ class CrowdInterface():
                 state_info["served_during_stationary"] = not (self.robot_is_moving or self.is_async_collection)
             
             # Track which state was served to this session (episode-aware)
-            serving_episode = latest_episode if (self.robot_is_moving is False and not self.is_async_collection) else self.current_serving_episode
+            serving_episode = selected_episode if (self.robot_is_moving is False and not self.is_async_collection) else self.current_serving_episode
             if serving_episode not in self.served_states_by_episode:
                 self.served_states_by_episode[serving_episode] = {}
             self.served_states_by_episode[serving_episode][session_id] = latest_state_id
@@ -2772,8 +2841,9 @@ class CrowdInterface():
             segp = state_info.get("segmentation_paths")
             if segp:
                 state["segmentation_paths"] = segp
-            
+            # expose both keys for video id (alias)
             state["vlm_video_id"] = state_info.get("vlm_video_id")
+            state["video_id"] = state_info.get("vlm_video_id")
             
             if self.is_async_collection:
                 status = "async_collection"
