@@ -2,6 +2,8 @@ High level:
 
 If any items can be picked directly into the drawer without repositioning (entirely on the left of the arm base, to leave ample space; otherwise they risk being in an inconvenient location near or under the drawer when opened opens), open the MIDDLE drawer (MIDDLE only). Pick and place each valid items into the drawer. Close the drawer. If there are still objects left (those not directly pickable without repositioning), move them to be entirely on the left of the robot one to one. Then open the middle drawer, pick and place each, and close the drawer.
 
+Success condition: no objects are on the table. The middle drawer is closed. The robot is in home position.
+
 
 Lower level:
 

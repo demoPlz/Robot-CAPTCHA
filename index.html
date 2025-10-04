@@ -31,6 +31,7 @@
     color: #ffffff;
     border-radius: 8px;
     padding: 12px 16px;
+    position: relative;
   }
 
   
@@ -1190,6 +1191,54 @@
 #recMini .saved-badge{ margin-left: 4px; font-weight: 700; opacity: .9; display: none; }
 #recMini.saved .saved-badge{ display: inline; }
 
+/* --- Example video toggle + dock ----------------------------------------- */
+
+/* the cursive 'i' button on the prompt bar (center-right) */
+.prompt-example-toggle{
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px; height: 28px;
+  display: inline-grid; place-items: center;
+  background: rgba(255,255,255,0.14);
+  border: 1px solid rgba(255,255,255,0.35);
+  color: #ffffff;
+  font: italic 700 16px Georgia, "Times New Roman", serif;
+  cursor: pointer; user-select: none;
+}
+.prompt-example-toggle:hover{ background: rgba(255,255,255,0.22); }
+.prompt-example-toggle:active{ filter: brightness(.95); }
+.prompt-example-toggle[disabled]{ opacity:.5; cursor:not-allowed; }
+.prompt-example-toggle.active{
+  box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 4px 16px rgba(0,0,0,.25);
+}
+
+/* the independent right-side video window */
+#exampleDock{
+  position: fixed;
+  display: none;                 /* toggled by JS */
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  z-index: 10005;                /* above the card */
+  overflow: hidden;
+  border-radius: 0 !important;   /* match your square corner theme */
+}
+#exampleDock video{
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: cover;             /* or 'contain' if you prefer letterboxing */
+  background: #000;
+}
+#exampleDock .placeholder{
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 14px system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  color: #6b7280;
+  background: #0b0d12;
+}
+
 
 </style>
 
@@ -1235,11 +1284,10 @@ const HQ_REC = {
   maxWidth:   2560,       // safety caps (≈1440p when aspect isn't 16:9)
   maxHeight:  1440,
 
-  // Prefer newer codecs; fall back gracefully.
+  // VP9-only codec preferences (better browser compatibility)
   codecPrefs: [
-    'video/webm;codecs=av01.0.08M.08',  // AV1 (Chrome/Edge newish)
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
+    'video/webm;codecs=vp9',            // VP9 (excellent browser support)
+    'video/webm;codecs=vp8',            // VP8 (universal fallback)
     'video/webm'
   ],
 
@@ -2536,6 +2584,16 @@ promptText.className = 'prompt-text';
 promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
 
 promptBar.appendChild(promptText);
+
+// ADD: cursive "i" toggle on the prompt bar
+const exampleToggle = document.createElement('button');
+exampleToggle.className = 'prompt-example-toggle';
+exampleToggle.type = 'button';
+exampleToggle.title = 'Show example video';
+exampleToggle.setAttribute('aria-pressed', 'false');
+exampleToggle.textContent = '𝒾';
+promptBar.appendChild(exampleToggle);
+
 mount.appendChild(promptBar);
 
 // NEW: record-only wrapper that excludes the prompt bar
@@ -2564,6 +2622,64 @@ buttonBarsContainer.appendChild(confirmBar);
 const viewsGrid = document.createElement('div');
 viewsGrid.className = 'views-grid';
 contentContainer.appendChild(viewsGrid);
+
+// ADD: Example video dock (independent window to the right of the views)
+let exampleDock = null;
+let exampleVideo = null;
+
+function createExampleDockOnce(){
+  if (exampleDock) return;
+  exampleDock = document.createElement('div');
+  exampleDock.id = 'exampleDock';
+
+  exampleVideo = document.createElement('video');
+  exampleVideo.muted = true;           // allow autoplay
+  exampleVideo.loop = true;
+  exampleVideo.autoplay = true;
+  exampleVideo.playsInline = true;
+  exampleVideo.preload = 'auto';
+
+  exampleDock.appendChild(exampleVideo);
+  document.body.appendChild(exampleDock);
+}
+
+function updateExampleDockLayout(){
+  if (!exampleDock || !viewsGrid) return;
+  const r = viewsGrid.getBoundingClientRect();
+  const gap = 12; // px between views and dock
+  exampleDock.style.top    = Math.round(r.top)    + 'px';
+  exampleDock.style.left   = Math.round(r.right + gap) + 'px';
+  exampleDock.style.width  = Math.round(r.width)  + 'px';
+  exampleDock.style.height = Math.round(r.height) + 'px';
+}
+
+function showExampleDock(){
+  createExampleDockOnce();
+  exampleDock.style.display = 'block';
+  exampleToggle.classList.add('active');
+  exampleToggle.setAttribute('aria-pressed', 'true');
+  exampleToggle.title = 'Hide example video';
+  updateExampleDockLayout();
+}
+
+function hideExampleDock(){
+  if (!exampleDock) return;
+  exampleDock.style.display = 'none';
+  exampleToggle.classList.remove('active');
+  exampleToggle.setAttribute('aria-pressed', 'false');
+  exampleToggle.title = 'Show example video';
+}
+
+function toggleExampleDock(force){
+  const want = (typeof force === 'boolean') ? force :
+               !(exampleDock && exampleDock.style.display === 'block');
+  if (want) showExampleDock(); else hideExampleDock();
+}
+
+exampleToggle.addEventListener('click', () => toggleExampleDock());
+
+// Keep the dock aligned when the window resizes
+window.addEventListener('resize', updateExampleDockLayout);
 
 // Controls wrapper as before (even if display:none)
 const controlsWrapper = document.createElement('div');
@@ -2711,6 +2827,9 @@ function updateViewSizes() {
     view.container.style.width = targetWidth + 'px';
     view.container.style.height = targetHeight + 'px';
   });
+  
+  // Keep the example dock aligned/sized with the views grid
+  updateExampleDockLayout();
 }
 
 
@@ -3042,6 +3161,98 @@ loader.load(
     // Update prompt text from server state
     const promptFromServer = state.prompt || 'Pick up the red block.';
     promptText.textContent = promptFromServer;
+    
+    // === Example video source hookup ============================================
+    function getExampleVideoUrlFromState(s){
+      // Prefer backend-provided fields; fall back to ?example=<url> for ad-hoc testing
+      const qp = new URLSearchParams(location.search).get('example');
+      return s?.example_video_url
+          || s?.example_video?.url
+          || s?.prompt_example?.video_url
+          || s?.demo_video?.example_url
+          || qp
+          || null;
+    }
+
+    // --- helper: absolutize /api/... against API_BASE_URL ---
+    function resolveExampleVideoUrl(raw) {
+      if (!raw) return null;
+      // absolute? leave it
+      if (/^https?:\/\//i.test(raw)) return raw;
+      // relative /api/... ? route through our proxy/base
+      if (raw.startsWith('/api/')) return `${API_BASE_URL}${raw}`;
+      // anything else (data:, etc.)
+      return raw;
+    }
+
+    // --- helper: feature-detect VP9 playback ---
+    function browserCanPlayVP9() {
+      const v = document.createElement('video');
+      const res = v.canPlayType('video/webm; codecs="vp9"');
+      return res === 'probably' || res === 'maybe';
+    }
+
+    // --- helper: show a friendly placeholder in the dock ---
+    function showExampleFallback(message) {
+      createExampleDockOnce();
+      // clear and show placeholder
+      exampleDock.innerHTML = '';
+      const ph = document.createElement('div');
+      ph.className = 'placeholder';
+      ph.textContent = message;
+      exampleDock.appendChild(ph);
+      showExampleDock();
+    }
+
+    // === Example video source hookup (replace your current block) ===
+    const rawUrl = getExampleVideoUrlFromState(state);
+    const url = resolveExampleVideoUrl(rawUrl);
+
+    if (url) {
+      createExampleDockOnce();
+
+      // If this browser can't decode VP9/WebM, don't even try.
+      if (!browserCanPlayVP9()) {
+        showExampleFallback('Your browser cannot play VP9/WebM. Use Chrome/Edge/Firefox, or provide an MP4 (H.264) fallback.');
+      } else {
+        // Set up the <video> with a typed <source> and basic diagnostics
+        exampleDock.innerHTML = '';
+        exampleVideo = document.createElement('video');
+        exampleVideo.muted = true;
+        exampleVideo.loop = true;
+        exampleVideo.autoplay = true;
+        exampleVideo.playsInline = true;
+        exampleVideo.preload = 'auto';
+        exampleVideo.crossOrigin = 'anonymous'; // safe default
+
+        const source = document.createElement('source');
+        source.src = url;
+        source.type = 'video/webm; codecs="vp9"';
+        exampleVideo.appendChild(source);
+
+        // Diagnostics -> console if something's wrong (404/codec/etc.)
+        exampleVideo.addEventListener('error', () => {
+          console.error('Example video error:', exampleVideo.error, url);
+          showExampleFallback('Could not play example video.');
+        });
+        exampleVideo.addEventListener('loadedmetadata', () => {
+          console.log('Example video loaded:', { url, duration: exampleVideo.duration });
+        });
+
+        exampleDock.appendChild(exampleVideo);
+        showExampleDock();
+
+        // Try to start playback; muted=true should satisfy autoplay policies.
+        exampleVideo.load();
+        exampleVideo.play().catch(err => {
+          console.warn('Autoplay blocked or failed; showing controls.', err);
+          exampleVideo.controls = true; // let the user click play
+        });
+      }
+    } else {
+      exampleToggle.disabled = true;
+      exampleToggle.title = 'No example video available';
+    }
     
     for (const [name, val] of Object.entries(initialJointPositions)) {
       robot.setJointValue(name, val);
@@ -4958,6 +5169,9 @@ loader.load(
           updateGripArrowVisibility(); // Update arrow visibility for initial view
         }
       }
+      
+      // Initial placement of the example dock (if present)
+      updateExampleDockLayout();
     }
 
     const btnBar   = document.createElement('div');

@@ -8,7 +8,7 @@ Common failure modes that may lead to deviations from the strategies and how to 
 
 {failures}
 
-This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, describe what has happened, and what next step is taken to achieve the next frame. Example descriptions in "state-action description format" for the first frames are as follows. Follow the format, inluding the practice of numbering, to describe all frames (including frames described in the example).
+This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, describe what has happened, and what next step is taken to achieve the next frame. Example descriptions in "state-action description format" for the first frames are as follows. Follow the format, inluding the practice of numbering, to describe all frames (including frames described in the example). If the success conditions are fulfilled, output "No objects are on the table. The middle drawer is closed. The robot is in home position, thus: end".
 
 {sequence_description}
 

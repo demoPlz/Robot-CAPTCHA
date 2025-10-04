@@ -20,7 +20,7 @@ def _safe_int(v, default):
     try: return int(v)
     except Exception: return default
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
 from flask_cors import CORS
 from flask import request, make_response
 from pathlib import Path
@@ -134,7 +134,10 @@ class CrowdInterface():
                  # --- NEW: demo video recording ---
                  record_demo_videos: bool = False,
                  demo_videos_dir: str | None = None,
-                 demo_videos_clear: bool = False):
+                 demo_videos_clear: bool = False,
+                 # --- NEW: read-only demo video display (independent of recording) ---
+                 show_demo_videos: bool = False,
+                 show_videos_dir: str | None = None):
 
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
@@ -423,6 +426,26 @@ class CrowdInterface():
                 print(f"⚠️ Could not prepare demo videos directory '{self._demo_videos_dir}': {e}")
                 self.record_demo_videos = False
 
+        # --- NEW: Demo video *display* (read-only, independent of recording) ---
+        self.show_demo_videos = bool(show_demo_videos or int(os.getenv("SHOW_DEMO_VIDEOS", "0")))
+        self._show_videos_dir = None
+        self._show_video_exts = (".webm",)  # VP9-only
+
+        if self.show_demo_videos:
+            if show_videos_dir:
+                self._show_videos_dir = Path(show_videos_dir).resolve()
+            else:
+                task_name = self.prompt_task_name or "default"
+                repo_root = Path(__file__).resolve().parent / ".."
+                self._show_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
+
+            try:
+                self._show_videos_dir.mkdir(parents=True, exist_ok=True)
+                print(f"🎬 Demo video display (read-only, VP9/WebM only) → {self._show_videos_dir}")
+            except Exception as e:
+                print(f"⚠️ Could not prepare show videos directory '{self._show_videos_dir}': {e}")
+                self.show_demo_videos = False
+
         # --- Manual save system: require explicit 'save' before committing an episode ---
         # Episodes are kept in a pending state until /api/control/save (or 's') is pressed.
         self._episodes_pending_save: set[str] = set()
@@ -464,16 +487,8 @@ class CrowdInterface():
 
     @staticmethod
     def _guess_ext_from_mime_or_name(mime: str | None, name: str | None, fallback: str = ".webm") -> str:
-        # Conservative mapping—extend if you need more types
-        mime = (mime or "").lower()
-        name = (name or "")
-        if "webm" in mime or name.endswith(".webm"):
-            return ".webm"
-        if "mp4" in mime or name.endswith(".mp4") or "mpeg4" in mime:
-            return ".mp4"
-        if "ogg" in mime or name.endswith(".ogv") or name.endswith(".ogg"):
-            return ".ogv"
-        return fallback
+        # VP9-only system: always use .webm
+        return ".webm"
 
     def _next_video_filename(self, ext: str) -> tuple[str, int]:
         """Return ('{index}{ext}', index) and atomically increment the counter."""
@@ -484,14 +499,49 @@ class CrowdInterface():
             self._video_index += 1
         return f"{idx}{ext}", idx
 
+    def _find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
+        """
+        VP9-only: resolve <id>.webm inside the show_videos_dir and return its path + mime.
+        """
+        vid = str(video_id).strip()
+        if not vid.isdigit() or not self._show_videos_dir:
+            return None, None
+
+        p = self._show_videos_dir / f"{vid}.webm"
+        if not p.is_file():
+            return None, None
+
+        mime = mimetypes.guess_type(str(p))[0] or "video/webm"
+        return p, mime
+
+    # --- NEW: helper to resolve the latest .webm by numeric filename ---
+    def _find_latest_show_video(self) -> tuple[Path | None, str | None]:
+        """
+        Return (path, id_str) of the latest .webm in _show_videos_dir.
+        Files must be named like '<number>.webm' (e.g., 1.webm, 2.webm).
+        """
+        try:
+            d = self._show_videos_dir
+            if not d:
+                return None, None
+            latest_path = None
+            latest_id = None
+            for p in d.iterdir():
+                if not (p.is_file() and p.suffix.lower() == ".webm"):
+                    continue
+                stem = p.stem.strip()
+                if not stem.isdigit():
+                    continue
+                if latest_id is None or int(stem) > int(latest_id):
+                    latest_path, latest_id = p, stem
+            return latest_path, latest_id
+        except Exception:
+            return None, None
+
     def get_demo_video_config(self) -> dict:
         """
         Small, stable contract the frontend can consume.
-        - enabled: whether UI should show the recorder
-        - task_name: sanitized task name if provided
-        - save_dir_abs / save_dir_rel: where uploads end up (for user display)
-        - upload_url: endpoint the UI should POST to (multipart 'video' + optional 'metadata')
-        - preferred_extension/mime: gentle hint for MediaRecorder/export
+        VP9-only: prefer .webm (VP9) and only accept VP9/WebM uploads.
         """
         cfg = {
             "enabled": bool(self.record_demo_videos),
@@ -501,12 +551,11 @@ class CrowdInterface():
             "upload_url": "/api/upload-demo-video" if self.record_demo_videos else None,
             "preferred_extension": "webm",
             "preferred_mime": "video/webm",
-            # NEW: front-end hints to avoid getDisplayMedia (no Chrome picker, no screen recording)
             "suggest_canvas_capture": True,
             "filename_pattern": "{index}.{ext}",
             "sequence_start_index": 1,
             "reset_numbering_each_run": True,
-            "accept_mimes": ["video/webm", "video/mp4", "video/ogg"]
+            "accept_mimes": ["video/webm"]  # VP9-only
         }
         if self.record_demo_videos and self._demo_videos_dir:
             cfg["save_dir_abs"] = str(self._demo_videos_dir)
@@ -1560,13 +1609,19 @@ class CrowdInterface():
         4. Ensuring text ends with a period
         """
         if not text:
-            return text
+            return text, None
         
         # Start with stripped text
-        cleaned = text.strip()
+        original = text.strip()
         
-        # Remove trailing comma and number pattern first (e.g., ", 26")
-        cleaned = re.sub(r',\s*\d+\s*$', '', cleaned).strip()
+        # Extract video ID from trailing comma and number pattern (e.g., ", 26")
+        video_id = None
+        video_match = re.search(r',\s*(\d+)\s*$', original)
+        if video_match:
+            video_id = int(video_match.group(1))
+        
+        # Remove trailing comma and number pattern
+        cleaned = re.sub(r',\s*\d+\s*$', '', original).strip()
         
         # Remove surrounding quotes (handle both single and double quotes)
         # Keep removing quotes until no more are found at the edges
@@ -1585,7 +1640,7 @@ class CrowdInterface():
         if cleaned and not cleaned.endswith(('.', '!', '?', ':')):
             cleaned += '.'
         
-        return cleaned
+        return cleaned, video_id
 
     # ---------- VLM worker core ----------
     def _vlm_worker(self):
@@ -1737,7 +1792,7 @@ class CrowdInterface():
                 )
 
                 # For frontend: only use current state response with cleaned format
-                frontend_text = self._clean_vlm_response_format((curr_text or "").strip())
+                frontend_text, video_id = self._clean_vlm_response_format((curr_text or "").strip())
 
                 # Attach to pending state and mark ready (frontend gets only current response)
                 with self.state_lock:
@@ -1745,8 +1800,10 @@ class CrowdInterface():
                     ep_states = self.pending_states_by_episode.get(episode_id)
                     if ep_states and state_id in ep_states:
                         ep_states[state_id]["vlm_text"] = frontend_text
+                        ep_states[state_id]["vlm_video_id"] = video_id  # Store video ID
                         ep_states[state_id]["vlm_ready"] = True
-                        print(f"🧠 VLM (current state only) attached to state {state_id} (ep {episode_id})")
+                        print(f"🧠 VLM (current state only) attached to state {state_id} (ep {episode_id})" + 
+                              (f" with video {video_id}" if video_id else ""))
                     else:
                         print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id})")
 
@@ -2125,6 +2182,26 @@ class CrowdInterface():
                 except Exception:
                     pass
         out["segments"] = segs
+        
+        # --- NEW: attach example video URL (direct file URL; byte-range capable) ---
+        if self.show_demo_videos:
+            # Prefer a VLM-selected clip if available and present
+            video_id = state.get("vlm_video_id")
+            chosen_url = None
+            if video_id is not None:
+                p, _ = self._find_show_video_by_id(video_id)
+                if p:
+                    chosen_url = f"/api/show-videos/{video_id}"  # serves the exact id
+
+            # Fallback: latest available .webm
+            if not chosen_url:
+                lp, lid = self._find_latest_show_video()
+                if lp and lid:
+                    # Stable "latest" URL for the player; resolves dynamically on the server
+                    chosen_url = "/api/show-videos/latest.webm"
+
+            if chosen_url:
+                out["example_video_url"] = chosen_url
         
         return out
     
@@ -2695,6 +2772,8 @@ class CrowdInterface():
             segp = state_info.get("segmentation_paths")
             if segp:
                 state["segmentation_paths"] = segp
+            
+            state["vlm_video_id"] = state_info.get("vlm_video_id")
             
             if self.is_async_collection:
                 status = "async_collection"
@@ -4142,44 +4221,41 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         try:
             if 'video' not in request.files:
                 return jsonify({"error": "No video file provided"}), 400
-            
+
             file = request.files['video']
             if file.filename == '':
                 return jsonify({"error": "No file selected"}), 400
-            
-            # Get optional metadata
+
+            # Enforce WebM uploads (VP9-only system)
+            if getattr(file, "mimetype", None) and "webm" not in file.mimetype.lower():
+                return jsonify({"error": "Only WebM/VP9 uploads are accepted"}), 400
+
             metadata = {}
             if 'metadata' in request.form:
                 try:
                     metadata = json.loads(request.form['metadata'])
                 except:
                     pass
-            
-            # Force server-side sequential naming: 1.ext, 2.ext, ...
-            # Decide extension from MIME or original name; default ".webm"
-            ext = CrowdInterface._guess_ext_from_mime_or_name(
-                getattr(file, "mimetype", None), file.filename, fallback=crowd_interface._video_ext_default
-            )
+
+            # Always write sequential *.webm
+            ext = ".webm"
             filename, index = crowd_interface._next_video_filename(ext)
             file_path = crowd_interface._demo_videos_dir / filename
             file.save(str(file_path))
-            
-            # Optionally save metadata
+
             if metadata:
-                # Save metadata as {index}.json alongside the video, regardless of original filename
                 metadata_path = (crowd_interface._demo_videos_dir / f"{index}.json")
                 with open(metadata_path, 'w', encoding='utf-8') as f:
                     json.dump(metadata, f, indent=2)
-            
-            # Optionally upload to blob storage (if configured) to produce a shareable URL
+
             public_url = crowd_interface._maybe_upload_to_blob(str(file_path))
 
             return jsonify({
                 "status": "success",
                 "filename": filename,
-                "path": str(file_path),  # absolute on server (for logs)
+                "path": str(file_path),
                 "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
-                "public_url": public_url,  # may be None if blob not configured
+                "public_url": public_url,
                 "config": crowd_interface.get_demo_video_config(),
                 "index": index
             })
@@ -4189,6 +4265,169 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
     
+    @app.route("/api/demo-videos/<filename>")
+    def serve_demo_video(filename):
+        """Serve demo video files for the frontend example video feature."""
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface._demo_videos_dir:
+            return jsonify({"error": "Demo videos directory not configured"}), 404
+        
+        try:
+            # Sanitize filename to prevent directory traversal
+            filename = os.path.basename(filename)
+            file_path = crowd_interface._demo_videos_dir / filename
+            
+            if not file_path.exists():
+                return jsonify({"error": "Video file not found"}), 404
+            
+            # Determine MIME type
+            mime_type = mimetypes.guess_type(str(file_path))[0] or 'video/webm'
+            
+            # Create response with proper headers for video streaming
+            response = make_response()
+            response.headers['Content-Type'] = mime_type
+            response.headers['Accept-Ranges'] = 'bytes'
+            response.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+            
+            # Read and return the file
+            with open(file_path, 'rb') as f:
+                response.data = f.read()
+            
+            return response
+            
+        except Exception as e:
+            print(f"❌ Error serving demo video {filename}: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/show-videos/<video_id>")
+    def serve_show_video(video_id):
+        """
+        Serve read-only example videos by numeric id from prompts/{task-name}/videos (or custom dir).
+        This endpoint is independent of the recording feature and supports HTTP Range.
+        """
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+
+        if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
+            return jsonify({"error": "Show demo videos is not enabled"}), 404
+
+        # Sanitize; we only accept digits for ids.
+        vid = "".join(c for c in str(video_id) if c.isdigit())
+        if not vid:
+            return jsonify({"error": "Invalid video id"}), 400
+
+        file_path, mime = crowd_interface._find_show_video_by_id(vid)
+        if not file_path:
+            return jsonify({"error": "Video file not found"}), 404
+
+        try:
+            file_size = os.path.getsize(file_path)
+            range_header = request.headers.get("Range", None)
+
+            if range_header:
+                # Format: "bytes=start-end"
+                m = re.match(r"bytes=(\d+)-(\d*)", range_header)
+                if m:
+                    start = int(m.group(1))
+                    end = int(m.group(2)) if m.group(2) else file_size - 1
+                    end = min(end, file_size - 1)
+                    if start > end or start >= file_size:
+                        # RFC 7233
+                        resp = Response(status=416)
+                        resp.headers["Content-Range"] = f"bytes */{file_size}"
+                        return resp
+
+                    length = end - start + 1
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        data = f.read(length)
+
+                    rv = Response(data, 206, mimetype=mime, direct_passthrough=True)
+                    rv.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                    rv.headers["Accept-Ranges"] = "bytes"
+                    rv.headers["Content-Length"] = str(length)
+                    rv.headers["Cache-Control"] = "public, max-age=3600"
+                    return rv
+
+            # No Range: return full file
+            with open(file_path, "rb") as f:
+                data = f.read()
+            rv = make_response(data)
+            rv.headers["Content-Type"] = mime
+            rv.headers["Content-Length"] = str(file_size)
+            rv.headers["Accept-Ranges"] = "bytes"
+            rv.headers["Cache-Control"] = "public, max-age=3600"
+            return rv
+
+        except Exception as e:
+            print(f"❌ Error serving show video {video_id}: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/show-videos/latest.webm")
+    def serve_latest_show_video():
+        """
+        Serve the most recent .webm in the show_videos_dir with full HTTP Range support.
+        Content-Type: video/webm
+        Accept-Ranges: bytes
+        """
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+
+        if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
+            return jsonify({"error": "Show demo videos is not enabled"}), 404
+
+        # Resolve the latest numeric .webm (e.g., 1.webm, 2.webm, ...)
+        latest_path, latest_id = crowd_interface._find_latest_show_video()
+        if not latest_path or not latest_path.exists():
+            return jsonify({"error": "No video file found"}), 404
+
+        try:
+            file_path = latest_path
+            mime = "video/webm"  # force WebM for the player
+
+            file_size = os.path.getsize(file_path)
+            range_header = request.headers.get("Range", None)
+
+            if range_header:
+                # Format: "bytes=start-end"
+                m = re.match(r"bytes=(\d+)-(\d*)", range_header)
+                if m:
+                    start = int(m.group(1))
+                    end = int(m.group(2)) if m.group(2) else file_size - 1
+                    end = min(end, file_size - 1)
+                    if start > end or start >= file_size:
+                        resp = Response(status=416)
+                        resp.headers["Content-Range"] = f"bytes */{file_size}"
+                        return resp
+
+                    length = end - start + 1
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        data = f.read(length)
+
+                    rv = Response(data, 206, mimetype=mime, direct_passthrough=True)
+                    rv.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                    rv.headers["Accept-Ranges"] = "bytes"
+                    rv.headers["Content-Length"] = str(length)
+                    rv.headers["Cache-Control"] = "public, max-age=3600"
+                    return rv
+
+            # No Range header → return the whole file
+            with open(file_path, "rb") as f:
+                data = f.read()
+            rv = make_response(data)
+            rv.headers["Content-Type"] = mime
+            rv.headers["Content-Length"] = str(file_size)
+            rv.headers["Accept-Ranges"] = "bytes"
+            rv.headers["Cache-Control"] = "public, max-age=3600"
+            return rv
+
+        except Exception as e:
+            print(f"❌ Error serving latest show video: {e}")
+            return jsonify({"error": str(e)}), 500
+
     # Streaming recording endpoints for canvas-based recording
     # In-memory storage for active recording sessions
     recording_sessions = {}  # recording_id -> {task_name, ext, chunks: [bytes]}
@@ -4205,7 +4444,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             data = request.get_json() or {}
             recording_id = data.get('recording_id')
             task_name = data.get('task_name') or crowd_interface._task_name() or 'default'
-            ext = data.get('ext', 'webm')
+            ext = 'webm'   # VP9-only
             
             if not recording_id:
                 return jsonify({"error": "missing recording_id"}), 400

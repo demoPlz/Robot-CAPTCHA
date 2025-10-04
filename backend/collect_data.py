@@ -115,6 +115,18 @@ def _pop_crowd_cli_overrides(argv=None):
         dest="crowd_auto_clear_demo",
         help="If set, automatically clear demo videos and snapshots directories at startup.",
     )
+    ap.add_argument(
+        "--show-demo-videos",
+        action="store_true",
+        dest="crowd_show_videos",
+        help="Enable read-only example video display (no recording). Videos are read from prompts/{task-name}/videos by default."
+    )
+    ap.add_argument(
+        "--show-videos-dir",
+        type=str,
+        dest="crowd_show_videos_dir",
+        help="Override directory to read example videos from (default: prompts/{task-name}/videos)."
+    )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -310,6 +322,17 @@ def control_robot(cfg: ControlPipelineConfig):
                 repo_root = Path(__file__).resolve().parent / ".."
                 default_vdir = (repo_root / "prompts" / safe / "videos").resolve()
                 ci_kwargs["demo_videos_dir"] = str(default_vdir)
+
+    # --- NEW: read-only demo video display controls ---
+    if getattr(_CROWD_OVERRIDES, "crowd_show_videos", False):
+        ci_kwargs["show_demo_videos"] = True
+        if getattr(_CROWD_OVERRIDES, "crowd_show_videos_dir", None) is not None:
+            ci_kwargs["show_videos_dir"] = _CROWD_OVERRIDES.crowd_show_videos_dir
+        else:
+            if safe:
+                repo_root = Path(__file__).resolve().parent / ".."
+                default_show_dir = (repo_root / "prompts" / safe / "videos").resolve()
+                ci_kwargs["show_videos_dir"] = str(default_show_dir)
 
     crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()
