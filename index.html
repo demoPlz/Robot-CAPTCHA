@@ -2724,10 +2724,27 @@ function showExampleDock(){
   exampleToggle.setAttribute('aria-pressed', 'true');
   exampleToggle.title = 'Hide example';
   updateExampleDockLayout();
+  
+  // Start video playback when dock is shown - restart from beginning
+  const video = exampleDock.querySelector('video');
+  if (video) {
+    video.currentTime = 0; // Reset to beginning
+    video.play().catch(err => {
+      console.warn('Autoplay blocked or failed; showing controls.', err);
+      video.controls = true; // let the user click play
+    });
+  }
 }
 
 function hideExampleDock(){
   if (!exampleDock) return;
+  
+  // Pause video when dock is hidden
+  const video = exampleDock.querySelector('video');
+  if (video) {
+    video.pause();
+  }
+  
   exampleDock.style.display = 'none';
   exampleToggle.classList.remove('active');
   exampleToggle.setAttribute('aria-pressed', 'false');
@@ -3309,15 +3326,10 @@ loader.load(
         });
 
         exampleDock.appendChild(exampleVideo);
-        // showExampleDock();
-        // show example dock initially
+        // Don't automatically show or play - let user click the button to open and start playback
 
-        // Try to start playback; muted=true should satisfy autoplay policies.
+        // Just load the video metadata, but don't start playing
         exampleVideo.load();
-        exampleVideo.play().catch(err => {
-          console.warn('Autoplay blocked or failed; showing controls.', err);
-          exampleVideo.controls = true; // let the user click play
-        });
       }
     } else {
       exampleToggle.disabled = true;
