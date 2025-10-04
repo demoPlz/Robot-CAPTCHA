@@ -1193,18 +1193,18 @@
 
 /* --- Example video toggle + dock ----------------------------------------- */
 
-/* Keyframe animation for pulsing effect */
+/* Keyframe animation for pulsing effect - optimized for performance */
 @keyframes pulse-glow {
   0% { 
-    filter: drop-shadow(0 0 2px rgba(255,255,255,0.2));
+    opacity: 0.8;
     transform: translateY(-50%) scale(1);
   }
   50% { 
-    filter: drop-shadow(0 0 20px rgba(255,255,255,1)) drop-shadow(0 0 30px rgba(255,255,255,0.8));
-    transform: translateY(-50%) scale(1.1);
+    opacity: 1;
+    transform: translateY(-50%) scale(1.05);
   }
   100% { 
-    filter: drop-shadow(0 0 2px rgba(255,255,255,0.2));
+    opacity: 0.8;
     transform: translateY(-50%) scale(1);
   }
 }
@@ -1229,9 +1229,14 @@
   transition: all 0.2s ease;
 }
 
-/* Only pulse when never activated */
+/* Only pulse when never activated and not during interaction */
 .prompt-example-toggle.never-activated{
   animation: pulse-glow 1.2s ease-in-out infinite;
+}
+
+/* Pause animation during interaction for performance */
+.prompt-example-toggle.never-activated.paused{
+  animation-play-state: paused;
 }
 
 .prompt-example-toggle:hover{ 
@@ -5476,7 +5481,20 @@ loader.load(
     window.addEventListener('pointerdown', (e) => {
       const t = e.target;
       if (t === animateBtn || (animateBtn && animateBtn.contains && animateBtn.contains(t))) return;
+      
+      // Pause pulsing animation during interaction for performance
+      if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
+        exampleToggle.classList.add('paused');
+      }
+      
       cancelAnimationIfRunning('pointerdown anywhere');
+    }, { capture: true });
+    
+    // Resume pulsing animation when interaction ends
+    window.addEventListener('pointerup', () => {
+      if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
+        exampleToggle.classList.remove('paused');
+      }
     }, { capture: true });
 
     // Reset button (lower-left): standalone like Confirm, same style but gray,
