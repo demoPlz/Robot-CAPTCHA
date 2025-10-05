@@ -125,6 +125,8 @@ class CrowdInterface():
                  autofill_important_states: bool = False,
                  num_autofill_actions: int | None = None,
                  use_vlm_prompt: bool = False,
+                 leader_mode: bool = False,
+                 n_leaders: int | None = None,
                  # --- NEW: saving important-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
@@ -142,6 +144,19 @@ class CrowdInterface():
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
         self._vlm_enabled = False  # becomes True only if VLM is requested AND configured
+
+        # --- NEW: Leader Mode controls ---
+        self.leader_mode = bool(leader_mode)
+        try:
+            self.n_leaders = int(n_leaders) if (n_leaders is not None) else 1
+        except Exception:
+            self.n_leaders = 1
+        if self.n_leaders < 1:
+            self.n_leaders = 1
+        # If enabled without VLM prompt, disable with a warning (CLI should prevent this already)
+        if self.leader_mode and not self.use_vlm_prompt:
+            print("⚠️  --leader-mode ignored because --use-vlm-prompt is not enabled.")
+            self.leader_mode = False
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
         self._obs_cache_root = Path(os.getenv("CROWD_OBS_CACHE", os.path.join(tempfile.gettempdir(), "crowd_obs_cache")))
@@ -178,6 +193,11 @@ class CrowdInterface():
         # Clamp to [1, required_responses_per_important_state]
         self.num_autofill_actions = max(1, min(self.num_autofill_actions,
                                                self.required_responses_per_important_state))
+        
+        # Clamp n_leaders to required_responses_per_important_state
+        if self.n_leaders > self.required_responses_per_important_state:
+            print(f"⚠️  n_leaders={self.n_leaders} > required_responses_per_important_state={self.required_responses_per_important_state}; clamping.")
+            self.n_leaders = self.required_responses_per_important_state
         
         # Episode-based state management
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int, timestamp: float}}
@@ -2451,7 +2471,8 @@ class CrowdInterface():
             "episode_id": episode_id,
             # NEW: segmentation bookkeeping
             "segmentation_ready": True,   # normal states don't block serving
-            "segmentation_paths": {}      # view_name -> png path (filled if marked important)
+            "segmentation_paths": {},     # view_name -> png path (filled if marked important)
+            "leader_submissions": 0       # --- NEW: count unique (human) submissions for Leader Mode ---
         }
         
         # Quick episode-based assignment with minimal lock time
@@ -2527,10 +2548,12 @@ class CrowdInterface():
             obs_path_local = info.get("obs_path")
 
             # Decide whether to queue VLM after leaving the lock
+            # Default behavior: queue immediately on mark-important.
+            # Leader Mode: do NOT queue yet; wait for n_leaders unique submissions.
             should_queue_vlm = False
-            if self._vlm_enabled:
+            if self._vlm_enabled and (not self.leader_mode):
                 info_now = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                if not info_now.get("vlm_ready", False) and not info_now.get("vlm_queued", False):
+                if (not info_now.get("vlm_ready", False)) and (not info_now.get("vlm_queued", False)):
                     should_queue_vlm = True
 
             st_obj = info["state"]
@@ -2740,10 +2763,26 @@ class CrowdInterface():
                 selected_episode = self.current_serving_episode
             
             # ---- Strict VLM gating for important states ----
-            # Do not serve an important state until its VLM text has been generated.
-            if (self._vlm_enabled
+            # In leader_mode: allow serving before the leader threshold is met.
+            # Once >= n_leaders unique submissions have happened, block re-serving
+            # until VLM is ready so the next time the user sees it, the VLM prompt is present.
+            need_vlm_gate = (
+                self._vlm_enabled
                 and state_info.get("important", False)
-                and not state_info.get("vlm_ready", False)):
+                and not state_info.get("vlm_ready", False)
+            )
+
+            if self.leader_mode and need_vlm_gate:
+                leaders_so_far = int(state_info.get("leader_submissions", 0))
+                # Skip gating only while we are still collecting the required leaders
+                if leaders_so_far < int(self.n_leaders):
+                    need_vlm_gate = False
+                # Optional safety: if a threshold is met but VLM hasn't actually been queued yet
+                # (e.g., transient queue full), don't block. Uncomment if you want to fail open.
+                # elif not state_info.get("vlm_queued", False):
+                #     need_vlm_gate = False
+
+            if need_vlm_gate:
                 best_pref = None  # preferred: non-important, or important with VLM+segmentation ready
                 best_any  = None  # fallback: important with VLM ready (segmentation may still be pending)
 
@@ -2758,11 +2797,9 @@ class CrowdInterface():
 
                         # Prefer to avoid unsegmented important states (soft preference)
                         if si.get("important", False) and not si.get("segmentation_ready", False):
-                            # lower priority bucket
                             if best_any is None or ts > best_any[0]:
                                 best_any = candidate
                         else:
-                            # preferred bucket (non-important OR important+segmented)
                             if best_pref is None or ts > best_pref[0]:
                                 best_pref = candidate
 
@@ -2829,9 +2866,21 @@ class CrowdInterface():
             state["segmentation_pending"] = bool(
                 state_info.get("important", False)
                                                  and not state_info.get("segmentation_ready", False))
-            state["vlm_pending"] = bool(
+            # --- NEW: 'vlm_pending' respects Leader Mode threshold ---
+            vlm_pending = (
                 self._vlm_enabled and state_info.get("important", False)
-                                         and not state_info.get("vlm_ready", False))
+                and not state_info.get("vlm_ready", False)
+            )
+            if self.leader_mode:
+                vlm_pending = vlm_pending and (int(state_info.get("leader_submissions", 0)) >= self.n_leaders)
+            state["vlm_pending"] = bool(vlm_pending)
+            # (Optional) surface leader progress for UI/monitoring
+            if self.leader_mode and state_info.get("important", False):
+                state["leaders_so_far"] = int(state_info.get("leader_submissions", 0))
+                state["n_leaders"] = int(self.n_leaders)
+            else:
+                state["leaders_so_far"] = None
+                state["n_leaders"] = None
             # Attach view_paths so serializer can serve the correct snapshot for this state
             vp = state_info.get("view_paths")
             if vp:
@@ -2862,6 +2911,12 @@ class CrowdInterface():
         if self._shutting_down:
             print("⚠️  Ignoring submission during shutdown")
             return False
+
+        # --- Stage side-effects to run after we drop the lock ---
+        queue_vlm_payload = None      # tuple: (episode_id, state_id, view_paths)
+        save_on_label_args = None     # tuple: (episode_id, state_id, obs_path)
+        completed = False
+
         with self.state_lock:
             # Get state_id and episode_id from response
             state_id = response_data.get("state_id")
@@ -2947,7 +3002,25 @@ class CrowdInterface():
             
             # Record the response
             state_info["responses_received"] += 1
-            
+
+            # --- Leader Mode: count unique leaders (per-session) and stage VLM enqueue ---
+            if state_info.get("important", False) and self.leader_mode:
+                # Track unique sessions to avoid a single user satisfying all leaders.
+                leader_sessions = state_info.setdefault("leader_sessions", set())
+                if session_id not in leader_sessions:
+                    leader_sessions.add(session_id)
+                    state_info["leader_submissions"] = int(state_info.get("leader_submissions", 0)) + 1
+                # Stage VLM enqueue when threshold is reached
+                if (self._vlm_enabled
+                    and not state_info.get("vlm_ready", False)
+                    and not state_info.get("vlm_queued", False)
+                    and int(state_info.get("leader_submissions", 0)) >= self.n_leaders):
+                    queue_vlm_payload = (
+                        found_episode,
+                        state_id,
+                        dict(state_info.get("view_paths", {})),
+                    )
+
             # Convert response to tensor format
             goal_positions = []
             for joint_name in JOINT_NAMES:
@@ -2964,19 +3037,11 @@ class CrowdInterface():
             print(f"🔔 Response recorded for state {state_id} in episode {found_episode} "
                   f"({state_info['responses_received']}/{required_responses})")
 
-            # NEW: Prepare to save important main camera frame when first response is received
-            save_needed = False
-            save_episode_id = None
-            save_state_id = None
-            save_obs_path = None
-            
+            # Stage important maincam save on first label
             if state_info.get("important", False) and state_info["responses_received"] == 1:
-                # Get obs_path from state_info for later save operation
-                save_obs_path = state_info.get("obs_path")
-                if save_obs_path:
-                    save_needed = True
-                    save_episode_id = found_episode
-                    save_state_id = state_id
+                obs_path_first = state_info.get("obs_path")
+                if obs_path_first:
+                    save_on_label_args = (found_episode, state_id, obs_path_first)
                 else:
                     print(f"⚠️ No obs_path found for important state {state_id}")
 
@@ -3038,18 +3103,21 @@ class CrowdInterface():
                         f"{self.episode_finalize_grace_s:.2f}s grace.")
                 
                 print(f"✅ State {state_id} completed in episode {found_episode}")
-                
-                # Perform save operation outside the lock if needed
-                if save_needed:
-                    self._save_important_maincam_frame_on_label(save_episode_id, save_state_id, save_obs_path)
-                
-                return True
-            
-            # Perform save operation outside the lock if needed (for non-completing responses)
-            if save_needed:
-                self._save_important_maincam_frame_on_label(save_episode_id, save_state_id, save_obs_path)
-            
-            return False
+                completed = True
+
+        # --- After lock: perform staged side-effects safely ---
+        if save_on_label_args is not None:
+            ep, sid, obs_path = save_on_label_args
+            try:
+                self._save_important_maincam_frame_on_label(ep, sid, obs_path)
+            except Exception as e:
+                print(f"⚠️ Error saving important cam_main on label (ep={ep}, sid={sid}): {e}")
+
+        if queue_vlm_payload is not None:
+            ep, sid, vpaths = queue_vlm_payload
+            self._enqueue_vlm_job(ep, sid, vpaths)
+
+        return completed
     
     def get_pending_states_info(self) -> dict:
         """Get episode-based state information for monitoring"""

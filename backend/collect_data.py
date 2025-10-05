@@ -96,6 +96,19 @@ def _pop_crowd_cli_overrides(argv=None):
              "to derive the sequence dir as '<repo>/prompts/demo/{task_name}/snapshots' "
              "(ignored if --sequence-dir is provided).",
     )
+    # --- NEW: Leader Mode (delay VLM until N unique submissions) ---
+    ap.add_argument(
+        "--leader-mode",
+        action="store_true",
+        dest="crowd_leader_mode",
+        help="Delay VLM prompt until N unique submissions for an IMPORTANT state. Requires --use-vlm-prompt."
+    )
+    ap.add_argument(
+        "--n-leaders",
+        type=int,
+        dest="crowd_n_leaders",
+        help="Number of unique submissions before first VLM query for an IMPORTANT state (default: 1). Must be <= --required-responses-per-important-state."
+    )
     # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
     ap.add_argument(
         "--record-demo-videos",
@@ -277,6 +290,27 @@ def control_robot(cfg: ControlPipelineConfig):
         ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
     if getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
         ci_kwargs["use_vlm_prompt"] = True
+
+    # --- NEW: Leader Mode wiring and early validation ---
+    if getattr(_CROWD_OVERRIDES, "crowd_leader_mode", False):
+        # Enforce: only valid when --use-vlm-prompt is on
+        if not getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
+            raise SystemExit("--leader-mode requires --use-vlm-prompt")
+
+        n_leaders_cli = getattr(_CROWD_OVERRIDES, "crowd_n_leaders", None)
+        rrpis_cli = getattr(_CROWD_OVERRIDES, "crowd_rrpis", None)
+        # If both provided, enforce the constraint up-front
+        if n_leaders_cli is not None and rrpis_cli is not None and n_leaders_cli > rrpis_cli:
+            raise SystemExit(
+                f"--n-leaders ({n_leaders_cli}) must be <= --required-responses-per-important-state ({rrpis_cli})"
+            )
+
+        ci_kwargs["leader_mode"] = True
+        if n_leaders_cli is not None:
+            ci_kwargs["n_leaders"] = n_leaders_cli
+
+    # (rest of ci_kwargs wiring keeps its order; no behavior change)
+
     # NEW: image sequence saving controls
     if getattr(_CROWD_OVERRIDES, "crowd_save_seq", False):
         ci_kwargs["save_maincam_sequence"] = True

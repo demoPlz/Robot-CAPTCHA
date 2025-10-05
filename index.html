@@ -3300,6 +3300,11 @@ loader.load(
     const url = resolveExampleVideoUrl(rawUrl);
 
     if (url) {
+      // Show the button when video is available
+      exampleToggle.style.display = '';
+      exampleToggle.disabled = false;
+      exampleToggle.title = 'Show example video';
+      
       createExampleDockOnce();
 
       // If this browser can't decode VP9/WebM, don't even try.
@@ -3337,8 +3342,8 @@ loader.load(
         exampleVideo.load();
       }
     } else {
-      exampleToggle.disabled = true;
-      exampleToggle.title = 'No example video available';
+      // Hide the button completely when no video is available
+      exampleToggle.style.display = 'none';
     }
     
     for (const [name, val] of Object.entries(initialJointPositions)) {
