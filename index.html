@@ -2755,6 +2755,14 @@ function toggleExampleDock(force){
   
   const want = (typeof force === 'boolean') ? force :
                !(exampleDock && exampleDock.style.display === 'block');
+  
+  console.log(`🎭 Toggling example dock:`, {
+    action: want ? 'show' : 'hide',
+    force: force,
+    currentDisplay: exampleDock?.style.display,
+    videoSrc: exampleVideo?.src
+  });
+  
   if (want) showExampleDock(); else hideExampleDock();
 }
 
@@ -3268,6 +3276,17 @@ loader.load(
     const rawExampleUrl = hasVlmVideo ? getExampleVideoUrlFromState(state) : null;
     const exampleUrl = hasVlmVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
 
+    // Debug logging for video ID
+    if (state?.vlm_video_id) {
+      console.log(`🎬 Example video ID: ${state.vlm_video_id}`, {
+        vlm_video_id: state.vlm_video_id,
+        video_id: state.video_id, // alias
+        rawUrl: rawExampleUrl,
+        resolvedUrl: exampleUrl,
+        state_id: state.state_id
+      });
+    }
+
     if (hasVlmVideo && exampleUrl) {
       // 1) Build the toggle button now (it did not exist before)
       exampleToggle = document.createElement('button');
@@ -3305,11 +3324,17 @@ loader.load(
 
       // Do not auto-open the dock; let the user click the toggle
       exampleVideo.addEventListener('error', () => {
-        console.error('Example video failed to load:', exampleVideo?.error, exampleUrl);
+        console.error(`❌ Example video failed to load (ID: ${state?.vlm_video_id}):`, exampleVideo?.error, exampleUrl);
       });
 
       exampleVideo.addEventListener('loadedmetadata', () => {
         // noop; keep dock hidden until user clicks
+        console.log(`✅ Example video loaded successfully (ID: ${state?.vlm_video_id}):`, {
+          duration: exampleVideo.duration,
+          videoWidth: exampleVideo.videoWidth,
+          videoHeight: exampleVideo.videoHeight,
+          url: exampleUrl
+        });
       });
 
       exampleVideo.load();
@@ -3318,6 +3343,12 @@ loader.load(
       exampleToggle.addEventListener('click', () => toggleExampleDock());
     } else {
       // No VLM video for this state ⇒ do NOT render any example UI at all.
+      console.log(`🚫 No example video available for this state:`, {
+        state_id: state.state_id,
+        vlm_video_id: state?.vlm_video_id,
+        hasVlmVideo: hasVlmVideo,
+        rawExampleUrl: rawExampleUrl
+      });
       // Ensure full-width prompt text:
       mount.classList.remove('has-example');
       // Make sure the dock stays gone and we don't set up any layout for it:

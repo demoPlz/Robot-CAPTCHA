@@ -8,8 +8,12 @@ Common failure modes that may lead to deviations from the strategies and how to 
 
 {failures}
 
-This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, describe what has happened, and what next step is taken to achieve the next frame. Example descriptions in "state-action description format" for the first frames are as follows. Follow the format, inluding the practice of numbering, to describe all frames (including frames described in the example). If the success conditions are fulfilled, output "No objects are on the table. The middle drawer is closed. The robot is in home position, thus: end".
+I will show you pairs of consecutive keyframes from an example execution of this task. For each pair, add one description to the description bank that describes the transition from the first image to the second image. Each pair follows the previous pair, so the description bank describes the trajectory in order. If and only if there's only one image, and that image satisfies the success condition, then it is the end of the trajectory.
+
+Use "state-action description format" as shown in the following examples, which corresponds exactly to the correct labels for the frames:
 
 {sequence_description}
 
-Your output will be referred to as the "description bank."
+The description should be numbered sequentially (starting from where the previous description bank left off) and follow the format: "X. [State description], thus: [Action description]." If the success conditions are fulfilled, output "X. No objects are on the table. The middle drawer is closed. The robot is in home position, thus: end".
+
+Only add ONE description per query to build the description bank incrementally. Although in light of subsequent frames, you can revise previous mislabeled descriptions.

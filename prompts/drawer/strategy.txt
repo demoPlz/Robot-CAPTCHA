@@ -13,7 +13,7 @@ Move object left protocol:
 
 2. Lower and pitch the gripper till vertical to be ~3cm above the object, or its grasp point.
 
-3. Rotate (rotate-only) the gripper to align with grasp angle.
+3. Optional: Rotate (rotate-only) the gripper to align with grasp angle. If the object is round (e.g. a tennis ball), there's no need to rotate.
 
 4. Lower the gripper to prepare for grasp.
 
@@ -64,6 +64,13 @@ Close drawer protocol:
 
 1. Move such that the gripper is a) above the open drawer and b) can move down to be on the same level as the open drawer without collision.
 
-2. Move down and rotate the gripper to be on the same level as the drawer, to prepare to push the drawer close.
+2. Move down the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
 
 3. Push the the drawer close.
+
+4. To return to an upright position (to perform following tasks, or to reset to home position at the end of the trajectory), first move left horizontally, because returning straight to the home position would result in colliding with the drawer's handle.
+
+5. To return to an upright position and reset the tilt (either for performing following tasks, or to reset to home position at the end of the trajectory), return to the home position.
+
+
+

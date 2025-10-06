@@ -50,7 +50,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       12,   # change indices / paths as needed
-    "left":        10,
+    "left":        11,
     "right":       2,
     "perspective": 0,
 }
@@ -139,7 +139,10 @@ class CrowdInterface():
                  demo_videos_clear: bool = False,
                  # --- NEW: read-only demo video display (independent of recording) ---
                  show_demo_videos: bool = False,
-                 show_videos_dir: str | None = None):
+                 show_videos_dir: str | None = None,
+                 # --- NEW ---
+                 save_vlm_logs: bool = False,
+                 vlm_logs_dir: str | None = None):
 
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
@@ -467,6 +470,23 @@ class CrowdInterface():
             except Exception as e:
                 print(f"⚠️ Could not prepare show videos directory '{self._show_videos_dir}': {e}")
                 self.show_demo_videos = False
+
+        # --- NEW: VLM logs ---
+        self.save_vlm_logs = bool(save_vlm_logs or int(os.getenv("SAVE_VLM_LOGS", "0")))
+        try:
+            default_logs = (self._repo_root() / "output" / "vlm_logs").resolve()
+        except Exception:
+            default_logs = Path("output/vlm_logs").resolve()
+        self._vlm_logs_dir = Path(vlm_logs_dir).resolve() if vlm_logs_dir else default_logs
+        self._vlm_logs_written: set[tuple[str, int]] = set()
+
+        if self.save_vlm_logs:
+            try:
+                self._vlm_logs_dir.mkdir(parents=True, exist_ok=True)
+                print(f"📝 VLM logs → {self._vlm_logs_dir}")
+            except Exception as e:
+                print(f"⚠️ Could not prepare VLM logs directory '{self._vlm_logs_dir}': {e}")
+                self.save_vlm_logs = False
 
         # --- Manual save system: require explicit 'save' before committing an episode ---
         # Episodes are kept in a pending state until /api/control/save (or 's') is pressed.
@@ -1211,10 +1231,28 @@ class CrowdInterface():
         except Exception:
             return fallback
 
+    def _count_sequence_descriptions(self, sequence_text: str) -> int:
+        """
+        Count the number of numbered descriptions in a sequence_description text.
+        Expected format: "1. description", "2. description", etc.
+        """
+        if not sequence_text:
+            return 0
+        
+        count = 0
+        lines = sequence_text.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            # Look for lines that start with a number followed by a period
+            if re.match(r'^\d+\.', line):
+                count += 1
+        return count
+
     def _substitute_placeholders(self, template: str, task_name: str | None = None) -> str:
         """
         Replace every {x} in 'template' with contents of prompts/{task-name}/x.txt.
         Runs up to 3 passes to allow simple nested references; leaves unknown {x} intact.
+        Special handling for {sequence_description} to add copying instructions.
         """
         if not template:
             return ""
@@ -1228,11 +1266,21 @@ class CrowdInterface():
         for _ in range(3):
             changed = False
             def repl(m):
-                fname = m.group(1) + ".txt"
+                placeholder = m.group(1)
+                fname = placeholder + ".txt"
                 fpath = (tdir / fname)
                 if fpath.exists():
                     try:
-                        return fpath.read_text(encoding="utf-8").strip()
+                        content = fpath.read_text(encoding="utf-8").strip()
+                        
+                        # Special handling for sequence_description to add copying instructions
+                        if placeholder == "sequence_description":
+                            example_count = self._count_sequence_descriptions(content)
+                            if example_count > 0:
+                                copying_instruction = f"\nFor the first {example_count} frame pairs, DO NOT generate new descriptions. Instead, you MUST copy exactly these descriptions word-for-word from the examples above. Only after you have copied all {example_count} examples should you generate new descriptions for any remaining frames.\n\nExamples to copy:\n\n{content}"
+                                return copying_instruction
+                        
+                        return content
                     except Exception:
                         return ""
                 return m.group(0)  # leave as-is if there is no file
@@ -1243,6 +1291,40 @@ class CrowdInterface():
             if not changed:
                 break
         return out
+
+    def _substitute_dynamic_placeholders(self, template: str, episode_id: str, state_id: int) -> str:
+        """
+        Replace dynamic placeholders like [gripper_description] with context-specific text
+        based on the current state information.
+        """
+        if not template or "[gripper_description]" not in template:
+            return template
+        
+        # Get the state info to determine gripper status
+        with self.state_lock:
+            ep_states = self.pending_states_by_episode.get(episode_id, {})
+            state_info = ep_states.get(state_id)
+            if state_info is None:
+                # Try completed states as fallback
+                ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
+                state_info = ep_completed.get(state_id)
+        
+        if state_info is None:
+            # No state info available, use default text
+            gripper_desc = "The gripper status cannot be determined in this state."
+        else:
+            # Extract the state data
+            state_data = state_info.get("state", {})
+            
+            # Check if gripper is grasped using existing method
+            if self._gripper_is_grasped(state_data):
+                gripper_desc = "The gripper has grasped onto the object in this state."
+            else:
+                gripper_desc = "The gripper is not grasped onto anything in this state."
+        
+        # Replace the placeholder
+        result = template.replace("[gripper_description]", gripper_desc)
+        return result
 
     def _load_prompt_with_subst(self, fname: str, fallback: str = "") -> str:
         """
@@ -1288,11 +1370,12 @@ class CrowdInterface():
 
     def _run_vlm_context_once(self):
         """
-        One-time context VLM call with support for multiple rounds if >50 images:
+        One-time context VLM call that processes images in overlapping pairs:
           - First checks cache for existing context for this task
           - If cached and no force flag, uses cached context
-          - Otherwise processes images in batches of 50, only including text from previous rounds
-          - Caches the result for future use
+          - Otherwise processes images in overlapping pairs (1,2 → 2,3 → 3,4, etc.)
+          - Each pair adds one description to build the description bank incrementally
+          - Caches only the final complete description bank
         """
         if getattr(self, "_vlm_context_done", False):
             return
@@ -1327,67 +1410,169 @@ class CrowdInterface():
             self._vlm_context_done = True
             return
         
-        print(f"🤖 Generating new VLM context for task: {task_name} ({len(imgs)} images)")
+        print(f"🤖 Generating new VLM context for task: {task_name} ({len(imgs)} images, processing in overlapping pairs)")
         
-        # Process images in batches of 50
-        batch_size = 50
-        all_responses = []
-        text_only_conversation = []  # Track only text for conversation context
+        # Process images in overlapping pairs: (1,2), (2,3), (3,4), ..., (n-1,n), (n)
+        all_descriptions = []
+        conversation_history = []  # Only text, no images for efficiency
         
-        for batch_idx in range(0, len(imgs), batch_size):
-            batch_imgs = imgs[batch_idx:batch_idx + batch_size]
-            round_num = (batch_idx // batch_size) + 1
-            is_first_round = (batch_idx == 0)
+        for i in range(len(imgs)):
+            pair_num = i + 1
+            is_first_query = (i == 0)
             
-            # Choose prompt based on round
-            if is_first_round:
-                prompt_file = "context.txt"
-                fallback_prompt = "You are given demonstration images for {task}. Summarize the high-level plan."
+            # Determine which images to include in this query
+            if i == 0:
+                # First pair: images 1,2
+                current_imgs = imgs[0:2] if len(imgs) > 1 else imgs[0:1]
+            elif i == len(imgs) - 1:
+                # Last image (if odd number of images): just the last image
+                current_imgs = imgs[i:i+1]
             else:
-                prompt_file = "context_continued.txt"
-                fallback_prompt = "Here are additional demonstration images for {task}. Continue analyzing the plan."
+                # Overlapping pairs: (i, i+1)
+                current_imgs = imgs[i:i+2]
             
-            prompt = self._load_prompt_with_subst(prompt_file, fallback_prompt)
+            # Choose prompt based on whether this is the first query or continuation
+            if is_first_query:
+                # First query: use context.txt
+                prompt = self._load_prompt_with_subst("context.txt", 
+                    "Add one description to the description bank for the given frame(s).")
+            else:
+                # Continuation queries: use context_continued.txt
+                prompt = self._load_prompt_with_subst("context_continued.txt",
+                    "Continue building the description bank with the next frame(s).")
             
-            # Build content for this round (images only for current batch)
+            # Build content for this query
             content = [{"type": "input_text", "text": prompt}] + [
-                {"type": "input_image", "image_url": self._image_file_to_data_url(p)} for p in batch_imgs
+                {"type": "input_image", "image_url": self._image_file_to_data_url(p)} for p in current_imgs
             ]
             
-            # Build conversation messages (text-only from previous rounds + current round with images)
-            conversation_messages = text_only_conversation.copy()
-            conversation_messages.append({"role": "user", "content": content})
+            # Build conversation: 
+            # - First query: just the current query with images
+            # - Subsequent queries: full conversation history (text only) + current query with images
+            if is_first_query:
+                current_conversation = [{"role": "user", "content": content}]
+            else:
+                # Include full conversation history + current query
+                current_conversation = conversation_history.copy()
+                current_conversation.append({"role": "user", "content": content})
             
-            # Call GPT-5 API
-            resp = client.responses.create(model=self._aoai_deployment, input=conversation_messages)
-            out_text = getattr(resp, "output_text", None)
-            raw_json = resp.model_dump_json(indent=2)
-            
-            # Add to text-only conversation for next round (no images)
-            if out_text:
-                text_only_conversation.append({"role": "user", "content": prompt})
-                text_only_conversation.append({"role": "assistant", "content": out_text})
-            
-            all_responses.append({
-                "round": round_num,
-                "text": out_text,
-                "raw": raw_json,
-                "batch_images": batch_imgs
-            })
+            try:
+                # Call GPT-5 API
+                resp = client.responses.create(model=self._aoai_deployment, input=current_conversation)
+                out_text = getattr(resp, "output_text", "").strip()
+                
+                if out_text:
+                    if is_first_query:
+                        # First query: extract the first description
+                        new_description = self._extract_single_description(out_text, 1)
+                        if new_description:
+                            all_descriptions.append(new_description)
+                            print(f"Query 1:")
+                            for desc in all_descriptions:
+                                print(f"{desc}")
+                        else:
+                            print(f"⚠️ Could not extract description from first response:")
+                            print(f"   Full response: {out_text}")
+                            # Fallback: use the whole response as the description
+                            fallback_desc = f"1. {out_text}"
+                            all_descriptions.append(fallback_desc)
+                            print(f"Query 1:")
+                            for desc in all_descriptions:
+                                print(f"{desc}")
+                    else:
+                        # Continuation query: extract the complete updated description bank
+                        # Parse the full response to get all descriptions (may include revisions)
+                        updated_descriptions = self._extract_description_bank(out_text)
+                        if updated_descriptions:
+                            all_descriptions = updated_descriptions
+                            print(f"Query {pair_num}:")
+                            for desc in all_descriptions:
+                                print(f"{desc}")
+                        else:
+                            print(f"⚠️ Could not parse description bank from response:")
+                            print(f"   Full response: {out_text}")
+                            # Fallback: add as next sequential description
+                            fallback_desc = f"{len(all_descriptions) + 1}. {out_text}"
+                            all_descriptions.append(fallback_desc)
+                            print(f"Query {pair_num}:")
+                            for desc in all_descriptions:
+                                print(f"{desc}")
+                
+                # Update conversation history (text only, no images to save tokens)
+                conversation_history.append({"role": "user", "content": prompt})
+                conversation_history.append({"role": "assistant", "content": out_text})
+                
+            except Exception as e:
+                print(f"❌ Error in VLM query {pair_num}: {e}")
+                # Continue with next pair
+                continue
+        
+        # Final description bank is just all descriptions joined
+        final_description_bank = "\n\n".join(all_descriptions) if all_descriptions else ""
+        
+        # Cache only the final complete description bank
+        if final_description_bank.strip():
+            self._save_vlm_context_to_cache(task_name, final_description_bank.strip())
+            # Also write to task directory for placeholder substitution  
+            self._write_vlm_context_to_task_dir(task_name, final_description_bank.strip())
+            print(f"💾 Cached final description bank with {len(all_descriptions)} descriptions")
 
-        # Combine all responses
-        combined_text = "\n\n".join([
-            f"Round {r['round']}: {r['text']}" for r in all_responses if r['text']
-        ])
-
-        # Cache the result
-        if combined_text.strip():
-            self._save_vlm_context_to_cache(task_name, combined_text.strip())
-            # Also write to task directory for placeholder substitution
-            self._write_vlm_context_to_task_dir(task_name, combined_text.strip())
-
-        self._vlm_context_text = combined_text.strip() if combined_text else ""
+        self._vlm_context_text = final_description_bank.strip() if final_description_bank else ""
         self._vlm_context_done = True
+
+    def _extract_single_description(self, response_text: str, expected_number: int) -> str | None:
+        """
+        Extract a single numbered description from the VLM response.
+        Expected format: "X. [state description], thus: [action description]"
+        """
+        if not response_text:
+            return None
+        
+        lines = response_text.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            # Look for numbered descriptions (e.g., "1. ", "2. ", etc.)
+            if line and (line.startswith(f"{expected_number}. ") or 
+                        any(line.startswith(f"{i}. ") for i in range(1, expected_number + 5))):
+                return line
+        
+        # Fallback: if we can't find a numbered description, return the first non-empty line
+        for line in lines:
+            line = line.strip()
+            if line:
+                # Add numbering if missing
+                if not any(line.startswith(f"{i}. ") for i in range(1, 100)):
+                    return f"{expected_number}. {line}"
+                return line
+        
+        return None
+
+    def _extract_description_bank(self, response_text: str) -> list[str] | None:
+        """
+        Extract a complete description bank from the VLM response.
+        Expected format: multiple numbered descriptions, one per line.
+        Returns list of descriptions in order, or None if parsing fails.
+        """
+        if not response_text:
+            return None
+        
+        descriptions = []
+        lines = response_text.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Look for numbered descriptions (e.g., "1. ", "2. ", etc.)
+            # Match any number followed by period and space
+            import re
+            match = re.match(r'^(\d+)\.\s+(.+)', line)
+            if match:
+                descriptions.append(line)
+        
+        # Return descriptions if we found any, otherwise None
+        return descriptions if descriptions else None
 
     # --- NEW: helpers for important-state image sequence ---
     def _compute_next_prompt_seq_index(self) -> int:
@@ -1638,12 +1823,18 @@ class CrowdInterface():
             "These are the important-state cam_main frames in chronological order for {task}."
         )
 
-    def _get_current_state_prompt(self) -> str:
-        """Current-state prompt (applies {x} → prompts/{task-name}/x.txt)."""
-        return self._load_prompt_with_subst(
+    def _get_current_state_prompt(self, episode_id: str = None, state_id: int = None) -> str:
+        """Current-state prompt (applies {x} → prompts/{task-name}/x.txt and dynamic placeholders)."""
+        base_prompt = self._load_prompt_with_subst(
             "current.txt",
             "These are four synchronized views related to {task}."
         )
+        
+        # Apply dynamic placeholders if we have episode and state info
+        if episode_id is not None and state_id is not None:
+            base_prompt = self._substitute_dynamic_placeholders(base_prompt, episode_id, state_id)
+            
+        return base_prompt
 
     def _clean_vlm_response_format(self, text: str) -> str:
         """
@@ -1686,6 +1877,71 @@ class CrowdInterface():
             cleaned += '.'
         
         return cleaned, video_id
+
+    def _write_vlm_log(self,
+                       episode_id: str,
+                       state_id: int,
+                       episode_history_text: str,
+                       history_seq_ids: list[int],
+                       current_state_text: str,
+                       view_paths: dict[str, str],
+                       hist_text: str,
+                       hist_raw: str | None,
+                       curr_text: str,
+                       curr_raw: str | None,
+                       video_id: int | None):
+        """
+        Persist a compact JSON of the full 3-part conversation for one important state.
+        Images are NOT embedded; we store references (seq ids and view_paths).
+        """
+        if not self.save_vlm_logs:
+            return
+        try:
+            import json, time, os
+            ts = time.time()
+            fname = f"ep{episode_id}_sid{state_id}_{int(ts)}.json"
+            fpath = self._vlm_logs_dir / fname
+
+            # Make view paths relative to repo (if possible)
+            rel_views = {}
+            for k, p in (view_paths or {}).items():
+                rel_views[k] = self._rel_path_from_repo(p) or p
+
+            log = {
+                "meta": {
+                    "episode_id": str(episode_id),
+                    "state_id": int(state_id),
+                    "timestamp": ts,
+                    "task": self.task,
+                    "prompt_task_name": self._task_name() or None,
+                    "model": self._aoai_deployment,
+                },
+                "context": {
+                    # We log the exact context text injected (may be empty string).
+                    "assistant_text": getattr(self, "_vlm_context_text", None)
+                },
+                "history": {
+                    "user_text": episode_history_text,
+                    "image_source": "sequence_dir" if self.save_maincam_sequence else "obs_cache",
+                    "image_seq_ids": list(history_seq_ids or []),
+                    "image_count": int(len(history_seq_ids or [])),
+                    "assistant_text": hist_text,
+                    "raw_response": hist_raw,
+                },
+                "current": {
+                    "user_text": current_state_text,
+                    "views_used": rel_views,
+                    "assistant_text": curr_text,
+                    "video_id": video_id,
+                    "raw_response": curr_raw,
+                }
+            }
+
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(log, f, ensure_ascii=False, indent=2)
+            print(f"📝 Saved VLM log → {fpath}")
+        except Exception as e:
+            print(f"⚠️ Failed to save VLM log for ep={episode_id} sid={state_id}: {e}")
 
     # ---------- VLM worker core ----------
     def _vlm_worker(self):
@@ -1735,7 +1991,7 @@ class CrowdInterface():
 
                 # Build content blocks
                 episode_history_text = self._get_episode_history_prompt()
-                current_state_text = self._get_current_state_prompt()
+                current_state_text = self._get_current_state_prompt(episode_id, state_id)
 
                 # 4) Call Azure OpenAI (Responses API)
                 client = self._ensure_azure_openai_client()
@@ -1749,7 +2005,7 @@ class CrowdInterface():
 
                 # Build two prompts with substitution
                 episode_history_text = self._get_episode_history_prompt()
-                current_state_text   = self._get_current_state_prompt()
+                current_state_text   = self._get_current_state_prompt(episode_id, state_id)
 
                 # Build conversation history starting with context (if available)
                 conversation_messages = []
@@ -1849,6 +2105,27 @@ class CrowdInterface():
 
                 # For frontend: only use current state response with cleaned format
                 frontend_text, video_id = self._clean_vlm_response_format((curr_text or "").strip())
+
+                # --- NEW: persist the full 3-part conversation (context + history + current) ---
+                if self.save_vlm_logs and hist_text and curr_text:
+                    try:
+                        # We already have `episode_history_text`, `current_state_text`,
+                        # `seq_ids` for history and `view_paths` for the current state.
+                        self._write_vlm_log(
+                            episode_id=episode_id,
+                            state_id=state_id,
+                            episode_history_text=episode_history_text,
+                            history_seq_ids=seq_ids,
+                            current_state_text=current_state_text,
+                            view_paths=view_paths,
+                            hist_text=hist_text,
+                            hist_raw=hist_raw,
+                            curr_text=curr_text,
+                            curr_raw=curr_raw,
+                            video_id=video_id,
+                        )
+                    except Exception as _e:
+                        print(f"⚠️ VLM logging failed ep={episode_id} sid={state_id}: {_e}")
 
                 # Attach to pending state and mark ready (frontend gets only current response)
                 with self.state_lock:

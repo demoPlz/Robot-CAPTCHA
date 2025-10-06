@@ -140,6 +140,13 @@ def _pop_crowd_cli_overrides(argv=None):
         dest="crowd_show_videos_dir",
         help="Override directory to read example videos from (default: prompts/{task-name}/videos)."
     )
+    # --- NEW: save VLM conversations (context + history + current) ---
+    ap.add_argument(
+        "--save-vlm-logs",
+        action="store_true",
+        dest="crowd_save_vlm_logs",
+        help="If set, save the full three-part VLM conversation per important state to output/vlm_logs.",
+    )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -367,6 +374,9 @@ def control_robot(cfg: ControlPipelineConfig):
                 repo_root = Path(__file__).resolve().parent / ".."
                 default_show_dir = (repo_root / "prompts" / safe / "videos").resolve()
                 ci_kwargs["show_videos_dir"] = str(default_show_dir)
+
+    if getattr(_CROWD_OVERRIDES, "crowd_save_vlm_logs", False):
+        ci_kwargs["save_vlm_logs"] = True
 
     crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()

@@ -12,7 +12,7 @@
 
 7. We follow the pick and place item into drawer protocol, and the gripper is in the general area above the blue cube, thus: lower and pitch the gripper till vertical to be ~3cm above the blue cube.
 
-8: We follow the pick and place item into drawer protocol, and the gripper is lowered and pitched till vertical to be ~3cm above the blue cube, thus: rotate the gripper to align with grasp angle.
+8. We follow the pick and place item into drawer protocol, and the gripper is lowered and pitched till vertical to be ~3cm above the blue cube, thus: rotate the gripper to align with grasp angle.
 
 9. We follow the pick and place item into drawer protocol, and the gripper is rotated to align with the grasp angle, thus: lower the gripper to prepare for grasp.
 
@@ -24,4 +24,12 @@
 
 13. We follow the pick and place item into drawer protocol, and the gripper is above the opened drawer, thus: open gripper to release object into the drawer.
 
-14. Next, we need to close the drawer, move the remaining object left, open the drawer, pick and place the objects into the drawer, and close the drawer again, thus: return to the home position.
+14. Next, we need to close the drawer, move the remaining object left, open the drawer, pick and place the objects into the drawer, and close the drawer again. To start the close drawer protocol, it is best to not have the gripper have a roll; We also want to move leftward, because the close drawer protocol happens by pushing the drawer in from the left side. Returning to the home position both resets the roll to neutral, and moves gripper to the left, thus: return to the home position.
+
+15. We have now moved such that the gripper is above the open drawer and can move down to be on the same level as the open drawer without collision if we move diagonally down to the left, thus: move down the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
+
+16. The gripper is moved and rotated such that it can push the drawer close, thus: push the drawer close.
+
+17. We should now proceed to move the tennis ball and the red cube left. We have just closed the drawer, and want to return to an upright position, thus: move gripper horizontally to the left.
+
+18. We want to continue to return to an upright position after closing the drawer to facilitate further action, thus: return to the home position. 

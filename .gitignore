@@ -35,3 +35,4 @@ __pycache__/
 # Large files
 **/videos/
 **/snapshots
+output/
