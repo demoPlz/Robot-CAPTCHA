@@ -3072,7 +3072,10 @@ class CrowdInterface():
                                     ep_id is not None]  # Exclude None keys
                 
                 if not available_episodes:
-                    return {}  # No episodes to serve
+                    return {
+                        "status": "no_pending_states", 
+                        "blocked_important_states": False
+                    }  # No episodes to serve
                 
                 # Move to the earliest available episode (safe since None is filtered out)
                 self.current_serving_episode = min(available_episodes)
@@ -3080,7 +3083,10 @@ class CrowdInterface():
             
             episode_states = self.pending_states_by_episode[self.current_serving_episode]
             if not episode_states:
-                return {}
+                return {
+                    "status": "no_pending_states_in_episode", 
+                    "blocked_important_states": False
+                }
             
             # Select state based on robot movement status and async collection mode
             if self.robot_is_moving is False and not self.is_async_collection:
@@ -3105,7 +3111,10 @@ class CrowdInterface():
                     selected_episode = latest_episode
                 else:
                     # Fallback if no states found
-                    return {}
+                    return {
+                        "status": "no_pending_states", 
+                        "blocked_important_states": False
+                    }
             else:
                 # Robot moving OR async collection mode - select random state for diverse data collection from current serving episode
                 random_state_id = random.choice(list(episode_states.keys()))
@@ -3156,7 +3165,13 @@ class CrowdInterface():
                     # No safe alternatives; block serving for now
                     mode = "manual" if self.use_manual_prompt else ("VLM" if self.use_vlm_prompt else "unknown")
                     print(f"⏸️ Prompt not ready for important state {latest_state_id} ({mode} mode); holding back serving.")
-                    return {}
+                    
+                    # Return info about blocked important states for frontend polling optimization
+                    return {
+                        "status": "no_ready_states",
+                        "blocked_important_states": True,
+                        "prompt_mode": mode
+                    }
 
             # (Soft) preference to avoid unsegmented important states (kept for when VLM is ready)
             if state_info.get("important", False) and not state_info.get("segmentation_ready", False):

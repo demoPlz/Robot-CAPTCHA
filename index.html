@@ -1522,6 +1522,22 @@ async function getInitialState() {
     
     const data = await response.json();
     console.log('[DEBUG] Successfully fetched initial state');
+    
+    // Check if we got a status response indicating no ready states
+    if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode')) {
+      // Server is running but no ready states - hide the server not started message
+      hideServerNotStarted();
+      
+      if (data.blocked_important_states) {
+        console.log('🔄 Important states blocked, starting rapid polling for readiness...');
+        startRapidPollingForReadyStates();
+      } else {
+        console.log('🔄 No pending states, starting regular polling...');
+        startRegularPollingForStates();
+      }
+      return {};
+    }
+    
     return data;
   } catch (error) {
     console.error("Could not fetch initial state:", error);
@@ -1534,6 +1550,157 @@ async function getInitialState() {
     return {};
   }
 }
+
+// Polling for ready states when important states are blocked
+let pollTimer = null;
+
+function startRapidPollingForReadyStates() {
+  stopPolling();
+  console.log('🚀 Starting rapid polling for ready important states...');
+  
+  // Hide server not started message since we know server is responding
+  hideServerNotStarted();
+  
+  // Show user feedback
+  showWaitingForStatesMessage('Waiting for important states to become ready...');
+  
+  // Poll every 1 second when states are blocked
+  pollTimer = setInterval(async () => {
+    try {
+      const response = await apiFetch(`/api/get-state`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Check if we now have a real state (not a status response)
+        if (!data.status || (data.status !== 'no_ready_states' && data.status !== 'no_pending_states' && data.status !== 'no_pending_states_in_episode')) {
+          console.log('✅ State is now ready! Refreshing page...');
+          stopPolling();
+          hideWaitingMessage();
+          // Refresh immediately when state becomes ready
+          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+        }
+      }
+    } catch (error) {
+      console.warn('Polling error:', error);
+    }
+  }, 1000); // 1 second interval for rapid polling
+}
+
+function startRegularPollingForStates() {
+  stopPolling();
+  console.log('⏰ Starting regular polling for new states...');
+  
+  // Hide server not started message since we know server is responding
+  hideServerNotStarted();
+  
+  // Show user feedback
+  showWaitingForStatesMessage('Waiting for new states...');
+  
+  // Poll every 5 seconds when no states exist
+  pollTimer = setInterval(async () => {
+    try {
+      const response = await apiFetch(`/api/get-state`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Check if we now have a real state
+        if (!data.status || (data.status !== 'no_ready_states' && data.status !== 'no_pending_states' && data.status !== 'no_pending_states_in_episode')) {
+          console.log('✅ New state available! Refreshing page...');
+          stopPolling();
+          hideWaitingMessage();
+          // Refresh immediately when state becomes available
+          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+        }
+      }
+    } catch (error) {
+      console.warn('Polling error:', error);
+    }
+  }, 5000); // 5 second interval for regular polling
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function showWaitingForStatesMessage(message) {
+  // Hide the server not started overlay first
+  hideServerNotStarted();
+  
+  // Create or update waiting message with full screen overlay
+  let waitingDiv = document.getElementById('waiting-message');
+  if (!waitingDiv) {
+    waitingDiv = document.createElement('div');
+    waitingDiv.id = 'waiting-message';
+    waitingDiv.style.cssText = `
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f5f5f5;
+      z-index: 20000;
+    `;
+    
+    // Create inner message box
+    const messageBox = document.createElement('div');
+    messageBox.className = 'waiting-message-box';
+    messageBox.style.cssText = `
+      background: #3b82f6;
+      color: white;
+      padding: 20px 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 16px;
+      font-weight: 500;
+      text-align: center;
+      animation: pulse 2s infinite;
+    `;
+    
+    waitingDiv.appendChild(messageBox);
+    
+    // Add CSS animation
+    if (!document.getElementById('waiting-styles')) {
+      const style = document.createElement('style');
+      style.id = 'waiting-styles';
+      style.textContent = `
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.7; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    document.body.appendChild(waitingDiv);
+  }
+  
+  const messageBox = waitingDiv.querySelector('.waiting-message-box');
+  if (messageBox) {
+    messageBox.textContent = message;
+  }
+}
+
+function hideWaitingMessage() {
+  const waitingDiv = document.getElementById('waiting-message');
+  if (waitingDiv) {
+    waitingDiv.remove();
+  }
+}
+
+// Stop polling when page unloads
+window.addEventListener('beforeunload', stopPolling);
+
+
 
 
 // Build a THREE.Texture from a base64 JPEG data URL
@@ -2632,7 +2799,7 @@ promptBar.className = 'prompt-bar';
 
 const promptText = document.createElement('div');
 promptText.className = 'prompt-text';
-promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
+promptText.textContent = ''; // Start empty, will be updated from server
 
 promptBar.appendChild(promptText);
 
@@ -2931,14 +3098,17 @@ function showServerNotStarted(){
     <div class="card">
       <div class="row">
         <div class="spinner" aria-hidden="true"></div>
-        <h2 class="title">Connecting to data collection server…</h2>
+        <h2 class="title">Data collection server hasn't started yet…</h2>
       </div>
       <p class="msg">
-        Data collection server hasn't started yet.<br/>
         Please wait for further communications.
       </p>
     </div>`;
   statusOverlay.style.display = 'grid';
+}
+
+function hideServerNotStarted(){
+  statusOverlay.style.display = 'none';
 }
 
 // ================================ devMode ===================================
