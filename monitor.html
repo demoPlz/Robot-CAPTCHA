@@ -22,7 +22,7 @@
             background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:20px; display:flex; flex-direction:column;
         }
         .left-panel { flex:1; }
-        .panel-header { border-bottom:2px solid #e2e8f0; padding-bottom:16px; margin-bottom:20px; }
+        .panel-header { border-bottom:2px solid #e2e8f0; padding-bottom:16px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
         .panel-header h2 { color:#1e293b; font-size:24px; font-weight:600; }
         .camera-views {
             width:100%; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(2,1fr);
@@ -91,7 +91,7 @@
         .chart-bars::-webkit-scrollbar-thumb:hover { background:#94a3b8; }
         .state-bar-container { flex:none; width:3px; height:100%; display:flex; flex-direction:column; justify-content:end; position:relative; min-width:2px; max-width:20px; }
         .state-bar-container.clickable { cursor:pointer; }
-        .state-bar { background:linear-gradient(180deg,#10b981,#059669); border-radius:2px 2px 0 0; transition:height .3s ease; position:relative; min-height:2px; width:100%; }
+        .state-bar { background:linear-gradient(180deg,#10b981,#059669); border-radius:2px 2px 0 0; transition:height .3s ease, box-shadow .15s ease, transform .1s ease; position:relative; min-height:2px; width:100%; }
         .state-bar.empty { background:#e2e8f0; height:100% !important; }
         .state-bar.important-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
         .state-bar.important-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
@@ -122,43 +122,19 @@
             display:flex; align-items:center; justify-content:space-between;
             padding:14px 16px; border-bottom:1px solid #e2e8f0; background:#f8fafc;
         }
-        .modal-title {
-            font-size:16px; font-weight:600; color:#0f172a;
-        }
-        .modal-close-btn {
-            background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b;
-        }
-        .modal-main {
-            display:contents;
-        }
-        .modal-left {
-            padding:16px; border-right:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; background:#0b1220;
-        }
-        .modal-maincam {
-            max-width:100%; max-height:100%; object-fit:contain; border-radius:8px;
-        }
-        .modal-right {
-            padding:16px; display:flex; flex-direction:column; gap:12px;
-        }
+        .modal-title { font-size:16px; font-weight:600; color:#0f172a; }
+        .modal-close-btn { background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b; }
+        .modal-main { display:contents; }
+        .modal-left { padding:16px; border-right:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; background:#0b1220; }
+        .modal-maincam { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
+        .modal-right { padding:16px; display:flex; flex-direction:column; gap:12px; }
         .field-label { font-size:12px; color:#475569; font-weight:600; }
-        .select-wrap {
-            display:flex; gap:8px; align-items:center;
-        }
-        .select-el {
-            width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; font-size:14px; color:#0f172a;
-        }
-        .prompt-box {
-            flex:1; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; overflow:auto; white-space:pre-wrap; font-size:14px; color:#0f172a;
-        }
+        .select-wrap { display:flex; gap:8px; align-items:center; }
+        .select-el { width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; font-size:14px; color:#0f172a; }
+        .prompt-box { flex:1; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; overflow:auto; white-space:pre-wrap; font-size:14px; color:#0f172a; }
         .kv-line { font-size:12px; color:#334155; }
-        .modal-footer {
-            grid-column:1 / -1;
-            display:flex; justify-content:flex-end; gap:10px;
-            padding:12px 16px; border-top:1px solid #e2e8f0; background:#f8fafc;
-        }
-        .btn {
-            padding:10px 14px; border:none; border-radius:10px; font-weight:600; cursor:pointer; transition:transform .1s ease, box-shadow .2s ease;
-        }
+        .modal-footer { grid-column:1 / -1; display:flex; justify-content:flex-end; gap:10px; padding:12px 16px; border-top:1px solid #e2e8f0; background:#f8fafc; }
+        .btn { padding:10px 14px; border:none; border-radius:10px; font-weight:600; cursor:pointer; transition:transform .1s ease, box-shadow .2s ease; }
         .btn:active { transform:translateY(0.5px); }
         .btn-primary { background:#2563eb; color:white; }
         .btn-primary:hover { box-shadow:0 6px 18px rgba(37,99,235,.25); }
@@ -172,6 +148,52 @@
             font-size:13px; z-index:10000; opacity:0; transform:translateY(8px); transition:opacity .2s ease, transform .2s ease;
         }
         .toast.show { opacity:1; transform:translateY(0); }
+
+        /* === NEW: Segmented toggle for Important-only === */
+        .segmented {
+            display:inline-flex; border:1px solid #cbd5e1; border-radius:12px; overflow:hidden; background:#f8fafc;
+        }
+        .segmented button {
+            padding:8px 12px; font-weight:600; font-size:13px; border:none; background:transparent; color:#334155; cursor:pointer;
+            transition:background .15s ease, color .15s ease;
+        }
+        .segmented button + button { border-left:1px solid #e2e8f0; }
+        .segmented button.active { background:#2563eb; color:white; }
+
+        /* === NEW: Important-only chart adjustments === */
+        .chart-bars.important-only .state-bar-container.is-regular { display:none; }
+        .chart-bars.important-only .state-bar-container.is-important {
+            width:12px; min-width:12px; max-width:28px;
+        }
+        .chart-bars.important-only .state-bar-container.clickable .state-bar {
+            box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
+        }
+        .state-bar-container.clickable .state-bar {
+            box-shadow:0 0 0 1px rgba(37,99,235,.25) inset;
+        }
+        .state-bar-container.clickable:hover .state-bar {
+            transform:translateY(-1px);
+        }
+        /* Clicked marker */
+        .state-bar-container.clicked .state-bar {
+            box-shadow:0 0 0 2px rgba(16,185,129,.9) inset, 0 0 8px rgba(16,185,129,.3) !important;
+        }
+        .state-bar-container.clicked::after {
+            content:'✓'; position:absolute; top:2px; right:2px; font-size:10px; line-height:1; color:#16a34a; font-weight:700;
+        }
+
+        /* === NEW: Hover preview popover === */
+        .preview-popover {
+            position:fixed; z-index:10000; pointer-events:none; background:#0b1220; border:1px solid #334155; border-radius:10px; box-shadow:0 16px 40px rgba(2,6,23,.35);
+            padding:6px; display:flex; align-items:center; justify-content:center; min-width:160px; min-height:90px;
+        }
+        .preview-popover img { max-width:280px; max-height:180px; display:block; border-radius:6px; }
+        .preview-popover .loading { font-size:12px; color:#cbd5e1; padding:18px 12px; }
+        .preview-popover .badge {
+            display:none; /* Hide text badge - only show obs view */
+        }
+        /* Sticky header improvement for the toolbar */
+        .states-header { position:sticky; top:0; background:white; z-index:5; }
     </style>
 </head>
 <body>
@@ -220,6 +242,14 @@
         <!-- Main Content -->
         <div class="main-content">
             <div class="left-panel" style="flex:1;">
+                <!-- NEW: header with segmented toggle -->
+                <div class="panel-header states-header">
+                    <h2>Pending States</h2>
+                    <div class="segmented" role="tablist" aria-label="State visibility mode">
+                        <button id="toggle-all" role="tab" aria-selected="false">All</button>
+                        <button id="toggle-important" class="active" role="tab" aria-selected="true" title="Keyboard: press I">Important only</button>
+                    </div>
+                </div>
                 <div class="episode-charts-container" id="episode-charts-container"></div>
             </div>
         </div>
@@ -499,21 +529,168 @@
             episode.responsesTotal = 0;
             episode.importantCount = 0;
             episode.regularCount = 0;
+
+            /* NEW: apply current filter class to new episode containers */
+            if (importantOnlyMode) {
+                bars.classList.add('important-only');
+            }
+        }
+
+        // === NEW: clicked/visited state tracking ===
+        const clickedImportantStates = new Set(JSON.parse(localStorage.getItem('clickedImportantStates') || '[]'));
+        function stateKey(ep, st) { return `${ep}:${st}`; }
+        function markClickedImportant(ep, st) {
+            const key = stateKey(ep, st);
+            if (!clickedImportantStates.has(key)) {
+                clickedImportantStates.add(key);
+                localStorage.setItem('clickedImportantStates', JSON.stringify([...clickedImportantStates]));
+            }
+            // Toggle class if element already exists
+            const episode = episodes.find(e => e.id === ep);
+            if (episode && episode.barEls && episode.barEls[st]) {
+                episode.barEls[st].classList.add('clicked');
+                episode.barEls[st].setAttribute('aria-pressed', 'true');
+                // Remove title modification to eliminate hover text tooltip
+            }
+        }
+
+        // === NEW: hover preview popover for important bars ===
+        let currentPopover = null;
+        const previewCache = new Map(); // key => dataURL (or null)
+        const previewInFlight = new Map(); // key => Promise
+
+        function showPopover(x, y, tagText, imgUrl=null) {
+            if (!currentPopover) {
+                currentPopover = document.createElement('div');
+                currentPopover.className = 'preview-popover';
+                const badge = document.createElement('div');
+                badge.className = 'badge';
+                currentPopover.appendChild(badge);
+                const inner = document.createElement('div');
+                inner.className = 'loading';
+                inner.textContent = 'Loading preview…';
+                currentPopover.appendChild(inner);
+                document.body.appendChild(currentPopover);
+            }
+            // Don't set badge text - only show obs view
+            const inner = currentPopover.querySelector('.loading') || currentPopover.querySelector('img');
+            if (imgUrl && imgUrl.startsWith('data:image/')) {
+                if (inner && inner.tagName !== 'IMG') inner.remove();
+                let img = currentPopover.querySelector('img');
+                if (!img) {
+                    img = document.createElement('img');
+                    currentPopover.appendChild(img);
+                }
+                img.src = imgUrl;
+            } else {
+                // ensure loading placeholder
+                let loading = currentPopover.querySelector('.loading');
+                if (!loading) {
+                    const existingImg = currentPopover.querySelector('img');
+                    if (existingImg) existingImg.remove();
+                    loading = document.createElement('div');
+                    loading.className = 'loading';
+                    currentPopover.appendChild(loading);
+                }
+                loading.textContent = imgUrl === null ? 'No preview' : 'Loading preview…';
+            }
+            positionPopover(x, y);
+        }
+        function positionPopover(x, y) {
+            if (!currentPopover) return;
+            const pad = 12;
+            const rect = currentPopover.getBoundingClientRect();
+            let left = x + 16;
+            let top  = y + 16;
+            const vw = window.innerWidth, vh = window.innerHeight;
+            if (left + rect.width + pad > vw) left = vw - rect.width - pad;
+            if (top + rect.height + pad > vh) top = vh - rect.height - pad;
+            currentPopover.style.left = `${left}px`;
+            currentPopover.style.top  = `${top}px`;
+        }
+        function hidePopover() {
+            if (currentPopover) {
+                currentPopover.remove();
+                currentPopover = null;
+            }
+        }
+
+        async function getMaincamPreview(ep, st) {
+            const key = stateKey(ep, st);
+            if (previewCache.has(key)) return previewCache.get(key);
+            if (previewInFlight.has(key)) return previewInFlight.get(key);
+            const p = (async () => {
+                try {
+                    const details = await fetchStateDetails(ep, st);
+                    const url = details && details.maincam_data_url ? details.maincam_data_url : null;
+                    previewCache.set(key, url);
+                    return url;
+                } catch {
+                    previewCache.set(key, null);
+                    return null;
+                } finally {
+                    previewInFlight.delete(key);
+                }
+            })();
+            previewInFlight.set(key, p);
+            return p;
         }
 
         // Bind click once for eligible bars
         function bindBarClickIfEligible(barContainer, episodeId, stateId, isImportant, hasVlmBoth) {
             barContainer.dataset.episodeId = String(episodeId);
             barContainer.dataset.stateId = String(stateId);
+            barContainer.classList.toggle('is-important', !!isImportant); /* NEW */
+            barContainer.classList.toggle('is-regular', !isImportant);    /* NEW */
+
             // clickable only if important and has both VLM text + video id
             if (isImportant && hasVlmBoth) {
                 barContainer.classList.add('clickable');
                 if (barContainer.dataset.clickBound !== '1') {
-                    barContainer.addEventListener('click', () => openVlmModal(episodeId, stateId));
+                    barContainer.setAttribute('tabindex', '0'); // keyboard focusable
+                    barContainer.addEventListener('click', () => {
+                        markClickedImportant(episodeId, stateId);
+                        openVlmModal(episodeId, stateId);
+                    });
+                    barContainer.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') {
+                            markClickedImportant(episodeId, stateId);
+                            openVlmModal(episodeId, stateId);
+                        }
+                    });
                     barContainer.dataset.clickBound = '1';
                 }
             } else {
                 barContainer.classList.remove('clickable');
+                barContainer.removeAttribute('tabindex');
+            }
+
+            /* NEW: Hover preview for important bars - obs view only, no text */
+            if (isImportant && barContainer.dataset.hoverBound !== '1') {
+                let hoverMoveHandler = null;
+                let hoverEnterTimeout = null;
+                barContainer.addEventListener('mouseenter', (e) => {
+                    if (!importantOnlyMode) return;
+                    showPopover(e.clientX, e.clientY, null); // show loading (no text tag)
+                    // gentle delay to avoid noisy fetches
+                    hoverEnterTimeout = setTimeout(async () => {
+                        const url = await getMaincamPreview(episodeId, stateId);
+                        if (currentPopover) {
+                            showPopover(e.clientX, e.clientY, null, url); // no text tag, just image
+                        }
+                    }, 140);
+                    hoverMoveHandler = (ev) => positionPopover(ev.clientX, ev.clientY);
+                    document.addEventListener('mousemove', hoverMoveHandler);
+                });
+                barContainer.addEventListener('mouseleave', () => {
+                    if (hoverEnterTimeout) { clearTimeout(hoverEnterTimeout); hoverEnterTimeout = null; }
+                    if (hoverMoveHandler) {
+                        document.removeEventListener('mousemove', hoverMoveHandler);
+                        hoverMoveHandler = null;
+                    }
+                    hidePopover();
+                });
+                barContainer.dataset.hoverBound = '1';
             }
         }
 
@@ -579,9 +756,16 @@
 
             const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
             const vlmStr = isImportant ? (hasVlm ? 'VLM ✓ (text+video)' : 'VLM missing') : 'Regular';
-            barContainer.title = `State ${stateId}: ${responsesReceived}/${required} (${pct.toFixed(1)}%, ${isImportant?'Important':'Regular'}; ${vlmStr})`;
+            const clicked = clickedImportantStates.has(stateKey(episodeId, stateId)); /* NEW */
+            // Remove title attribute to eliminate hover text tooltip
 
-            // Bind click (if eligible)
+            // NEW: role, state classes, clicked marker
+            barContainer.classList.toggle('is-important', !!isImportant);
+            barContainer.classList.toggle('is-regular', !isImportant);
+            barContainer.classList.toggle('clicked', clicked);
+            if (clicked) barContainer.setAttribute('aria-pressed','true'); else barContainer.removeAttribute('aria-pressed');
+
+            // Bind click (if eligible) + hover
             bindBarClickIfEligible(barContainer, episodeId, stateId, !!isImportant, !!hasVlm);
 
             // Header stats
@@ -662,6 +846,9 @@
                 }
             }
             updateCurrentEpisodeIndicator();
+
+            /* NEW: ensure filter is applied after updates */
+            applyImportantOnlyMode();
         }
 
         // ——— Fetchers ———
@@ -775,19 +962,15 @@
             const url = new URL(`${API_BASE_URL}/api/state-details`, location.origin);
             url.searchParams.set('episode_id', episodeId);
             url.searchParams.set('state_id', stateId);
-            console.log('Fetching state details from:', url.toString().replace(location.origin,''));
             const resp = await fetch(url.toString().replace(location.origin,''), { headers:{ 'Accept':'application/json' }});
-            console.log('Response status:', resp.status, resp.statusText);
             if (!resp.ok) throw new Error(`Failed to fetch state details (${resp.status})`);
             const data = await resp.json();
-            console.log('State details response:', data);
             if (!data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Bad response');
             return data;
         }
 
         async function openVlmModal(episodeId, stateId) {
             try {
-                console.log('Opening VLM modal for episode:', episodeId, 'state:', stateId);
                 // Prime modal
                 modalTitle.textContent = `Important state ${stateId} — Episode ${episodeId}`;
                 modalMaincam.src = '';
@@ -798,41 +981,29 @@
                 modalContext = { episodeId, stateId, selectedVideoId:null, selectedText:null, bank:[] };
                 openModal();
 
-                console.log('About to fetch state details...');
                 // Load details (maincam + current VLM + bank)
                 const details = await fetchStateDetails(episodeId, stateId);
-                console.log('Got state details:', details);
-                
+
                 if (details.maincam_data_url) {
-                    console.log('Setting modal main camera image');
                     modalMaincam.src = details.maincam_data_url;
-                } else {
-                    console.log('No main camera data URL found');
                 }
 
                 const currentText = details.vlm_text || '';
                 const currentVid  = (typeof details.vlm_video_id === 'number') ? details.vlm_video_id : null;
 
-                console.log('VLM Text:', currentText);
-                console.log('VLM Video ID:', currentVid);
                 modalPrompt.textContent = currentText || '(no VLM text found)';
                 kvVid.textContent = (currentVid !== null ? String(currentVid) : '—');
 
-                console.log('Processing description bank...');
                 let bank = [];
                 if (details.description_bank) {
-                    console.log('Using description bank from details:', details.description_bank);
-                    // New API returns parsed entries directly
                     bank = details.description_bank.map(entry => ({
                         id: entry.id,
                         thus_text: entry.text
                     }));
                 } else {
-                    console.log('No description bank in details, fetching fallback...');
                     const fallback = await fetchDescriptionBank();
                     bank = fallback || [];
                 }
-                console.log('Final bank:', bank);
                 modalContext.bank = bank;
 
                 // Populate dropdown (pre-select current video id if present)
@@ -847,7 +1018,6 @@
                     modalContext.selectedVideoId = bank[0].id;
                     modalContext.selectedText = bank[0].thus_text;
                 }
-                console.log('VLM modal setup completed successfully');
             } catch (e) {
                 console.error('Error in openVlmModal:', e);
                 showToast('Failed to load VLM details.');
@@ -944,6 +1114,53 @@
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
 
+        // === NEW: Important-only toggle logic ===
+        let importantOnlyMode = true; // Default to Important only
+        const toggleAllBtn = document.getElementById('toggle-all');
+        const toggleImportantBtn = document.getElementById('toggle-important');
+
+        function updateToggleUI() {
+            if (importantOnlyMode) {
+                toggleAllBtn.classList.remove('active');
+                toggleAllBtn.setAttribute('aria-selected','false');
+                toggleImportantBtn.classList.add('active');
+                toggleImportantBtn.setAttribute('aria-selected','true');
+            } else {
+                toggleImportantBtn.classList.remove('active');
+                toggleImportantBtn.setAttribute('aria-selected','false');
+                toggleAllBtn.classList.add('active');
+                toggleAllBtn.setAttribute('aria-selected','true');
+            }
+        }
+
+        function applyImportantOnlyMode() {
+            for (const ep of episodes) {
+                if (!ep.barsContainer) continue;
+                ep.barsContainer.classList.toggle('important-only', importantOnlyMode);
+            }
+        }
+
+        toggleAllBtn.addEventListener('click', () => {
+            importantOnlyMode = false;
+            updateToggleUI();
+            applyImportantOnlyMode();
+            hidePopover();
+        });
+        toggleImportantBtn.addEventListener('click', () => {
+            importantOnlyMode = true;
+            updateToggleUI();
+            applyImportantOnlyMode();
+        });
+        // Keyboard shortcut: I toggles mode
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
+                importantOnlyMode = !importantOnlyMode;
+                updateToggleUI();
+                applyImportantOnlyMode();
+                if (!importantOnlyMode) hidePopover();
+            }
+        });
+
         // ——— Auto-refresh ———
         function startAutoRefresh() {
             stopAutoRefresh();
@@ -979,6 +1196,10 @@
             fetchLatestState();
             startAutoRefresh();
             setTimeout(fetchPendingStatesInfo, 500);
+
+            // Initialize toggle UI state
+            updateToggleUI();
+            applyImportantOnlyMode();
         });
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) stopAutoRefresh();
