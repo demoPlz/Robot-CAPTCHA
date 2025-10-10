@@ -49,8 +49,8 @@ REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
-    "front":       12,   # change indices / paths as needed
-    "left":        10,
+    "front":       18,   # change indices / paths as needed
+    "left":        4,
     "right":       2,
     "perspective": 0,
 }
@@ -3281,7 +3281,7 @@ class CrowdInterface():
 
                 # Everything we need to later write states to Lerobot dataset in order
                 completed_state = {
-                    "obs_path": state_info.get("obs_path"),
+                    "obs_path": state_info["obs_path"],
                     "action": all_actions,
                     "task": self.task_text # Text label for frame
                 }
@@ -3291,18 +3291,17 @@ class CrowdInterface():
                     self.completed_states_buffer_by_episode[episode_id] = {}
                 self.completed_states_buffer_by_episode[episode_id][state_id] = completed_state
 
-                completed_state_monitor = { # Contains legacy components
+                completed_state_monitor = {
                     "responses_received": state_info["responses_received"],
-                    "completion_time": time.time(),
-                    "is_critical": state_info['crtical'],
+                    "is_critical": state_info['critical'],
                     "prompt_ready": True,
                     "flex_text_prompt": state_info['flex_text_prompt'] if 'flex_text_prompt' in state_info else None,
                     "flex_video_id": state_info['flex_video_id'] if 'flex_video_id' in state_info else None,
                 }
                 # Save to completed states (for monitoring)
                 if episode_id not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
-
+                    self.completed_states_by_episode[episode_id] = {}
+                self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
                 
                 # Remove from pending
                 del self.pending_states_by_episode[episode_id][state_id]
@@ -4175,6 +4174,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         session_id = request.headers.get('X-Session-ID', request.remote_addr)
         
         state = crowd_interface.get_latest_state(session_id)
+        
+        # Check if this is a status response (no real state)
+        if isinstance(state, dict) and state.get("status"):
+            # Return status response directly without processing through _state_to_json
+            response = jsonify(state)
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
+        
+        # Process as a real state
         payload = crowd_interface._state_to_json(state)
         
         # Prefer flex_text_prompt (manual or VLM), otherwise simple fallback
@@ -4182,7 +4192,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         if isinstance(text, str) and text.strip():
             payload["prompt"] = text.strip()
         else:
-            payload["prompt"] = f"Task: {crowd_interface.task}. What should the arm do next?"
+            payload["prompt"] = f"Task: {crowd_interface.task_text or 'crowdsourced_task'}. What should the arm do next?"
 
         # NEW: Always tell the frontend what to do with demo videos
         payload["demo_video"] = crowd_interface.get_demo_video_config()

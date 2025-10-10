@@ -196,7 +196,8 @@ class StateManager():
                 }
                 # Save to completed states (for monitoring)
                 if episode_id not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
+                    self.completed_states_by_episode[episode_id] = {}
+                self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
 
                 
                 # Remove from pending
