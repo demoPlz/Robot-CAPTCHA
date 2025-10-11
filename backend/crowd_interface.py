@@ -1436,36 +1436,15 @@ class CrowdInterface():
                 max_id = k if max_id is None or k > max_id else max_id
         return max_id
     
-    def _demote_earlier_unanswered_criticals_locked(self, episode_id: str, pivot_state_id: int) -> list[int]:
-        """
-        Demote earlier critical states with 0 responses to normal.
-        MUST be called with self.state_lock already held.
-        Returns a sorted list of demoted state_ids.
-        """
-        ep_states = self.pending_states_by_episode.get(episode_id, {})
-        demoted: list[int] = []
-
-        for sid, info in list(ep_states.items()):
-            if sid < pivot_state_id and info.get("critical", False) and int(info.get("responses_received", 0)) == 0:
-                info["critical"] = False
-                # Clear gates/features that only matter for critical states
-                info["segmentation_ready"] = True
-                info["segmentation_paths"] = {}
-                # Clear prompt state (no longer relevant for normal states)
-                info["prompt_ready"] = True
-                info["vlm_queued"] = False
-                info["flex_text_prompt"] = None
-                info.pop("flex_video_id", None)
-                info.pop("video_id", None)
-                # Leader mode bookkeeping
-                info["leader_submissions"] = 0
-                info["leader_sessions"] = set()
-                demoted.append(sid)
-
-        if demoted:
-            demoted.sort()
-            print(f"⬇️  Demoted earlier critical states with 0 responses → normal in episode {episode_id}: {demoted}")
-        return demoted
+    def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
+        '''
+        Demote critical states before state_id in episode with episode_id to non-critical
+        '''
+        for state_id in self.pending_states_by_episode[episode_id].keys():
+            if state_id < current_state_id \
+                  and self.pending_states_by_episode[episode_id][state_id]['critical'] \
+                  and not self.pending_states_by_episode[episode_id][state_id]['actions']:
+                self.pending_states_by_episode[episode_id][state_id]['critical'] = False
 
     # --- State Management ---
     def add_state(self,
@@ -1527,79 +1506,25 @@ class CrowdInterface():
             self.current_serving_episode = episode_id
 
     def set_last_state_to_critical(self):
-        """Mark the most recent state as critical (across all episodes)."""
         with self.state_lock:
-            latest_state_id = None
-            latest_episode_id = None
             
-            # Find the latest episode and latest state within that episode
             if self.pending_states_by_episode:
                 latest_episode_id = max(self.pending_states_by_episode.keys())
                 episode_states = self.pending_states_by_episode[latest_episode_id]
                 if episode_states:
                     latest_state_id = max(episode_states.keys())
-
-            if latest_state_id is None or latest_episode_id is None:
-                print("⚠️  No pending states to mark as critical")
-                return
-
-            info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-            if info.get('critical', False):
-                # Already critical: do not clobber or re-enqueue.
-                print(f"ℹ️ State {latest_state_id} already marked critical; leaving VLM status unchanged.")
-                return
-            info["critical"] = True
-            info["segmentation_ready"] = True  # LEGACY: Always ready since segmentation is disabled
-
-            # --- Prompt-mode gating (manual or VLM) ---
-            if self._prompt_mode_requires_gate():
-                # If we already have both fields (rare), honor them; else mark not ready.
-                has = self._is_prompt_ready(info)
-                info.setdefault("flex_text_prompt", None)
-                info.setdefault("flex_video_id", None)
-                info["prompt_ready"] = bool(has)
-                # Do NOT auto-queue anything in manual mode
             else:
-                # Simple mode: do not gate on prompts
-                info.setdefault("flex_text_prompt", None)
-                info.setdefault("flex_video_id", None)
-                info["prompt_ready"] = True
-            print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as critical")
+                # self.pending_states_by_episode hasn't been populated yet
+                return
+            
+            info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
+            if info['critical']:
+                # Already set
+                return
+            info['critical'] = True
 
-            # always queue auto-labeling
+            self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
-
-            # snapshot inputs for background worker
-            episode_id_local = latest_episode_id
-            state_id_local = latest_state_id
-            view_paths_local = dict(info.get("view_paths", {}))
-            joints_local = dict(info["state"].get("joint_positions", {}))
-            obs_path_local = info.get("obs_path")
-
-            # Decide whether to queue VLM after leaving the lock
-            # Default behavior: queue immediately on mark-critical.
-            # Leader Mode: do NOT queue yet; wait for n_leaders unique submissions.
-            should_queue_vlm = False
-            if self._vlm_enabled and (not self.leader_mode):
-                info_now = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                if (not info_now.get("prompt_ready", False)) and (not info_now.get("vlm_queued", False)):
-                    should_queue_vlm = True
-
-            st_obj = info["state"]
-            # LEGACY: Segmentation is disabled, always mark as ready
-            info["segmentation_paths"] = {}
-            info["segmentation_ready"] = True
-            segmentation_needed = False  # Never enqueue segmentation jobs
-            print(f"⚠️ Segmentation disabled (legacy) for state {latest_state_id} (ep {latest_episode_id})")
-
-        # enqueue heavy work after releasing the lock
-        if segmentation_needed:
-            self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
-        # Enqueue VLM (if needed) after releasing the lock
-        if self._vlm_enabled and should_queue_vlm:
-            ok = self._enqueue_vlm_job(episode_id_local, state_id_local, view_paths_local)
-            if not ok:
-                print(f"⚠️ Could not enqueue VLM job ep={episode_id_local} sid={state_id_local} (will remain pending until re-marked)")
 
     def auto_label_previous_states(self, critical_state_id):
         self.auto_label_queue.put_nowait(critical_state_id)

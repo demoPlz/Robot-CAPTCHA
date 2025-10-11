@@ -234,11 +234,18 @@ class StateManager():
                 return
             info['critical'] = True
 
-            self.demote_earlier_unanswered_criticals()
+            self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
 
-    def demote_earlier_unanswered_criticals(self):
-        pass
+    def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
+        '''
+        Demote critical states before state_id in episode with episode_id to non-critical
+        '''
+        for state_id in self.pending_states_by_episode[episode_id].keys():
+            if state_id < current_state_id \
+                  and self.pending_states_by_episode[episode_id][state_id]['critical'] \
+                  and not self.pending_states_by_episode[episode_id][state_id]['actions']:
+                self.pending_states_by_episode[episode_id][state_id]['critical'] = False
 
     def _schedule_episode_finalize_after_grace(self, episode_id: int):
         delay = self.episode_finalize_grace_s
