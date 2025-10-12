@@ -50,9 +50,7 @@
         .progress-bar { width:100%; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; }
         .progress-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#1d4ed8); border-radius:4px; transition:width .3s ease; }
         .robot-state { padding:12px; border-radius:6px; font-weight:500; text-align:center; margin:8px 0; }
-        .robot-state.moving { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
         .robot-state.stationary { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
-        .robot-state.async-collection { background:#e0e7ff; color:#3730a3; border:1px solid #a5b4fc; animation:pulse 2s infinite; }
         .robot-state.resetting { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.7;} }
         .error-message { background:#fef2f2; border:1px solid #fecaca; color:#dc2626; padding:12px; border-radius:6px; font-size:14px; text-align:center; }
@@ -610,20 +608,14 @@
                 serverStatus.innerHTML = '<span class="status-indicator disconnected"></span>Disconnected';
             }
         }
-        function updateRobotState(isMoving, isResetting, resetCountdown, isAsyncCollection) {
+        function updateRobotState(isResetting, resetCountdown) {
             if (isResetting) {
                 robotState.className='robot-state resetting';
                 const t = resetCountdown>0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
                 robotState.textContent = `🔄 Resetting Environment${t}`;
-            } else if (isAsyncCollection) {
-                robotState.className='robot-state async-collection';
-                robotState.textContent='🔄 Asynchronous Data Collection';
-            } else if (isMoving) {
-                robotState.className='robot-state moving';
-                robotState.textContent='🏃 Robot Moving';
             } else {
                 robotState.className='robot-state stationary';
-                robotState.textContent='🛑 Robot Stationary';
+                robotState.textContent='✅ Ready for Data Collection';
             }
         }
         function updateControlButtons(isResetting) {
@@ -1004,7 +996,7 @@
                     } else {
                         stateType.textContent = '--'; stateResponses.textContent = '--';
                     }
-                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown, data.is_async_collection);
+                    updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
                     if (data.total_pending_states !== undefined) pendingStatesCount.textContent = data.total_pending_states; else pendingStatesCount.textContent = '--';
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
@@ -1012,7 +1004,7 @@
                     stateType.textContent = '--';
                     stateResponses.textContent = '--';
                     pendingStatesCount.textContent = '0';
-                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown, data.is_async_collection);
+                    updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                 }

@@ -131,9 +131,6 @@ class CrowdInterface():
         self.latest_goal = None
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
-
-        self.robot_is_moving = False
-        self.is_async_collection = False  # True when serving states asynchronously after recording
         
         # Reset state management
         self.is_resetting = False
@@ -1373,37 +1370,6 @@ class CrowdInterface():
         self.latest_goal = None
         return goal
     
-    def has_pending_goal(self) -> bool:
-        """Check if there's a pending goal"""
-        return self.latest_goal is not None
-    
-    # --- Robot Movement State Management ---
-    def set_robot_moving(self, is_moving: bool = True):
-        """Set the robot movement state"""
-        self.robot_is_moving = is_moving
-        if is_moving:
-            self.is_async_collection = False  # Clear async mode when robot is actually moving
-        status = "MOVING" if is_moving else "STATIONARY"
-        emoji = "🏃" if is_moving else "🛑"
-        print(f"{emoji} Robot state set to: {status}")
-    
-    def is_robot_moving(self) -> bool:
-        """Get current robot movement state"""
-        return self.robot_is_moving
-    
-    def set_async_collection(self, is_async: bool = True):
-        """Set asynchronous data collection mode (serving random states after recording)"""
-        self.is_async_collection = is_async
-        if is_async:
-            self.robot_is_moving = False  # Robot is not actually moving during async collection
-        status = "ASYNC COLLECTION" if is_async else "NORMAL"
-        emoji = "🔄" if is_async else "⏸️"
-        print(f"{emoji} Data collection mode set to: {status}")
-    
-    def is_async_collection_mode(self) -> bool:
-        """Check if in asynchronous data collection mode"""
-        return self.is_async_collection
-    
     # --- Reset State Management ---
     def start_reset(self, duration_s: float):
         """Start the reset countdown timer"""
@@ -1417,7 +1383,6 @@ class CrowdInterface():
         self.is_resetting = False
         self.reset_start_time = None
         self.reset_duration_s = 0
-        print(f"✅ Reset completed")
     
     def get_reset_countdown(self) -> float:
         """Get remaining reset time in seconds, or 0 if not resetting"""
@@ -1616,16 +1581,3 @@ class CrowdInterface():
             except Exception as e:
                 raise IOError(f"failed to write {path}: {e}")
         return str(path)
-
-    def is_recording(self):
-        """Check if there are any pending states across all episodes or episodes being completed"""
-        with self.state_lock:
-            # Check for pending states or episodes currently being completed
-            has_pending_states = any(len(episode_states) > 0 for episode_states in self.pending_states_by_episode.values())
-            has_episodes_being_completed = len(self.episodes_being_completed) > 0
-            
-            is_recording = has_pending_states or has_episodes_being_completed
-            if has_episodes_being_completed:
-                print(f"🔄 Recording status: {is_recording} (pending_states: {has_pending_states}, episodes_being_completed: {list(self.episodes_being_completed)})")
-            
-            return is_recording

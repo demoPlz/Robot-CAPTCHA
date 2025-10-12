@@ -152,14 +152,8 @@ def record(
         if events["stop_recording"]:
             break
     
-    crowd_interface.set_async_collection(True)  # Switch to asynchronous data collection mode
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     _stop_display_only(listener, cfg.display_cameras)
-
-    while crowd_interface.is_recording():
-
-        log_say("Still recording from users", cfg.play_sounds, blocking=True)
-        time.sleep(1)
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)

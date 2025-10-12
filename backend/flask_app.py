@@ -311,11 +311,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         "views": crowd_interface._snapshot_latest_views(),  # still show previews
                         "total_pending_states": 0,
                         "current_serving_episode": current_episode,
-                        "robot_moving": crowd_interface.is_robot_moving(),
-                        "is_async_collection": crowd_interface.is_async_collection_mode(),
                         "is_resetting": crowd_interface.is_in_reset(),
-                        "reset_countdown": crowd_interface.get_reset_countdown(),
-                        "timestamp": time.time()
+                        "reset_countdown": crowd_interface.get_reset_countdown()
                     })
 
             # Build response outside the lock
@@ -325,7 +322,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "state_id": newest_state_id,
                 "episode_id": newest_episode_id,
                 "current_serving_episode": current_episode,
-                "timestamp": time.time(),  # Use current time since we no longer store state timestamps
                 "responses_received": newest_state_data["responses_received"],
                 "responses_required": (
                     crowd_interface.required_responses_per_critical_state
@@ -336,12 +332,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "views": crowd_interface._snapshot_latest_views(),  # lightweight snapshot (pre-encoded)
                 "joint_positions": newest_state_data.get("joint_positions", {}),
                 "gripper": newest_state_data.get("gripper", 0),
-                "robot_moving": crowd_interface.is_robot_moving(),
-                "is_async_collection": crowd_interface.is_async_collection_mode(),
                 "is_resetting": crowd_interface.is_in_reset(),
                 "reset_countdown": crowd_interface.get_reset_countdown(),
-                "total_pending_states": total_pending,
-                "current_time": time.time()
+                "total_pending_states": total_pending
             }
 
             response = jsonify(monitoring_data)
@@ -353,8 +346,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({
                 "status": "error",
-                "message": f"Monitoring error: {str(e)}",
-                "timestamp": time.time()
+                "message": f"Monitoring error: {str(e)}"
             }), 500
     
     @app.route("/api/control/next-episode", methods=["POST"])
