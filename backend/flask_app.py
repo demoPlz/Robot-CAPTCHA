@@ -667,11 +667,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"error": str(e)}), 500
 
     # Streaming recording endpoints for canvas-based recording
-    # In-memory storage for active recording sessions
-    recording_sessions = {}  # recording_id -> {task_name, ext, chunks: [bytes]}
+    # Simple single recording session (no multi-user support needed)
+    current_recording = None  # {recording_id, task_name, ext, chunks: [(seq, bytes)], started_at, metadata}
     
     @app.route("/api/record/start", methods=["POST"])
     def record_start():
+        nonlocal current_recording
+        
         if crowd_interface._shutting_down:
             return jsonify({"status": "shutting_down"}), 503
         
@@ -687,8 +689,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if not recording_id:
                 return jsonify({"error": "missing recording_id"}), 400
             
-            # Initialize session
-            recording_sessions[recording_id] = {
+            # Initialize single recording session
+            current_recording = {
+                'recording_id': recording_id,
                 'task_name': task_name,
                 'ext': ext,
                 'chunks': [],
@@ -704,6 +707,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/record/chunk", methods=["POST"])
     def record_chunk():
+        nonlocal current_recording
+        
         if crowd_interface._shutting_down:
             return jsonify({"status": "shutting_down"}), 503
         
@@ -714,8 +719,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             recording_id = request.args.get('rid')
             seq = request.args.get('seq', '0')
             
-            if not recording_id or recording_id not in recording_sessions:
-                return jsonify({"error": "unknown recording_id"}), 404
+            if not current_recording:
+                return jsonify({"error": "no active recording"}), 404
+            
+            if recording_id != current_recording['recording_id']:
+                return jsonify({"error": "mismatched recording_id"}), 400
             
             # Get the raw bytes from the request
             chunk_data = request.get_data()
@@ -723,8 +731,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 return jsonify({"error": "no data"}), 400
             
             # Store chunk in memory (ordered by sequence)
-            session = recording_sessions[recording_id]
-            session['chunks'].append((int(seq), chunk_data))
+            current_recording['chunks'].append((int(seq), chunk_data))
             
             return jsonify({"ok": True})
             
@@ -734,6 +741,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/record/stop", methods=["POST"])
     def record_stop():
+        nonlocal current_recording
+        
         if crowd_interface._shutting_down:
             return jsonify({"status": "shutting_down"}), 503
         
@@ -744,22 +753,23 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             data = request.get_json() or {}
             recording_id = data.get('recording_id')
             
-            if not recording_id or recording_id not in recording_sessions:
-                return jsonify({"error": "unknown recording_id"}), 404
+            if not current_recording:
+                return jsonify({"error": "no active recording"}), 404
             
-            session = recording_sessions[recording_id]
+            if recording_id != current_recording['recording_id']:
+                return jsonify({"error": "mismatched recording_id"}), 400
             
             # Sort chunks by sequence number
-            chunks = sorted(session['chunks'], key=lambda x: x[0])
+            chunks = sorted(current_recording['chunks'], key=lambda x: x[0])
             
             if not chunks:
-                recording_sessions.pop(recording_id, None)
+                current_recording = None
                 return jsonify({"error": "no chunks received"}), 400
             
             # Combine all chunks into a single video file
             try:
                 # Get next filename using the counter system
-                ext = session['ext']
+                ext = current_recording['ext']
                 filename, index = crowd_interface._next_video_filename(ext)
                 file_path = crowd_interface._demo_videos_dir / filename
                 
@@ -768,11 +778,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     for seq, chunk_data in chunks:
                         f.write(chunk_data)
                 
-                # Clean up session
-                recording_sessions.pop(recording_id, None)
+                # Clean up current recording
+                current_recording = None
                 
-                # Optionally upload to blob storage (if configured)
-                public_url = crowd_interface._maybe_upload_to_blob(str(file_path))
+                # No cloud upload - storing locally only
+                public_url = None
                 
                 return jsonify({
                     "ok": True,
@@ -785,11 +795,71 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 
             except Exception as e:
                 print(f"❌ Error finalizing recording: {e}")
-                recording_sessions.pop(recording_id, None)
+                current_recording = None
                 return jsonify({"error": f"failed to save: {e}"}), 500
             
         except Exception as e:
             print(f"❌ Error stopping recording: {e}")
             return jsonify({"error": str(e)}), 500
+        
+    @app.route("/api/record/save", methods=["POST"])
+    def record_save():
+        nonlocal current_recording
+        
+        """Manual save endpoint for demo video recordings"""
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface.record_demo_videos:
+            return jsonify({"error": "Demo video recording is not enabled"}), 400
+        
+        try:
+            data = request.get_json() or {}
+            recording_id = data.get('recording_id')
+            
+            if not current_recording:
+                return jsonify({"error": "No active recording session found"}), 404
+            
+            if recording_id != current_recording['recording_id']:
+                return jsonify({"error": "Recording ID mismatch"}), 400
+            
+            # Sort chunks by sequence number
+            chunks = sorted(current_recording['chunks'], key=lambda x: x[0])
+            
+            if not chunks:
+                current_recording = None
+                return jsonify({"error": "No recording data to save"}), 400
+            
+            # Get next filename using the counter system
+            ext = current_recording['ext']
+            filename, index = crowd_interface._next_video_filename(ext)
+            file_path = crowd_interface._demo_videos_dir / filename
+            
+            # Write all chunks to the file
+            with open(file_path, 'wb') as f:
+                for seq, chunk_data in chunks:
+                    f.write(chunk_data)
+            
+            # Clean up current recording
+            current_recording = None
+            
+            # No cloud upload - storing locally only
+            public_url = None
+            
+            return jsonify({
+                "ok": True,
+                "status": "success",
+                "message": "Recording saved successfully",
+                "filename": filename,
+                "path": str(file_path),
+                "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
+                "public_url": public_url,
+                "index": index
+            })
+            
+        except Exception as e:
+            print(f"❌ Error saving recording: {e}")
+            return jsonify({"error": str(e)}), 500
+    
     
     return app

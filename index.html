@@ -2200,8 +2200,8 @@ const CanvasRecording = (() => {
     // Start composition loop first (so first frame is ready quickly)
     compose();
 
-    // Buffer-only when demo-video mode is on:
-    bufferedMode = !!RECORDING_ALLOWED;
+    // Always use buffered mode - no live streaming
+    bufferedMode = true;
     uploaded = false;
 
     // Start recorder on the compositor canvas stream
@@ -2220,61 +2220,14 @@ const CanvasRecording = (() => {
     // Broadcast start (for the mini HUD)
     try { window.dispatchEvent(new CustomEvent('rec:started', { detail: { id, startedAt } })); } catch(_){}
 
-    // Backend session (LIVE streaming) only if NOT in bufferedMode
-    let uploadOk = false;
-    if (!bufferedMode) {
-      try {
-        const rect = { width: canvas.width, height: canvas.height };
-        const meta = {
-          recording_id: id, sid: SID, started_at: new Date().toISOString(),
-          trigger, fps: FPS, viewport: { ...rect, dpr: 1 },
-          cursor_overlay: true,
-          state_id: window.__INIT_STATE?.state_id,
-          episode_id: window.__INIT_STATE?.episode_id,
-          task_name: window.__INIT_STATE?.task_name,
-          container: 'quad-views',
-          ext: 'webm'
-        };
-        const resp = await apiFetch('/api/record/start', {
-          method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(meta)
-        });
-        uploadOk = resp.ok;
-      } catch { uploadOk = false; }
-      
-      // Only show error if we're in LIVE mode and server rejected
-      if (!uploadOk) {
-        alert('The server is not accepting demo video uploads right now. Verify will be blocked from saving a video.');
-      }
-    }
-
     mr.ondataavailable = async (ev) => {
       if (!ev.data || ev.data.size === 0) return;
-      // LIVE stream (non-buffered), otherwise keep in memory
-      if (!bufferedMode && uploadOk) {
-        try {
-          const qs = new URLSearchParams({ rid: id, seq: String(chunks.length), sid: SID });
-          await apiFetch(`/api/record/chunk?${qs}`, {
-            method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: ev.data
-          });
-          chunks.push(null); // maintain seq length
-          return;
-        } catch(_) {}
-      }
-      chunks.push(ev.data); // buffer
+      // Always buffer in memory
+      chunks.push(ev.data);
     };
 
     mr.onstop = async () => {
       cancelAnimationFrame(rafId); rafId = 0;
-      // Close server session only in live-stream mode
-      if (!bufferedMode && uploadOk) {
-        try {
-          await apiFetch('/api/record/stop', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ recording_id: id, duration_ms: Date.now()-startedAt })
-          });
-        } catch(_){}
-      }
       // Buffered mode: do nothing here; we will upload on Save.
       active = false;
       try { window.dispatchEvent(new CustomEvent('rec:stopped', { detail: { id, durationMs: Date.now() - startedAt } })); } catch(_){}
@@ -2303,14 +2256,19 @@ const CanvasRecording = (() => {
     await stopCompletePromise;
   }
 
-  // NEW: upload buffered chunks to backend now (called by Save)
+  // Upload buffered chunks to backend (called by Save)
   async function flushToServer(){
     if (uploaded) return false;                      // already uploaded
     if (!chunks.length || !(chunks[0] instanceof Blob)) return false; // nothing buffered
+    
     const rect = { width: canvas?.width || 0, height: canvas?.height || 0 };
     const meta = {
-      recording_id: id, sid: SID, started_at: new Date(startedAt || Date.now()).toISOString(),
-      trigger: 'manual-save', fps: FPS, viewport: { ...rect, dpr: 1 },
+      recording_id: id, 
+      sid: SID, 
+      started_at: new Date(startedAt || Date.now()).toISOString(),
+      trigger: 'manual-save', 
+      fps: FPS, 
+      viewport: { ...rect, dpr: 1 },
       cursor_overlay: true,
       state_id: window.__INIT_STATE?.state_id,
       episode_id: window.__INIT_STATE?.episode_id,
@@ -2318,23 +2276,35 @@ const CanvasRecording = (() => {
       container: 'quad-views',
       ext: 'webm'
     };
+    
+    // 1. Start recording session on server
     const begin = await apiFetch('/api/record/start', {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(meta)
+      method:'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body: JSON.stringify(meta)
     });
     if (!begin.ok) throw new Error('record/start failed');
+    
+    // 2. Upload all chunks
     for (let i = 0; i < chunks.length; i++){
       const qs = new URLSearchParams({ rid: id, seq: String(i), sid: SID });
       const chunk = chunks[i];
       const r = await apiFetch(`/api/record/chunk?${qs}`, {
-        method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: chunk
+        method:'POST', 
+        headers:{'Content-Type':'application/octet-stream'}, 
+        body: chunk
       });
       if (!r.ok) throw new Error(`record/chunk ${i} failed`);
     }
-    const fin = await apiFetch('/api/record/stop', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ recording_id: id, duration_ms: Math.max(0, Date.now()-startedAt) })
+    
+    // 3. Save the recording (combines chunks into final video file)
+    const saveResult = await apiFetch('/api/record/save', {
+      method:'POST', 
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ recording_id: id })
     });
-    if (!fin.ok) throw new Error('record/stop failed');
+    if (!saveResult.ok) throw new Error('record/save failed');
+    
     uploaded = true;
     return true;
   }
@@ -2780,52 +2750,30 @@ async function rerecordManual(){
 }
 
 async function saveRecordingManual(){
-  // In the new manual save system, 's' saves the current episode to the dataset
-  // We don't need to check for LAST_RECORDING_ID since episodes can be saved without recordings
+  // Save video recording if one exists (this is about UI demo videos, not dataset episodes)
   if (CanvasRecording.isActive()) {
     alert('Cannot save while recording is active. Stop recording first with "q".');
     return;
   }
 
-  // 1) Upload buffered recording only now (demo-video mode)
-  try {
-    const didUpload = await CanvasRecording.flushToServer();
-    if (didUpload) {
-      console.log('✅ Uploaded recording on Save:', LAST_RECORDING_ID);
-    }
-  } catch (e) {
-    console.error('❌ Upload failed on Save:', e);
-    alert('Could not upload the recording to the server. Please try again.');
-    return;
-  }
-
-  // 2) Then persist episodes/metadata as before
-  try {
-    const resp = await apiFetch('/api/control/save', { 
-      method: 'POST', 
-      headers: {'Content-Type': 'application/json'}, 
-      body: JSON.stringify({}) // Save all pending episodes
-    });
-    if (resp.ok) {
-      const result = await resp.json();
-      if (result.status === 'success' && result.saved_episodes && result.saved_episodes.length > 0) {
-        RECORDING_MARKED_SAVED = true;
-        _recMiniUpdate('stopped');
-        console.log('✅ Episodes saved:', result.saved_episodes);
-      } else if (result.status === 'noop') {
-        // Nothing to save is OK - don't show error
-        console.log('ℹ️ No episodes were pending save');
+  // Save buffered video recording if one exists
+  if (LAST_RECORDING_ID) {
+    try {
+      const didUpload = await CanvasRecording.flushToServer();
+      if (didUpload) {
+        console.log('✅ Video recording saved:', LAST_RECORDING_ID);
         RECORDING_MARKED_SAVED = true;
         _recMiniUpdate('stopped');
       } else {
-        alert('No episodes were ready to save. Complete an episode first.');
+        console.log('ℹ️ No video recording to save or already saved');
+        alert('No video recording to save.');
       }
-    } else {
-      const errorText = await resp.text().catch(() => String(resp.status));
-      alert('Could not save episodes to the dataset. Please try again.\n' + errorText.slice(0,200));
+    } catch (e) {
+      console.error('❌ Video recording save failed:', e);
+      alert('Could not save the video recording to the server. Please try again.');
     }
-  } catch(e) {
-    alert('Could not save episodes to the dataset. Please try again.\n' + (e?.message || String(e)).slice(0,200));
+  } else {
+    alert('No video recording to save.');
   }
 }
 

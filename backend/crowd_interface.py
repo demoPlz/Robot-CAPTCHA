@@ -263,7 +263,7 @@ class CrowdInterface():
                 # Default: prompts/demos/{task-name}/videos
                 task_name = self.prompt_task_name or "default"
                 repo_root = Path(__file__).resolve().parent / ".."
-                self._demo_videos_dir = (repo_root / "prompts" / "demos" / task_name / "videos").resolve()
+                self._demo_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
             
             try:
                 self._demo_videos_dir.mkdir(parents=True, exist_ok=True)
