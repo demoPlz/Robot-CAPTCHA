@@ -36,7 +36,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return response
         
         # Process as a real state
-        payload = crowd_interface._state_to_json(state)
+        payload = crowd_interface.state_to_json(state)
         
         # Prefer text_prompt (manual or VLM), otherwise simple fallback
         text = payload.get("text_prompt")
@@ -124,7 +124,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if crowd_interface._shutting_down:
                 return jsonify({"ok": False, "error": "shutting_down"}), 503
             bank = crowd_interface.get_description_bank()
-            return jsonify({"ok": True, "task_name": (crowd_interface._task_name() or "default"),
+            return jsonify({"ok": True, "task_name": (crowd_interface.task_name() or "default"),
                             "entries": bank["entries"], "raw_text": bank["raw_text"]})
         except Exception as e:
             print(f"❌ /api/description-bank error: {e}")
@@ -192,10 +192,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Load maincam image (if possible)
             maincam_url = None
             if obs_path:
-                obs = crowd_interface._load_obs_from_disk(obs_path)
-                img = crowd_interface._load_main_cam_from_obs(obs)
+                obs = crowd_interface.load_obs_from_disk(obs_path)
+                img = crowd_interface.load_main_cam_from_obs(obs)
                 if img is not None:
-                    maincam_url = crowd_interface._encode_jpeg_base64(img)
+                    maincam_url = crowd_interface.encode_jpeg_base64(img)
 
             # Description bank
             bank = crowd_interface.get_description_bank()
@@ -254,7 +254,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
                 p_info = p_ep.get(sid)
                 if p_info is not None:
-                    crowd_interface._set_prompt_ready(p_info, ep, sid, txt if txt else None, vid)
+                    crowd_interface.set_prompt_ready(p_info, ep, sid, txt if txt else None, vid)
                     updated = True
                 else:
                     # completed metadata path  
@@ -308,7 +308,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     return jsonify({
                         "status": "no_pending_states",
                         "message": "No pending states.",
-                        "views": crowd_interface._snapshot_latest_views(),  # still show previews
+                        "views": crowd_interface.snapshot_latest_views(),  # still show previews
                         "total_pending_states": 0,
                         "current_serving_episode": current_episode,
                         "is_resetting": crowd_interface.is_in_reset(),
@@ -329,7 +329,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     else crowd_interface.required_responses_per_state
                 ),
                 "critical": newest_state_data.get("critical", False),
-                "views": crowd_interface._snapshot_latest_views(),  # lightweight snapshot (pre-encoded)
+                "views": crowd_interface.snapshot_latest_views(),  # lightweight snapshot (pre-encoded)
                 "joint_positions": newest_state_data.get("joint_positions", {}),
                 "gripper": newest_state_data.get("gripper", 0),
                 "is_resetting": crowd_interface.is_in_reset(),
@@ -548,7 +548,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         if not vid:
             return jsonify({"error": "Invalid video id"}), 400
 
-        file_path, mime = crowd_interface._find_show_video_by_id(vid)
+        file_path, mime = crowd_interface.find_show_video_by_id(vid)
         if not file_path:
             return jsonify({"error": "Video file not found"}), 404
 
@@ -609,7 +609,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"error": "Show demo videos is not enabled"}), 404
 
         # Resolve the latest numeric .webm (e.g., 1.webm, 2.webm, ...)
-        latest_path, latest_id = crowd_interface._find_latest_show_video()
+        latest_path, latest_id = crowd_interface.find_latest_show_video()
         if not latest_path or not latest_path.exists():
             return jsonify({"error": "No video file found"}), 404
 
@@ -675,7 +675,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         try:
             data = request.get_json() or {}
             recording_id = data.get('recording_id')
-            task_name = data.get('task_name') or crowd_interface._task_name() or 'default'
+            task_name = data.get('task_name') or crowd_interface.task_name() or 'default'
             ext = 'webm'   # VP9-only
             
             if not recording_id:
@@ -762,7 +762,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             try:
                 # Get next filename using the counter system
                 ext = current_recording['ext']
-                filename, index = crowd_interface._next_video_filename(ext)
+                filename, index = crowd_interface.next_video_filename(ext)
                 file_path = crowd_interface._demo_videos_dir / filename
                 
                 # Write all chunks to the file
@@ -780,7 +780,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "ok": True,
                     "filename": filename,
                     "path": str(file_path),
-                    "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
+                    "save_dir_rel": crowd_interface.rel_path_from_repo(file_path.parent),
                     "public_url": public_url,
                     "index": index
                 })
@@ -824,7 +824,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             # Get next filename using the counter system
             ext = current_recording['ext']
-            filename, index = crowd_interface._next_video_filename(ext)
+            filename, index = crowd_interface.next_video_filename(ext)
             file_path = crowd_interface._demo_videos_dir / filename
             
             # Write all chunks to the file
@@ -844,7 +844,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "message": "Recording saved successfully",
                 "filename": filename,
                 "path": str(file_path),
-                "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
+                "save_dir_rel": crowd_interface.rel_path_from_repo(file_path.parent),
                 "public_url": public_url,
                 "index": index
             })

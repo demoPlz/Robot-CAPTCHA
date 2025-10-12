@@ -311,7 +311,7 @@ class CrowdInterface():
         """Root of the repo (backend assumes this file lives under <repo>/scripts or similar)."""
         return (Path(__file__).resolve().parent / "..").resolve()
 
-    def _rel_path_from_repo(self, p: str | Path | None) -> str | None:
+    def rel_path_from_repo(self, p: str | Path | None) -> str | None:
         if not p:
             return None
         try:
@@ -322,7 +322,7 @@ class CrowdInterface():
             return os.path.basename(str(p))
 
     # ---------- Prompt-mode helpers (manual or VLM) ----------
-    def _set_prompt_ready(self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None) -> None:
+    def set_prompt_ready(self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None) -> None:
         """Set text/video prompt fields and mark as ready."""
         state_info["text_prompt"] = text  # Updated field name
         state_info["video_prompt"] = video_id  # Updated field name
@@ -385,7 +385,7 @@ class CrowdInterface():
             pass
         return (max_idx + 1) if max_idx > 0 else 1
 
-    def _next_video_filename(self, ext: str) -> tuple[str, int]:
+    def next_video_filename(self, ext: str) -> tuple[str, int]:
         """Return ('{index}{ext}', index) and atomically increment the counter."""
         if not ext.startswith("."):
             ext = "." + ext
@@ -394,7 +394,7 @@ class CrowdInterface():
             self._video_index += 1
         return f"{idx}{ext}", idx
 
-    def _find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
+    def find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
         """
         VP9-only: resolve <id>.webm inside the show_videos_dir and return its path + mime.
         """
@@ -410,7 +410,7 @@ class CrowdInterface():
         return p, mime
 
     # --- NEW: helper to resolve the latest .webm by numeric filename ---
-    def _find_latest_show_video(self) -> tuple[Path | None, str | None]:
+    def find_latest_show_video(self) -> tuple[Path | None, str | None]:
         """
         Return (path, id_str) of the latest .webm in _show_videos_dir.
         Files must be named like '<number>.webm' (e.g., 1.webm, 2.webm).
@@ -440,7 +440,7 @@ class CrowdInterface():
         """
         cfg = {
             "enabled": bool(self.record_demo_videos),
-            "task_name": (self._task_name() or "default"),
+            "task_name": (self.task_name() or "default"),
             "save_dir_abs": None,
             "save_dir_rel": None,
             "upload_url": "/api/upload-demo-video" if self.record_demo_videos else None,
@@ -454,7 +454,7 @@ class CrowdInterface():
         }
         if self.record_demo_videos and self._demo_videos_dir:
             cfg["save_dir_abs"] = str(self._demo_videos_dir)
-            cfg["save_dir_rel"] = self._rel_path_from_repo(self._demo_videos_dir)
+            cfg["save_dir_rel"] = self.rel_path_from_repo(self._demo_videos_dir)
         return cfg
 
     def set_active_episode(self, episode_id):
@@ -534,7 +534,7 @@ class CrowdInterface():
             print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
             return None
 
-    def _load_obs_from_disk(self, path: str | None) -> dict:
+    def load_obs_from_disk(self, path: str | None) -> dict:
         if not path:
             return {}
         try:
@@ -636,7 +636,7 @@ class CrowdInterface():
                 del self.pending_states_by_episode[episode_id][state_id]
 
     # ---------- Episode → video ----------
-    def _load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
+    def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
         """
         Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing.
         """
@@ -653,12 +653,12 @@ class CrowdInterface():
         """Root folder containing prompts/."""
         return (Path(__file__).resolve().parent / ".." / "prompts").resolve()
 
-    def _task_name(self) -> str:
+    def task_name(self) -> str:
         """Prompt placeholder task name (from --task-name)."""
         return (self.prompt_task_name or "").strip()
 
     def _task_dir(self, task_name: str | None = None) -> Path:
-        tn = task_name or self._task_name()
+        tn = task_name or self.task_name()
         return (self._prompts_root_dir() / tn).resolve()
 
     def _load_text(self, path: Path) -> str:
@@ -711,7 +711,7 @@ class CrowdInterface():
         Reads from prompts/{task-name}/descriptions.txt where each line is a text prompt.
         Line number corresponds to video number.
         """
-        task_name = self._task_name() or ""
+        task_name = self.task_name() or ""
         if not task_name:
             print("Warning: No task name set, cannot load description bank")
             return {"raw_text": "", "entries": []}
@@ -768,7 +768,7 @@ class CrowdInterface():
     def save_episode(self, buffer):
         for state_id in sorted(buffer.keys()):
             state = buffer[state_id]
-            obs = self._load_obs_from_disk(state['obs_path'])
+            obs = self.load_obs_from_disk(state['obs_path'])
             frame = {**obs, "action": state["action_to_save"], "task": state["task_text"]}
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
@@ -901,7 +901,7 @@ class CrowdInterface():
                     m1, m2 = maps
                     rgb = cv2.remap(rgb, m1, m2, interpolation=cv2.INTER_LINEAR)
                 # Pre-encode JPEG base64 (string) for zero-cost serving
-                self._latest_jpeg[name] = self._encode_jpeg_base64(rgb)
+                self._latest_jpeg[name] = self.encode_jpeg_base64(rgb)
             else:
                 time.sleep(backoff)
 
@@ -917,7 +917,7 @@ class CrowdInterface():
             t.start()
             self._cap_threads[name] = t
 
-    def _snapshot_latest_views(self) -> dict[str, str]:
+    def snapshot_latest_views(self) -> dict[str, str]:
         """
         Snapshot the latest **JPEG base64 strings** for each camera.
         We copy dict entries to avoid referencing a dict being mutated by workers.
@@ -935,7 +935,7 @@ class CrowdInterface():
                 out[name] = s
         return out
     
-    def _state_to_json(self, state: dict) -> dict:
+    def state_to_json(self, state: dict) -> dict:
         """
         Build the JSON payload for the labeling frontend:
         - If the state contains 'view_paths', load the state-aligned JPEGs from disk (correct behavior).
@@ -959,7 +959,7 @@ class CrowdInterface():
             views = self._load_views_from_disk(view_paths)
         # Fallback to live previews (older states or missing files)
         if not views:
-            views = self._snapshot_latest_views()
+            views = self.snapshot_latest_views()
         out["views"] = views
         out["camera_poses"] = self._camera_poses
         out["camera_models"] = self._camera_models
@@ -971,13 +971,13 @@ class CrowdInterface():
             video_id = state.get("video_prompt")
             chosen_url = None
             if video_id is not None:
-                p, _ = self._find_show_video_by_id(video_id)
+                p, _ = self.find_show_video_by_id(video_id)
                 if p:
                     chosen_url = f"/api/show-videos/{video_id}"  # serves the exact id
 
             # Fallback: latest available .webm
             if not chosen_url:
-                lp, lid = self._find_latest_show_video()
+                lp, lid = self.find_latest_show_video()
                 if lp and lid:
                     # Stable "latest" URL for the player; resolves dynamically on the server
                     chosen_url = "/api/show-videos/latest.webm"
@@ -987,7 +987,7 @@ class CrowdInterface():
         
         return out
     
-    def _encode_jpeg_base64(self, img_rgb: np.ndarray, quality: int | None = None) -> str:
+    def encode_jpeg_base64(self, img_rgb: np.ndarray, quality: int | None = None) -> str:
         """
         Encode an RGB image to a base64 JPEG data URL.
         """
@@ -1048,7 +1048,7 @@ class CrowdInterface():
                 name, img = item
                 rgb = self._to_uint8_rgb(img)
                 if rgb is not None:
-                    self._latest_obs_jpeg[name] = self._encode_jpeg_base64(rgb)
+                    self._latest_obs_jpeg[name] = self.encode_jpeg_base64(rgb)
             except Exception:
                 pass
             finally:
@@ -1093,7 +1093,7 @@ class CrowdInterface():
         self.next_state_id += 1
 
         # Persist views to disk to avoid storing in memory
-        view_paths = self._persist_views_to_disk(episode_id, state_id, self._snapshot_latest_views()) # legacy
+        view_paths = self._persist_views_to_disk(episode_id, state_id, self.snapshot_latest_views()) # legacy
         
         # Persist obs to disk
         obs_dict_deep_copy = {}
