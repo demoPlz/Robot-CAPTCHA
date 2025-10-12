@@ -16,8 +16,6 @@ from pathlib import Path
 from threading import Thread, Lock, Timer
 from math import cos, sin
 
-from urdfpy import URDF
-
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
@@ -204,8 +202,7 @@ class CrowdInterface():
 
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
-        # Teardown fence
-        self._shutting_down = False
+        
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
 
@@ -660,9 +657,6 @@ class CrowdInterface():
     def _task_dir(self, task_name: str | None = None) -> Path:
         tn = task_name or self.task_name()
         return (self._prompts_root_dir() / tn).resolve()
-
-    def _load_text(self, path: Path) -> str:
-        return path.read_text(encoding="utf-8").strip()
     
     # --- NEW: helpers for critical-state image sequence ---
     def _compute_next_prompt_seq_index(self) -> int:
@@ -1037,7 +1031,7 @@ class CrowdInterface():
         return arr if arr.shape[2] == 3 else None
 
     def _obs_stream_worker(self):
-        while self._obs_img_running and not self._shutting_down:
+        while True:
             try:
                 item = self._obs_img_queue.get(timeout=0.2)
             except queue.Empty:

@@ -21,8 +21,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/get-state")
     def get_state():
-        if crowd_interface._shutting_down:
-            return jsonify({}), 200
         
         state = crowd_interface.get_latest_state()
         
@@ -75,8 +73,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
         try:
-            if crowd_interface._shutting_down:
-                return jsonify({"status": "shutting_down"}), 503
             
             # Validate request data
             data = request.get_json(force=True, silent=True)
@@ -121,8 +117,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
           - 'raw_text': the unparsed text (for debugging or custom parsing)
         """
         try:
-            if crowd_interface._shutting_down:
-                return jsonify({"ok": False, "error": "shutting_down"}), 503
             bank = crowd_interface.get_description_bank()
             return jsonify({"ok": True, "task_name": (crowd_interface.task_name() or "default"),
                             "entries": bank["entries"], "raw_text": bank["raw_text"]})
@@ -143,8 +137,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
           - description_bank / description_bank_text
         """
         try:
-            if crowd_interface._shutting_down:
-                return jsonify({"ok": False, "error": "shutting_down"}), 503
 
             ep = request.args.get("episode_id", type=int)
             sid = request.args.get("state_id", type=int)
@@ -227,9 +219,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         }
         """
         try:
-            if crowd_interface._shutting_down:
-                return jsonify({"ok": False, "error": "shutting_down"}), 503
-
             data = request.get_json(force=True, silent=True) or {}
             ep_raw = data.get("episode_id")
             if ep_raw is None:
@@ -481,8 +470,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         
     @app.route("/api/save-gripper-tips", methods=["POST"])
     def save_gripper_tips():
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
         try:
             data = request.get_json(force=True, silent=True) or {}
             calib = data.get("gripper_tip_calib") or {}
@@ -498,9 +485,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/demo-videos/<filename>")
     def serve_demo_video(filename):
         """Serve demo video files for the frontend example video feature."""
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
-        
         if not crowd_interface._demo_videos_dir:
             return jsonify({"error": "Demo videos directory not configured"}), 404
         
@@ -537,8 +521,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         Serve read-only example videos by numeric id from prompts/{task-name}/videos (or custom dir).
         This endpoint is independent of the recording feature and supports HTTP Range.
         """
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
 
         if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
             return jsonify({"error": "Show demo videos is not enabled"}), 404
@@ -602,8 +584,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         Content-Type: video/webm
         Accept-Ranges: bytes
         """
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
 
         if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
             return jsonify({"error": "Show demo videos is not enabled"}), 404
@@ -666,8 +646,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     def record_start():
         nonlocal current_recording
         
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
         
         if not crowd_interface.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
@@ -701,8 +679,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     def record_chunk():
         nonlocal current_recording
         
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
         
         if not crowd_interface.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
@@ -734,9 +710,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/record/stop", methods=["POST"])
     def record_stop():
         nonlocal current_recording
-        
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
         
         if not crowd_interface.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
@@ -799,8 +772,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         nonlocal current_recording
         
         """Manual save endpoint for demo video recordings"""
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
         
         if not crowd_interface.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
