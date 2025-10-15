@@ -4,7 +4,6 @@ from flask_cors import CORS
 from flask import Flask, jsonify, Response
 from flask import request, make_response
 import traceback
-import time
 from pathlib import Path
 import json
 import os
