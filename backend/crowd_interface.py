@@ -8,6 +8,7 @@ import base64
 import random
 import queue
 import json
+import subprocess
 
 import datasets
 import re
@@ -23,7 +24,7 @@ REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
-    "front":       18,   # change indices / paths as needed
+    "front":       12,   # change indices / paths as needed
     "left":        4,
     "right":       2,
     "perspective": 0,
@@ -37,7 +38,7 @@ JOINT_NAMES = [
 
 # Per-camera calibration file paths (extend as you calibrate more cams)
 # Use T_three from extrinsics (camera world for Three.js) and map1/map2 from intrinsics to undistort.
-CALIB_PATHS = {
+REAL_CALIB_PATHS = {
     "front": {
         "intr": "calib/intrinsics_front_1_640x480.npz",
         "extr": "calib/extrinsics_front_1.npz",
@@ -54,6 +55,13 @@ CALIB_PATHS = {
         "intr": "calib/intrinsics_perspective_4_640x480.npz",
         "extr": "calib/extrinsics_perspective_4.npz",
     },
+}
+
+SIM_CALIB_PATHS = {
+    "front": "calib/calibration_front_sim.json",
+    "left": "calib/calibration_left_sim.json",
+    "right": "calib/calibration_right_sim.json",
+    "perspective": "calib/calibration_top_sim.json",
 }
 
 _REALSENSE_BLOCKLIST = (
@@ -112,7 +120,7 @@ class CrowdInterface():
                  prompt_sequence_dir: str | None = None,
                  prompt_sequence_clear: bool = False,
                  # used ONLY for prompt substitution and demo assets
-                 prompt_task_name: str | None = None,
+                 task_name: str | None = None,
                  # --- demo video recording ---
                  record_demo_videos: bool = False,
                  demo_videos_dir: str | None = None,
@@ -120,10 +128,15 @@ class CrowdInterface():
                  # --- read-only demo video display (independent of recording) ---
                  show_demo_videos: bool = False,
                  show_videos_dir: str | None = None,
+                 # ---sim---
+                 use_sim: bool = True
     ):
         
-        # --- UI prompt mode (simple vs VLM vs MANUAL) ---
+        # --- UI prompt mode (simple vs MANUAL) ---
         self.use_manual_prompt = bool(use_manual_prompt or int(os.getenv("USE_MANUAL_PROMPT", "0")))
+
+        # --- Sim ---
+        self.use_sim = use_sim
 
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
@@ -181,7 +194,7 @@ class CrowdInterface():
         # Task used for UI fallback and dataset frames → always cfg.single_task (set in init_dataset)
         self.task_text = None
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
-        self.prompt_task_name = (prompt_task_name or None)
+        self.task_name = task_name
 
         # Background capture state
         self._cap_threads: dict[str, Thread] = {}
@@ -226,12 +239,7 @@ class CrowdInterface():
         # Track which states have been saved to maintain chronological ordering
         self._saved_sequence_states: set[tuple[str, int]] = set()  # (episode_id, state_id)
         self._max_saved_state_id: int | None = None
-        # If a sequence dir was set but no prompt_task_name, infer prompt task from the leaf folder
-        if (self.prompt_task_name is None) and prompt_sequence_dir:
-            try:
-                self.prompt_task_name = Path(prompt_sequence_dir).name
-            except Exception:
-                pass
+
         if self.save_maincam_sequence:
             try:
                 self._prompt_seq_dir.mkdir(parents=True, exist_ok=True)
@@ -263,7 +271,7 @@ class CrowdInterface():
                 self._demo_videos_dir = Path(demo_videos_dir).resolve()
             else:
                 # Default: prompts/demos/{task-name}/videos
-                task_name = self.prompt_task_name or "default"
+                task_name = self.task_name
                 repo_root = Path(__file__).resolve().parent / ".."
                 self._demo_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
             
@@ -296,7 +304,7 @@ class CrowdInterface():
             if show_videos_dir:
                 self._show_videos_dir = Path(show_videos_dir).resolve()
             else:
-                task_name = self.prompt_task_name or "default"
+                task_name = self.task_name or "default"
                 repo_root = Path(__file__).resolve().parent / ".."
                 self._show_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
 
@@ -582,16 +590,68 @@ class CrowdInterface():
         """
         Load per-camera extrinsics (→ camera_poses) and intrinsics (→ undistortion  Knew for projection).
         Falls back to placeholder poses for any camera missing calibrations.
+        
+        In sim mode: loads both real calibrations (for camera operations) and sim calibrations (for frontend).
+        In real mode: loads real calibrations only.
         """
         poses = self._make_camera_poses()  # start with fallbacks
         self._undistort_maps = {}
         self._camera_models = {}
 
-        # Base directory for optional manual overrides: ../calib/manual_calibration_{name}.json
+        # Base directory for calibration files
         base_dir = Path(__file__).resolve().parent
         manual_dir = (base_dir / ".." / "calib").resolve()
 
-        for name, paths in CALIB_PATHS.items():
+        if self.use_sim:
+            # In sim mode: load sim calibrations directly for frontend
+            # (real calibrations are loaded for camera operations but not used for frontend)
+            return self._load_sim_calibrations_for_frontend(poses, manual_dir)
+        else:
+            # In real mode: load real calibrations + manual overrides for frontend
+            return self._load_real_calibrations_for_frontend(poses, manual_dir)
+
+    def _load_sim_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
+        """Load sim calibrations directly from SIM_CALIB_PATHS for frontend use."""
+        for name in ["front", "left", "right", "perspective"]:
+            if name not in SIM_CALIB_PATHS:
+                continue
+                
+            sim_file = SIM_CALIB_PATHS[name]
+            if not os.path.exists(sim_file):
+                print(f"⚠️ Sim calibration file not found: {sim_file}")
+                continue
+                
+            try:
+                with open(sim_file, "r", encoding="utf-8") as f:
+                    scal = json.load(f)
+                
+                intr_s = (scal or {}).get("intrinsics") or {}
+                extr_s = (scal or {}).get("extrinsics") or {}
+                
+                # Load extrinsics
+                if "T_three" in extr_s and isinstance(extr_s["T_three"], list):
+                    poses[f"{name}_pose"] = extr_s["T_three"]
+                    print(f"✓ loaded SIM extrinsics for '{name}' from {sim_file}")
+                
+                # Load intrinsics
+                if all(k in intr_s for k in ("width", "height", "Knew")):
+                    self._camera_models[name] = {
+                        "model": "pinhole",
+                        "rectified": False,  # Sim calibrations don't have undistort maps
+                        "width": int(intr_s["width"]),
+                        "height": int(intr_s["height"]),
+                        "Knew": intr_s["Knew"],
+                    }
+                    print(f"✓ loaded SIM intrinsics for '{name}' from {sim_file}")
+                    
+            except Exception as e:
+                print(f"⚠️ Failed to load sim calibration for '{name}' from {sim_file}: {e}")
+        
+        return poses
+
+    def _load_real_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
+        """Load real calibrations + manual overrides for frontend use."""
+        for name, paths in REAL_CALIB_PATHS.items():
             if not paths:
                 continue
 
@@ -617,7 +677,7 @@ class CrowdInterface():
                 except Exception as e:
                     print(f"⚠️  failed to load extrinsics for '{name}' ({extr}): {e}")
 
-            # ---- Load intrinsics → undistortion maps  Knew for projection ----
+            # ---- Load intrinsics → undistortion maps + Knew for projection ----
             intr = paths.get("intr")
             if intr and os.path.exists(intr):
                 try:
@@ -960,12 +1020,15 @@ class CrowdInterface():
 
             # Critical state fields
             "critical": False,
-            "prompt_ready": False,
+            "prompt_ready": False if self.use_manual_prompt else True,
             "text_prompt": None, # replaces flex_text_prompt
             "video_prompt": None, # replaces flex_video_id
 
             # Task
-            "task_text": self.task_text
+            "task_text": self.task_text,
+
+            # Sim
+            "sim_ready": False if self.use_sim else True
 
             # No other fields; segmentation, and all others, no longer supported\
         }
@@ -1003,6 +1066,14 @@ class CrowdInterface():
 
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
+
+            # Capture sim views for critical states when using sim
+            if self.use_sim:
+                sim_success = self.get_initial_views_from_sim(info)
+                info['sim_ready'] = sim_success
+            else:
+                info['sim_ready'] = True  # Not using sim, so always ready
+            
 
     def auto_label_previous_states(self, critical_state_id):
         self.auto_label_queue.put_nowait(critical_state_id)
@@ -1138,7 +1209,7 @@ class CrowdInterface():
             
             state_info = self.pending_states_by_episode[episode_id][state_id]
 
-            if state_info['critical'] and not state_info['prompt_ready']:
+            if state_info['critical'] and (not state_info['prompt_ready'] or not state_info['sim_ready']):
                 # There are pending states but no ready states
 
                 return {
@@ -1395,10 +1466,6 @@ class CrowdInterface():
         """Root folder containing prompts/."""
         return (Path(__file__).resolve().parent / ".." / "prompts").resolve()
 
-    def task_name(self) -> str:
-        """Prompt placeholder task name (from --task-name)."""
-        return (self.prompt_task_name or "").strip()
-
     def _task_dir(self, task_name: str | None = None) -> Path:
         tn = task_name or self.task_name()
         return (self._prompts_root_dir() / tn).resolve()
@@ -1491,7 +1558,7 @@ class CrowdInterface():
         """
         cfg = {
             "enabled": bool(self.record_demo_videos),
-            "task_name": (self.task_name() or "default"),
+            "task_name": self.task_name,
             "save_dir_abs": None,
             "save_dir_rel": None,
             "upload_url": "/api/upload-demo-video" if self.record_demo_videos else None,
@@ -1538,7 +1605,7 @@ class CrowdInterface():
         Reads from prompts/{task-name}/descriptions.txt where each line is a text prompt.
         Line number corresponds to video number.
         """
-        task_name = self.task_name() or ""
+        task_name = self.task_name
         if not task_name:
             print("Warning: No task name set, cannot load description bank")
             return {"raw_text": "", "entries": []}
@@ -1560,6 +1627,132 @@ class CrowdInterface():
             "raw_text": raw_text,
             "entries": self._parse_description_bank_entries(str(file_path))
         }
+    
+    # =========================
+    # Sim
+    # =========================
+    def get_initial_views_from_sim(self, state_info) -> bool:
+        """
+        Capture initial views from Isaac Sim and update state_info's view_paths.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            isaac_sim_path = os.environ.get('ISAAC_SIM_PATH')
+            
+            # Paths
+            repo_root = self._repo_root()
+            view_capture_worker_path = repo_root / "backend/isaac_sim/initial_view_capture.py"
+            python_executable = os.path.join(isaac_sim_path, "python.sh")
+            
+            # Extract info from state_info
+            episode_id = state_info.get("episode_id", "unknown")
+            state_id = state_info.get("state_id", 0)
+            joint_positions = state_info.get("joint_positions", {})
+            
+            # Convert joint positions dict to list for JSON serialization
+            joint_positions_list = []
+            for joint_name in JOINT_NAMES:
+                joint_positions_list.append(joint_positions.get(joint_name, 0.0))
+            
+            # Create config for Isaac Sim worker
+            config = {
+                "usd_path": f"public/assets/usd/{self.task_name}.usd",
+                "robot_joints": joint_positions_list,
+                "object_poses": {
+                    "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                }
+            }
+            
+            # Create temporary directory for this episode
+            output_dir = self._episode_cache_dir(episode_id) / "sim_views" / f"state_{state_id}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write config file
+            config_file = output_dir / "config.json"
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            print(f"🎥 Starting Isaac Sim view capture for episode {episode_id}, state {state_id}...")
+            
+            # Run Isaac Sim worker
+            cmd = [
+                python_executable,
+                str(view_capture_worker_path),
+                "--config", str(config_file),
+                "--output-dir", str(output_dir)
+            ]
+            
+            # Run the command and capture output
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minute timeout
+                cwd=str(repo_root)
+            )
+            
+            if result.returncode != 0:
+                print(f"⚠️ Isaac Sim worker failed with return code {result.returncode}")
+                print(f"STDERR: {result.stderr}")
+                return False
+            
+            # Parse the JSON output from Isaac Sim worker
+            try:
+                # The worker outputs JSON to stdout
+                output_lines = result.stdout.strip().split('\n')
+                json_output = None
+                for line in reversed(output_lines):  # Check from end for JSON
+                    try:
+                        json_output = json.loads(line)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+                
+                if not json_output or json_output.get("status") != "success":
+                    print(f"⚠️ Isaac Sim worker didn't return success status")
+                    print(f"Output: {result.stdout}")
+                    return False
+                
+            except Exception as e:
+                print(f"⚠️ Failed to parse Isaac Sim worker output: {e}")
+                print(f"Output: {result.stdout}")
+                return False
+            
+            # Map Isaac Sim camera names to our expected camera names
+            sim_to_our_mapping = {
+                "front_rgb": "front",
+                "left_rgb": "left", 
+                "right_rgb": "right",
+                "top_rgb": "perspective"  # Map top to perspective
+            }
+            
+            # Build view_paths dict using the final robot-visible images
+            view_paths = {}
+            for sim_name, our_name in sim_to_our_mapping.items():
+                if sim_name in json_output:
+                    img_path = json_output[sim_name]
+                    if os.path.exists(img_path):
+                        view_paths[our_name] = img_path
+                        print(f"✓ Captured sim view for '{our_name}': {img_path}")
+                    else:
+                        print(f"⚠️ Sim view file not found: {img_path}")
+            
+            # Update the state_info with new view_paths
+            if view_paths:
+                state_info["view_paths"] = view_paths
+                return True
+            
+        except subprocess.TimeoutExpired:
+            print("⚠️ Isaac Sim worker timed out")
+            return False
+        except Exception as e:
+            print(f"⚠️ Isaac Sim view capture failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
 
     # =========================
     # Miscellaneous

@@ -30,6 +30,9 @@ class CrowdInterfaceConfig():
         self.ui_demo_videos_dir: str | None = None
         self.clear_ui_demo_videos_dir: bool = False
 
+        # Sim
+        self.use_sim: bool = True
+
     @classmethod
     def from_cli_args(cls, argv=None):
         """
@@ -47,6 +50,7 @@ class CrowdInterfaceConfig():
         parser.add_argument("--record-ui-demo-videos", action="store_true")
         parser.add_argument("--ui-demo-videos-dir", type=str)
         parser.add_argument("--clear-ui-demo-videos-dir", action="store_true")
+        parser.add_argument("--use_sim", action="store_true")
         
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
         
@@ -75,6 +79,8 @@ class CrowdInterfaceConfig():
             config.ui_demo_videos_dir = args.ui_demo_videos_dir
         if args.clear_ui_demo_videos_dir:
             config.clear_ui_demo_videos_dir = True
+        if args.use_sim:
+            config.use_sim = True
             
         return config
 
@@ -84,12 +90,14 @@ class CrowdInterfaceConfig():
         Maps config fields to the expected CrowdInterface parameter names.
         """
         kwargs = {
+            "task_name": self.task_name,
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
             "autofill_critical_states": self.autofill_critical_states,
             "num_autofill_actions": self.num_autofill_actions,
             "use_manual_prompt": self.use_manual_prompt,
             "show_demo_videos": self.show_demo_videos,
+            "use_sim": self.use_sim
         }
         
         # Handle demo video recording settings
@@ -99,12 +107,5 @@ class CrowdInterfaceConfig():
                 kwargs["demo_videos_dir"] = self.ui_demo_videos_dir
             if self.clear_ui_demo_videos_dir:
                 kwargs["demo_videos_clear"] = True
-        
-        # Handle task name for prompt substitution
-        if self.task_name:
-            # Sanitize task name
-            safe_name = "".join(c for c in self.task_name if (c.isalnum() or c in ("_", "-"))).strip()
-            if safe_name:
-                kwargs["prompt_task_name"] = safe_name
         
         return kwargs

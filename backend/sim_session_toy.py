@@ -4,7 +4,7 @@ from PIL import Image
 from isaacsim import SimulationApp
 
 # Start the simulation
-simulation_app = SimulationApp({"headless": False})
+simulation_app = SimulationApp({"headless": True})
 
 import requests
 import numpy as np
@@ -99,7 +99,7 @@ world.reset()
 # Initialize cameras AFTER world.reset()
 for camera in all_cameras:
     camera.initialize()
-    camera.set_resolution((1080,1080))
+    camera.set_resolution((640,480))
     original_h_aperture = camera.get_horizontal_aperture()
     original_v_aperture = camera.get_vertical_aperture()
     
@@ -109,6 +109,62 @@ for camera in all_cameras:
     camera.set_vertical_aperture(original_v_aperture * zoom_factor)
     
     camera.add_rgb_to_frame()
+
+#####################################################################
+# One time calibration save
+#####################################################################
+import json
+for camera_name, camera in cameras.items():
+    # Get intrinsic parameters
+    width, height = camera.get_resolution()
+    focal_length = camera.get_focal_length()
+    horizontal_aperture = camera.get_horizontal_aperture()
+    vertical_aperture = camera.get_vertical_aperture()
+    
+    # Calculate intrinsic matrix (K)
+    # Focal length in pixels = focal_length * resolution / aperture
+    fx = focal_length * width / horizontal_aperture
+    fy = focal_length * height / vertical_aperture
+    cx = width / 2.0
+    cy = height / 2.0
+    
+    # Get extrinsic parameters (camera pose in world coordinates)
+    position, orientation = camera.get_world_pose()
+    
+    # Convert quaternion (WXYZ) to rotation matrix
+    from scipy.spatial.transform import Rotation
+    quat_wxyz = [orientation[0], orientation[1], orientation[2], orientation[3]]
+    rotation_matrix = Rotation.from_quat([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]).as_matrix()
+    
+    # Create 4x4 transformation matrix
+    T_matrix = np.eye(4)
+    T_matrix[:3, :3] = rotation_matrix
+    T_matrix[:3, 3] = position
+    
+    # Create calibration data structure
+    calibration_data = {
+        "camera": camera_name.lower().replace('camera_', ''),
+        "intrinsics": {
+            "width": int(width),
+            "height": int(height),
+            "Knew": [
+                [fx, 0, cx],
+                [0, fy, cy],
+                [0, 0, 1]
+            ]
+        },
+        "extrinsics": {
+            "T_three": T_matrix.tolist()
+        }
+    }
+    
+    # Save to file
+    filename = f"calib/calibration_{camera_name.lower().replace('camera_', '')}_sim.json"
+    with open(filename, 'w') as f:
+        json.dump(calibration_data, f, indent=2)
+    
+    print(f"Saved calibration for {camera_name} to {filename}")
+#####################################################################
 
 robot.set_joint_positions(initial_q)
 
@@ -169,8 +225,8 @@ Image.fromarray(left_rgb).save('left_image.png')
 Image.fromarray(right_rgb).save('right_image.png')
 Image.fromarray(top_rgb).save('top_image.png')
 
-while simulation_app.is_running():
-    # This step advances physics and renders the scene
-    world.step(render=True)
+# while simulation_app.is_running():
+#     # This step advances physics and renders the scene
+#     world.step(render=True)
 
 simulation_app.close()
