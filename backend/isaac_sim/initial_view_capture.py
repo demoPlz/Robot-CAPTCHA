@@ -97,13 +97,6 @@ def main():
         for camera in all_cameras:
             camera.initialize()
             camera.set_resolution((640,480))
-            original_h_aperture = camera.get_horizontal_aperture()
-            original_v_aperture = camera.get_vertical_aperture()
-            
-            # Apply zoom by reducing aperture size - exactly like test.py
-            zoom_factor = 1 / 2.5  # 1.7 x zoom
-            camera.set_horizontal_aperture(original_h_aperture * zoom_factor)
-            camera.set_vertical_aperture(original_v_aperture * zoom_factor)
             
             camera.add_rgb_to_frame()
 

@@ -61,7 +61,7 @@ SIM_CALIB_PATHS = {
     "front": "calib/calibration_front_sim.json",
     "left": "calib/calibration_left_sim.json",
     "right": "calib/calibration_right_sim.json",
-    "perspective": "calib/calibration_top_sim.json",
+    "top": "calib/calibration_top_sim.json",
 }
 
 _REALSENSE_BLOCKLIST = (
@@ -403,7 +403,7 @@ class CrowdInterface():
         We copy dict entries to avoid referencing a dict being mutated by workers.
         """
         out: dict[str, str] = {}
-        for name in ("left", "right", "front", "perspective"):
+        for name in ("left", "right", "front", "top"):
             s = self._latest_jpeg.get(name)
             if s is not None:
                 out[name] = s
@@ -583,7 +583,7 @@ class CrowdInterface():
             "front_pose":       euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
             "left_pose":        euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
             "right_pose":       euler_pose(0.2,  1.0, 0.15, np.pi/2, 0.0, np.pi),
-            "perspective_pose": euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
+            "top_pose": euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
         }
     
     def _load_calibrations(self) -> dict[str, list]:
@@ -612,7 +612,7 @@ class CrowdInterface():
 
     def _load_sim_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
         """Load sim calibrations directly from SIM_CALIB_PATHS for frontend use."""
-        for name in ["front", "left", "right", "perspective"]:
+        for name in ["front", "left", "right", "top"]:
             if name not in SIM_CALIB_PATHS:
                 continue
                 
@@ -642,7 +642,20 @@ class CrowdInterface():
                         "height": int(intr_s["height"]),
                         "Knew": intr_s["Knew"],
                     }
-                    print(f"✓ loaded SIM intrinsics for '{name}' from {sim_file}")
+                    
+                    # Add orthographic projection parameters if present
+                    if "projection_type" in scal:
+                        self._camera_models[name]["projection_type"] = scal["projection_type"]
+                    if "orthographic_width" in intr_s:
+                        self._camera_models[name]["orthographic_width"] = intr_s["orthographic_width"]
+                    if "orthographic_height" in intr_s:
+                        self._camera_models[name]["orthographic_height"] = intr_s["orthographic_height"]
+                    if "scale_x" in intr_s:
+                        self._camera_models[name]["scale_x"] = intr_s["scale_x"]
+                    if "scale_y" in intr_s:
+                        self._camera_models[name]["scale_y"] = intr_s["scale_y"]
+                    
+                    print(f"✓ loaded SIM intrinsics for '{name}' from {sim_file} (projection: {scal.get('projection_type', 'perspective')})")
                     
             except Exception as e:
                 print(f"⚠️ Failed to load sim calibration for '{name}' from {sim_file}: {e}")
@@ -1725,7 +1738,7 @@ class CrowdInterface():
                 "front_rgb": "front",
                 "left_rgb": "left", 
                 "right_rgb": "right",
-                "top_rgb": "perspective"  # Map top to perspective
+                "top_rgb": "top"  # Map top to top
             }
             
             # Build view_paths dict using the final robot-visible images

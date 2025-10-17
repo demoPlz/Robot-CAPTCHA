@@ -115,18 +115,15 @@ for camera in all_cameras:
 #####################################################################
 import json
 for camera_name, camera in cameras.items():
-    # Get intrinsic parameters
+    # Get basic parameters
     width, height = camera.get_resolution()
-    focal_length = camera.get_focal_length()
-    horizontal_aperture = camera.get_horizontal_aperture()
-    vertical_aperture = camera.get_vertical_aperture()
     
-    # Calculate intrinsic matrix (K)
-    # Focal length in pixels = focal_length * resolution / aperture
-    fx = focal_length * width / horizontal_aperture
-    fy = focal_length * height / vertical_aperture
-    cx = width / 2.0
-    cy = height / 2.0
+    # Check if camera is orthographic or perspective
+    # In Isaac Sim, check the camera prim's projection type
+    camera_prim = camera.prim
+    projection_type = camera_prim.GetAttribute('projection').Get() if camera_prim.GetAttribute('projection') else 'perspective'
+    
+    print(f"Camera {camera_name} projection type: {projection_type}")
     
     # Get extrinsic parameters (camera pose in world coordinates)
     position, orientation = camera.get_world_pose()
@@ -141,29 +138,81 @@ for camera_name, camera in cameras.items():
     T_matrix[:3, :3] = rotation_matrix
     T_matrix[:3, 3] = position
     
-    # Create calibration data structure
-    calibration_data = {
-        "camera": camera_name.lower().replace('camera_', ''),
-        "intrinsics": {
-            "width": int(width),
-            "height": int(height),
-            "Knew": [
-                [fx, 0, cx],
-                [0, fy, cy],
-                [0, 0, 1]
-            ]
-        },
-        "extrinsics": {
-            "T_three": T_matrix.tolist()
+    if projection_type == 'orthographic':
+        # For orthographic cameras, get the orthographic width/height
+        horizontal_aperture = camera.get_horizontal_aperture()
+        vertical_aperture = camera.get_vertical_aperture()
+        
+        # Orthographic projection matrix parameters
+        # Scale factors (world units per pixel)
+        scale_x = horizontal_aperture / width   # world units per pixel in X
+        scale_y = vertical_aperture / height    # world units per pixel in Y
+        cx = width / 2.0
+        cy = height / 2.0
+        
+        # Create orthographic intrinsic "matrix" (not standard pinhole model)
+        # For orthographic: pixel_x = (world_x / scale_x) + cx
+        ortho_matrix = [
+            [1.0 / scale_x, 0, cx],  # 1/scale_x converts world units to pixels
+            [0, 1.0 / scale_y, cy],  # 1/scale_y converts world units to pixels  
+            [0, 0, 1]
+        ]
+        
+        calibration_data = {
+            "camera": camera_name.lower().replace('camera_', ''),
+            "projection_type": "orthographic",
+            "intrinsics": {
+                "width": int(width),
+                "height": int(height),
+                "orthographic_width": horizontal_aperture,   # World units visible horizontally
+                "orthographic_height": vertical_aperture,    # World units visible vertically
+                "scale_x": scale_x,                          # World units per pixel X
+                "scale_y": scale_y,                          # World units per pixel Y
+                "Knew": ortho_matrix                         # Pseudo-intrinsic matrix
+            },
+            "extrinsics": {
+                "T_three": T_matrix.tolist()
+            }
         }
-    }
+        
+    else:
+        # Perspective projection (original code)
+        focal_length = camera.get_focal_length()
+        horizontal_aperture = camera.get_horizontal_aperture()
+        vertical_aperture = camera.get_vertical_aperture()
+        
+        # Calculate intrinsic matrix (K) for perspective cameras
+        fx = focal_length * width / horizontal_aperture
+        fy = focal_length * height / vertical_aperture
+        cx = width / 2.0
+        cy = height / 2.0
+        
+        calibration_data = {
+            "camera": camera_name.lower().replace('camera_', ''),
+            "projection_type": "perspective",
+            "intrinsics": {
+                "width": int(width),
+                "height": int(height),
+                "focal_length": focal_length,
+                "horizontal_aperture": horizontal_aperture,
+                "vertical_aperture": vertical_aperture,
+                "Knew": [
+                    [fx, 0, cx],
+                    [0, fy, cy],
+                    [0, 0, 1]
+                ]
+            },
+            "extrinsics": {
+                "T_three": T_matrix.tolist()
+            }
+        }
     
     # Save to file
-    filename = f"calib/calibration_{camera_name.lower().replace('camera_', '')}_sim.json"
+    filename = f"calibration_{camera_name.lower().replace('camera_', '')}_sim.json"
     with open(filename, 'w') as f:
         json.dump(calibration_data, f, indent=2)
     
-    print(f"Saved calibration for {camera_name} to {filename}")
+    print(f"Saved calibration for {camera_name} to {filename} (projection: {projection_type})")
 #####################################################################
 
 robot.set_joint_positions(initial_q)

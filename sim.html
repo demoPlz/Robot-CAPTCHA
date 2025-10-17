@@ -1289,8 +1289,8 @@ function apiFetch(path, options = {}) {
 
 /* ---------- imports ---------- */
 import * as THREE                    from 'three';
-import { OrbitControls }             from 'three/examples/jsm/controls/OrbitControls.js';
 import URDFLoader                    from 'urdf-loader';
+
 import {
   urdfRobotToIKRoot,
   setIKFromUrdf,
@@ -2765,15 +2765,28 @@ function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
 
   renderer.setClearColor(0x000000, 0); // fully transparent canvas
   
-  const camera = templateCamera.clone();
+  // Create appropriate camera type based on model
+  let camera;
+  if (cameraModel && cameraModel.projection_type === 'orthographic') {
+    // Create orthographic camera with default parameters (will be updated later)
+    camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
+    camera.position.copy(templateCamera.position);
+    camera.quaternion.copy(templateCamera.quaternion);
+  } else {
+    // Use perspective camera (default)
+    camera = templateCamera.clone();
+  }
   
   const container = document.createElement('div');
   container.className = 'view-container';
   container.dataset.viewName = viewName;
+  
   // Camera feed as CSS background, centered and cropped like the canvas
   if (imageSrc) {
     container.style.background = `center / cover no-repeat url("${imageSrc}")`;
   }
+  
+
   
   container.appendChild(renderer.domElement);
   viewsGrid.appendChild(container);
@@ -2920,7 +2933,16 @@ loader.load(
 
     console.log('Using API Base URL:', API_BASE_URL);
 
-    scene.add(robot);
+    // Create a wrapper group to position the robot
+    const robotGroup = new THREE.Group();
+    robotGroup.position.z = 0.025; // Raise by 0.025 units
+    robotGroup.add(robot);
+    scene.add(robotGroup);
+    
+    console.log('[DEBUG] Robot loaded and added to scene with 0.025 offset:', robot);
+    console.log('[DEBUG] Robot position:', robot.position);
+    console.log('[DEBUG] Robot children count:', robot.children.length);
+    console.log('[DEBUG] Scene children count:', scene.children.length);
 
     /* === Gold tint helpers (applies to both opaque + ghost) ================== */
     const GOLD_HEX           = 0xffc83d;   // warm gold
@@ -2969,9 +2991,6 @@ loader.load(
 
     // Which links should be visible outside animation:
     const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
-
-    // Start in minimal mode
-    showOnlySpecifiedLinks(robot, MINIMAL_LINKS);
 
     // Helpers to flip visibility modes
     function showAllRobotMeshes() {
@@ -3062,12 +3081,15 @@ loader.load(
       });
     }
 
-    let robotVisible = false; // toggle visibility of the robot model
-    robot.visible = false;     // hide arm until user moves a slider
+    let robotVisible = true;  // toggle visibility of the robot model
+    robot.visible = true;     // keep robot always visible
     let toggleRobotBtn = null;
 
     // --- Visibility policy: show minimal meshes only after *pose* changes ---
     let userHasAdjustedPose = false; // set to true on first translation/rotation change
+
+    // Initialize robot with the same state as when dragged
+    revealMinimalRobotFromPose();
 
     function revealMinimalRobotFromPose() {
       // Idempotent - call when the user actually adjusts the pose (drag/slider)
@@ -3743,20 +3765,40 @@ loader.load(
       const vw = sz.x, vh = sz.y;
       const sx = vw / W, sy = vh / H;
 
-      const fx = K[0][0] * sx, fy = K[1][1] * sy;
-      const cx = K[0][2] * sx, cy = K[1][2] * sy;
+      // Check if this is an orthographic camera
+      if (model.projection_type === 'orthographic') {
+        // Use exact orthographic projection parameters from calibration
+        const orthoWidth = model.orthographic_width || 1.0;
+        const orthoHeight = model.orthographic_height || 1.0;
+        
+        // Use the calibrated dimensions exactly as specified
+        const left = -orthoWidth / 2;
+        const right = orthoWidth / 2;
+        const top = orthoHeight / 2;
+        const bottom = -orthoHeight / 2;
+        
+        const P = new THREE.Matrix4().makeOrthographic(left, right, top, bottom, near, far);
+        camera.projectionMatrix.copy(P);
+        camera.projectionMatrixInverse.copy(P).invert();
+        camera.projectionMatrixAutoUpdate = false;
+        return true;
+      } else {
+        // Use perspective projection (original code)
+        const fx = K[0][0] * sx, fy = K[1][1] * sy;
+        const cx = K[0][2] * sx, cy = K[1][2] * sy;
 
-      // OpenCV pixels (origin top-left, +y down) → Three frustum (y up)
-      const left   = -cx * near / fx;
-      const right  =  (vw - cx) * near / fx;
-      const top    =  cy * near / fy;
-      const bottom = -(vh - cy) * near / fy;
+        // OpenCV pixels (origin top-left, +y down) → Three frustum (y up)
+        const left   = -cx * near / fx;
+        const right  =  (vw - cx) * near / fx;
+        const top    =  cy * near / fy;
+        const bottom = -(vh - cy) * near / fy;
 
-      const P = new THREE.Matrix4().makePerspective(left, right, top, bottom, near, far);
-      camera.projectionMatrix.copy(P);
-      camera.projectionMatrixInverse.copy(P).invert();
-      camera.projectionMatrixAutoUpdate = false;
-      return true;
+        const P = new THREE.Matrix4().makePerspective(left, right, top, bottom, near, far);
+        camera.projectionMatrix.copy(P);
+        camera.projectionMatrixInverse.copy(P).invert();
+        camera.projectionMatrixAutoUpdate = false;
+        return true;
+      }
     }
 
     function applyDefaultPerspective(view) {
@@ -3782,6 +3824,66 @@ loader.load(
       
       return true;
     }
+
+
+
+    function addCameraVisualization() {
+      // Remove any existing camera visualizations
+      const existingCameras = scene.children.filter(child => child.userData.isCameraVisualization);
+      existingCameras.forEach(cam => scene.remove(cam));
+      
+      // Add visual representations of ALL cameras (including front)
+      Object.keys(camPoses).forEach(poseKey => {
+        const viewName = poseKey.replace('_pose', '');
+        const pose = camPoses[poseKey];
+        if (!pose) return;
+        
+        // Get the view to check camera type
+        const view = views.get(viewName);
+        let helperCamera;
+        
+        if (view && view.model && view.model.projection_type === 'orthographic') {
+          // Create orthographic camera for helper
+          const orthoWidth = view.model.orthographic_width || 1.0;
+          const orthoHeight = view.model.orthographic_height || 1.0;
+          helperCamera = new THREE.OrthographicCamera(
+            -orthoWidth/2, orthoWidth/2,    // left, right
+            orthoHeight/2, -orthoHeight/2,  // top, bottom  
+            0.1, 1                          // near, far
+          );
+        } else {
+          // Create perspective camera for helper (default)
+          helperCamera = new THREE.PerspectiveCamera(45, 1, 0.1, 1);
+        }
+        
+        // Create camera helper
+        const cameraHelper = new THREE.CameraHelper(helperCamera);
+        
+        // Apply camera pose
+        const m = poseToMatrix(pose);
+        cameraHelper.matrix.copy(m);
+        cameraHelper.matrixAutoUpdate = false;
+        
+        // Color code cameras (including front)
+        const colors = {
+          'front': 0xffff00,         // Yellow
+          'left': 0xff0000,          // Red
+          'right': 0x00ff00,         // Green  
+          'perspective': 0x0000ff    // Blue
+        };
+        cameraHelper.material.color.setHex(colors[viewName] || 0xffffff);
+        
+        // Mark as camera visualization for easy removal
+        cameraHelper.userData.isCameraVisualization = true;
+        
+        scene.add(cameraHelper);
+        
+        const cameraType = view && view.model && view.model.projection_type === 'orthographic' ? 'orthographic' : 'perspective';
+        console.log(`[DEBUG] Added ${cameraType} camera visualization for ${viewName} at`, new THREE.Vector3().setFromMatrixPosition(m));
+      });
+    }
+
+
 
     /* ---------- calibration helpers (intrinsics & extrinsics) ------- */
     function showOnlySpecifiedLinks(robot, keepNames /* array of link names */) {
@@ -4822,8 +4924,10 @@ loader.load(
       
       // Get available camera poses and textures
       const availableViews = [];
+      
       Object.keys(camPoses).forEach(poseKey => {
         const viewName = poseKey.replace('_pose', '');
+        
         if (viewTextures[viewName] && cameraModels[viewName]) {
           availableViews.push({
             name: viewName,
@@ -4851,7 +4955,10 @@ loader.load(
           viewInfo.texture,
           viewInfo.imageSrc
         );
+        
+        // Regular camera setup
         attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
+        // Create HUDs for this view
         createGripHUDForView(view);
         createPoseResetHUDForView(view);
         createHomeHUDForView(view);
@@ -5115,9 +5222,9 @@ loader.load(
         robot.updateMatrixWorld(true);
       }
 
-      // Treat this like "no pose changes yet"
+      // Treat this like "no pose changes yet" but keep robot visible
       userHasAdjustedPose = false;
-      hideRobotCompletely();
+      revealMinimalRobotFromPose();
 
       // Refresh any UI/logic that depends on "at defaults"
       updateTaskCompletedAvailability();
@@ -5367,6 +5474,8 @@ loader.load(
     function animate(now) {
       requestAnimationFrame(animate);
 
+
+
       // If Animate is ON: forward (start→target) → hold at target → restart.
       if (animState.enabled) {
         if (!animState.lastTs) animState.lastTs = now;
@@ -5483,6 +5592,11 @@ loader.load(
 
 
     animate();
+  },
+  undefined, // progress callback (optional)
+  error => {
+    console.error('[ERROR] Failed to load URDF robot:', error);
+    console.error('[ERROR] Check if the URDF file exists at: assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf');
   }
 );
 
