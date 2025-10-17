@@ -19,10 +19,10 @@ from isaac_sim_worker import IsaacSimWorker
 class PersistentWorker:
     """Long-running worker that processes commands from backend"""
     
-    def __init__(self, output_dir: str, max_users: int = 8):
+    def __init__(self, output_dir: str, max_users: int = 8, simulation_app=None):
         self.output_dir = output_dir
         self.max_users = max_users
-        self.isaac_worker = IsaacSimWorker()
+        self.isaac_worker = IsaacSimWorker(simulation_app=simulation_app)
         self.running = True
         
         # Communication files
@@ -103,7 +103,9 @@ class PersistentWorker:
                 config = command['config']
                 output_dir = command['output_dir']
                 
+                print(f"Debug: Before capture_static_images - simulation_initialized = {self.isaac_worker.simulation_initialized}")
                 result = self.isaac_worker.capture_static_images(config, output_dir)
+                print(f"Debug: After capture_static_images - simulation_initialized = {self.isaac_worker.simulation_initialized}")
                 print("SIMULATION_INITIALIZED")  # Signal initialization complete
                 sys.stdout.flush()
                 
@@ -144,9 +146,11 @@ class PersistentWorker:
                 # Initialize animation mode with cloned environments
                 max_users = command.get('max_users', self.max_users)
                 
+                print(f"Debug: simulation_initialized = {self.isaac_worker.simulation_initialized}")
                 if not self.isaac_worker.simulation_initialized:
                     return {"status": "error", "message": "Must initialize simulation first"}
                     
+                print(f"Initializing animation mode with {max_users} users...")
                 self.isaac_worker.initialize_animation_mode(max_users)
                 
                 return {
@@ -164,7 +168,6 @@ class PersistentWorker:
                 
                 result = self.isaac_worker.start_user_animation(
                     user_id=user_id,
-                    goal_pose=goal_pose,
                     goal_joints=goal_joints,
                     duration=duration
                 )
@@ -217,6 +220,25 @@ class PersistentWorker:
                     "status": "success",
                     "action": action,
                     "message": "Animation loop completed"
+                }
+                
+            elif action == 'sync_animation_environments':
+                # Synchronize all animation environments to new state
+                config = command['config']
+                
+                if not self.isaac_worker.animation_mode:
+                    return {
+                        "status": "error",
+                        "action": action,
+                        "message": "Animation mode not initialized"
+                    }
+                
+                self.isaac_worker.sync_animation_environments(config)
+                
+                return {
+                    "status": "success",
+                    "action": action,
+                    "message": "Animation environments synchronized"
                 }
                 
             elif action == 'shutdown':
@@ -288,7 +310,7 @@ def main():
     
     try:
         # Create and start persistent worker
-        worker = PersistentWorker(args.output_dir, args.max_users)
+        worker = PersistentWorker(args.output_dir, args.max_users, simulation_app)
         worker.start(initial_config)
         
     except KeyboardInterrupt:

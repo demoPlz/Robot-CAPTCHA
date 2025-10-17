@@ -1137,7 +1137,8 @@ class CrowdInterface():
             
             self.isaac_manager = PersistentWorkerManager(
                 isaac_sim_path=isaac_sim_path,
-                output_base_dir=str(self._obs_cache_root / "persistent_isaac")
+                output_base_dir=str(self._obs_cache_root / "persistent_isaac"),
+                max_animation_users=2  # Pre-clone 2 animation environments for development
             )
             
             initial_config = {
@@ -1153,6 +1154,10 @@ class CrowdInterface():
             print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
             self.isaac_manager.start_worker(initial_config)
             print("✓ Persistent Isaac Sim worker ready")
+            
+            print("🎮 Initializing simulation and animation...")
+            self.isaac_manager.capture_initial_state(initial_config)
+            print("✓ Simulation and animation initialized")
             
         except Exception as e:
             print(f"⚠️ Failed to start persistent Isaac worker: {e}")
@@ -1752,8 +1757,8 @@ class CrowdInterface():
                 }
             }
             
-            # Use persistent worker for fast capture
-            result = self.isaac_manager.update_state_and_capture(
+            # Use persistent worker for fast capture with animation sync
+            result = self.isaac_manager.update_state_and_sync_animations(
                 config, 
                 f"ep_{episode_id}_state_{state_id}"
             )
@@ -1784,6 +1789,105 @@ class CrowdInterface():
         except Exception as e:
             print(f"⚠️ Isaac Sim capture failed: {e}")
             return False
+
+    # =========================
+    # Animation Management
+    # =========================
+    
+    def start_animation(self, session_id: str, goal_pose: dict = None, goal_joints: list = None, duration: float = 3.0) -> dict:
+        """Start animation for a user session"""
+        if not self.use_sim or not self.isaac_manager:
+            return {"status": "error", "message": "Simulation not available"}
+            
+        try:
+            result = self.isaac_manager.start_user_animation_managed(
+                session_id=session_id,
+                goal_pose=goal_pose, 
+                goal_joints=goal_joints,
+                duration=duration
+            )
+            return result
+            
+        except Exception as e:
+            print(f"⚠️ Animation start failed: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def stop_animation(self, session_id: str) -> dict:
+        """Stop animation for a user session"""
+        if not self.use_sim or not self.isaac_manager:
+            return {"status": "error", "message": "Simulation not available"}
+            
+        try:
+            result = self.isaac_manager.stop_user_animation_managed(session_id)
+            return result
+            
+        except Exception as e:
+            print(f"⚠️ Animation stop failed: {e}")
+            return {"status": "error", "message": str(e)}
+            
+    def get_animation_status(self) -> dict:
+        """Get current animation status and availability"""
+        if not self.use_sim or not self.isaac_manager:
+            return {
+                "available": False,
+                "message": "Simulation not available",
+                "animation_initialized": False,
+                "max_users": 0,
+                "available_slots": 0,
+                "active_users": 0,
+                "users": {}
+            }
+            
+        try:
+            status = self.isaac_manager.get_animation_status()
+            status["available"] = True
+            return status
+            
+        except Exception as e:
+            print(f"⚠️ Animation status check failed: {e}")
+            return {
+                "available": False,
+                "message": str(e),
+                "animation_initialized": False,
+                "max_users": 0,
+                "available_slots": 0,
+                "active_users": 0,
+                "users": {}
+            }
+    
+    def capture_animation_frame(self, session_id: str) -> dict:
+        """Capture current animation frame for a user session"""
+        if not self.use_sim or not self.isaac_manager:
+            return {"status": "error", "message": "Simulation not available"}
+            
+        try:
+            user_id = self.isaac_manager.get_user_by_session(session_id)
+            if user_id is None:
+                return {"status": "error", "message": "No active animation for session"}
+                
+            result = self.isaac_manager.capture_user_frame(user_id)
+            return result
+            
+        except Exception as e:
+            print(f"⚠️ Animation frame capture failed: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def release_animation_session(self, session_id: str) -> dict:
+        """Release animation slot for a disconnected session"""
+        if not self.use_sim or not self.isaac_manager:
+            return {"status": "error", "message": "Simulation not available"}
+            
+        try:
+            user_id = self.isaac_manager.get_user_by_session(session_id)
+            if user_id is not None:
+                success = self.isaac_manager.release_animation_slot(user_id)
+                return {"status": "success" if success else "error", "released": success}
+            else:
+                return {"status": "success", "message": "No slot to release"}
+                
+        except Exception as e:
+            print(f"⚠️ Animation session release failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     # =========================
     # Miscellaneous

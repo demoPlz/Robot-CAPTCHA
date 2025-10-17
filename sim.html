@@ -1530,7 +1530,14 @@ function hideWaitingMessage() {
 }
 
 // Stop polling when page unloads
-window.addEventListener('beforeunload', stopPolling);
+window.addEventListener('beforeunload', () => {
+  stopPolling();
+  // Clean up animation session
+  if (backendAnimState.active) {
+    navigator.sendBeacon(`${API_BASE_URL}/api/animation/release`, JSON.stringify({}));
+  }
+  stopStatusChecking();
+});
 
 
 
@@ -3940,6 +3947,16 @@ loader.load(
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
     /* ===== Animate button + loop state ===== */
+    // Backend-driven animation state
+    const backendAnimState = {
+      active: false,           // Whether backend animation is running
+      streaming: false,        // Whether we're streaming frames
+      user_id: null,          // Assigned animation slot
+      last_frame_time: 0,     // For frame rate limiting
+      frame_interval: 100     // 10 FPS (100ms between frames)
+    };
+    
+    // Keep legacy animState for compatibility with other parts of code
     const animState = {
       enabled: false,
       t: 0,
@@ -3967,64 +3984,199 @@ loader.load(
       return { pos: targetPose.pos, quat: targetPose.quat };
     }
 
-    // Toggle animation ON/OFF.
-    function toggleAnimation() {
-      animState.enabled = !animState.enabled;
-
-      animating = true;
-      updateGripArrowVisibility();
-
-      if (animState.enabled) {
-        // Reset the arm to the initial joint configuration (the "initial positions" you have)
-        // so the animation starts exactly from there.
-        if (initialJointPositions) {
-          for (const [name, val] of Object.entries(initialJointPositions)) {
-            robot.setJointValue(name, val);
-          }
-          robot.updateMatrixWorld(true);
-          // Resample the initial EE pose in case anything drifted
-          eeVis.getWorldPosition(startPos);
-          eeVis.getWorldQuaternion(startQuat);
+    // ===== Backend Animation Control =====
+    
+    async function startBackendAnimation() {
+      try {
+        // Get current joint positions from IK solver result
+        const jointMap = {};
+        Object.entries(robot.joints).forEach(([name, joint]) => {
+          jointMap[name] = joint.jointValue;
+        });
+        
+        // Convert to array format expected by backend (7 joint values)
+        const jointNames = ['joint_0', 'joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'left_carriage_joint'];
+        const goalJoints = jointNames.map(name => jointMap[name] || 0.0);
+        
+        console.log('Starting backend animation with goal joints:', goalJoints);
+        
+        const response = await apiFetch('/api/animation/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            goal_joints: goalJoints,
+            duration: 3.0  // 3 second animation
+          })
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+          backendAnimState.active = true;
+          backendAnimState.user_id = result.user_id;
+          backendAnimState.streaming = true;
+          backendAnimState.last_frame_time = 0;
+          
+          console.log(`✓ Animation started - assigned slot ${result.user_id}`);
+          return true;
+        } else {
+          console.error('❌ Animation start failed:', result.message);
+          alert(`Animation failed: ${result.message}`);
+          return false;
         }
-
-        // Start timeline
-        animState.t = 0;
-        animState.lastTs = performance.now();
-        animateBtn.classList.add('active');
-        animState.phase = 'forward';
-        animState.holdElapsed = 0;
-
-        // Snap goal to the initial pose (no first-frame lag)
-        goal.setPosition(startPos.x, startPos.y, startPos.z);
-        goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
-
-        // Make sure robot is visible
-        if (!robotVisible) {
-          robotVisible = true;
-          robot.visible = true;
-          if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+        
+      } catch (error) {
+        console.error('❌ Animation API error:', error);
+        alert('Animation failed - server error');
+        return false;
+      }
+    }
+    
+    async function stopBackendAnimation() {
+      try {
+        if (!backendAnimState.active) return;
+        
+        const response = await apiFetch('/api/animation/stop', {
+          method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+          backendAnimState.active = false;
+          backendAnimState.streaming = false;
+          backendAnimState.user_id = null;
+          
+          console.log('✓ Animation stopped');
+        } else {
+          console.error('❌ Animation stop failed:', result.message);
         }
-        // Hide pose gizmos while animating (rotation wheels + red dot)
-        setPoseGizmosVisible(false);
-        showAllRobotMeshes();
-        setGhostMode(true);
+        
+      } catch (error) {
+        console.error('❌ Animation stop error:', error);
+      }
+    }
+    
+    async function captureAnimationFrame() {
+      try {
+        if (!backendAnimState.streaming) return;
+        
+        const now = Date.now();
+        if (now - backendAnimState.last_frame_time < backendAnimState.frame_interval) {
+          return; // Rate limiting
+        }
+        
+        const response = await apiFetch('/api/animation/frame');
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+          backendAnimState.last_frame_time = now;
+          
+          // Update camera views with new frames
+          updateViewsWithAnimationFrames(result.result);
+        } else {
+          console.warn('⚠️ Frame capture failed:', result.message);
+        }
+        
+      } catch (error) {
+        console.error('❌ Frame capture error:', error);
+      }
+    }
+    
+    function updateViewsWithAnimationFrames(frameData) {
+      // frameData contains paths to animation frame images
+      // Update the existing camera views with new images
+      if (!frameData) return;
+      
+      // Map result keys to view names
+      const frameToView = {
+        'front_rgb': 'front',
+        'left_rgb': 'left', 
+        'right_rgb': 'right',
+        'top_rgb': 'top'
+      };
+      
+      for (const [frameKey, viewName] of Object.entries(frameToView)) {
+        if (frameData[frameKey] && views.has(viewName)) {
+          const view = views.get(viewName);
+          // Load the new image and update the texture
+          updateViewTexture(view, frameData[frameKey]);
+        }
+      }
+    }
+    
+    async function updateViewTexture(view, imagePath) {
+      try {
+        // Create a data URL from the file path (assuming it's base64 or URL)
+        const response = await fetch(imagePath);
+        const blob = await response.blob();
+        const imageUrl = URL.createObjectURL(blob);
+        
+        // Update the texture
+        const texture = await makeTextureFromDataURL(imageUrl);
+        if (view.renderer && view.renderer.domElement) {
+          // Update the background or plane texture
+          // This depends on how the views are implemented
+          // For now, just log that we got a new frame
+          console.log(`Updated ${view.name} with new animation frame`);
+        }
+        
+        // Clean up
+        URL.revokeObjectURL(imageUrl);
+        
+      } catch (error) {
+        console.error('❌ Error updating view texture:', error);
+      }
+    }
 
-        setHUDHiddenForAnimation(true);
-
-      } else {
+    // Toggle animation ON/OFF - now uses backend
+    // Toggle animation ON/OFF - now uses backend
+    async function toggleAnimation() {
+      if (backendAnimState.active) {
+        // Stop backend animation
+        await stopBackendAnimation();
+        
+        // Update UI
         animateBtn.classList.remove('active');
-        // If stopped mid-way, snap directly to the current target
-        const { pos, quat } = getTargetPose();
-        goal.setPosition(pos.x, pos.y, pos.z);
-        goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
-        // Restore pose gizmos when animation is off
-        setPoseGizmosVisible(true);
-        applyPostAnimationVisibility();  // this now leaves ghosting ON
-
+        animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
-
+        
+        // Restore UI elements
+        setPoseGizmosVisible(true);
+        applyPostAnimationVisibility();
         setHUDHiddenForAnimation(false);
+        
+        // Refresh status
+        checkAnimationStatus();
+        
+      } else {
+        // Start backend animation
+        const success = await startBackendAnimation();
+        
+        if (success) {
+          // Update UI for animation mode
+          animateBtn.classList.add('active');
+          animState.enabled = false; // Disable frontend animation - only use backend
+          animating = true;
+          updateGripArrowVisibility();
+          
+          // Hide UI elements during animation
+          setPoseGizmosVisible(false);
+          showAllRobotMeshes();
+          setGhostMode(true);
+          setHUDHiddenForAnimation(true);
+          
+          // Make sure robot is visible
+          if (!robotVisible) {
+            robotVisible = true;
+            robot.visible = true;
+            if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+          }
+          
+          // Refresh status
+          checkAnimationStatus();
+        }
       }
     }
 
@@ -5144,9 +5296,82 @@ loader.load(
     animateBtn.textContent = 'Animate';
     animateBtn.onclick = toggleAnimation;
 
+    // Animation status indicator
+    const animStatusIndicator = document.createElement('div');
+    animStatusIndicator.className = 'animation-status';
+    animStatusIndicator.style.cssText = `
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+      text-align: center;
+      display: none;
+    `;
+    animStatusIndicator.textContent = 'Checking animation status...';
+
+    // Add status checking
+    let animationStatusTimer = null;
+    
+    async function checkAnimationStatus() {
+      try {
+        const response = await apiFetch('/api/animation/status');
+        const status = await response.json();
+        
+        if (status.available && status.animation_initialized) {
+          const slotsAvailable = status.available_slots;
+          const maxSlots = status.max_users;
+          
+          if (slotsAvailable > 0) {
+            animStatusIndicator.textContent = `✓ Animation ready (${slotsAvailable}/${maxSlots} slots)`;
+            animStatusIndicator.style.color = '#22c55e'; // green
+            animateBtn.disabled = false;
+          } else {
+            animStatusIndicator.textContent = `⏳ Animation busy (0/${maxSlots} slots)`;
+            animStatusIndicator.style.color = '#f59e0b'; // orange
+            animateBtn.disabled = !backendAnimState.active; // Only disable if not our animation
+          }
+          
+          animStatusIndicator.style.display = 'block';
+        } else {
+          animStatusIndicator.textContent = '⚠️ Animation unavailable';
+          animStatusIndicator.style.color = '#ef4444'; // red
+          animStatusIndicator.style.display = 'block';
+          if (!backendAnimState.active) {
+            animateBtn.disabled = true;
+          }
+        }
+        
+      } catch (error) {
+        console.error('❌ Status check failed:', error);
+        animStatusIndicator.textContent = '⚠️ Animation status unknown';
+        animStatusIndicator.style.color = '#ef4444';
+        animStatusIndicator.style.display = 'block';
+      }
+    }
+    
+    // Check status every 5 seconds
+    function startStatusChecking() {
+      checkAnimationStatus(); // Initial check
+      animationStatusTimer = setInterval(checkAnimationStatus, 5000);
+    }
+    
+    function stopStatusChecking() {
+      if (animationStatusTimer) {
+        clearInterval(animationStatusTimer);
+        animationStatusTimer = null;
+      }
+    }
+    
+    // Start status checking after initial state loads
+    setTimeout(startStatusChecking, 2000);
+
     // --- cancel helper + global listeners ---------------------------------
     cancelAnimationIfRunning = (reason = '') => {
-      if (!animState.enabled) return;
+      if (!animState.enabled && !backendAnimState.active) return;
+
+      // Stop backend animation if active
+      if (backendAnimState.active) {
+        stopBackendAnimation();
+      }
 
       // Turn OFF animation (same as clicking "Animate" again to stop)
       animState.enabled = false;
@@ -5430,6 +5655,9 @@ loader.load(
 
     // Place Animate to the LEFT of Confirm
     confirmBar.insertBefore(animateBtn, confirmBtn);
+    
+    // Add animation status indicator below the animate button
+    confirmBar.appendChild(animStatusIndicator);
 
     /* === NEW: keep buttons in sync with TAC / locks === */
     function reflectButtonInteractivity(){
@@ -5523,6 +5751,11 @@ loader.load(
           }
 
         }
+      }
+
+      // Backend animation frame streaming
+      if (backendAnimState.streaming) {
+        captureAnimationFrame();
       }
 
       // Solve IK for this frame

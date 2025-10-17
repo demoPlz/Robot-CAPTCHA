@@ -823,5 +823,147 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ Error saving recording: {e}")
             return jsonify({"error": str(e)}), 500
     
+    # ============================================================================
+    # Animation API Endpoints
+    # ============================================================================
+    
+    def get_session_id():
+        """Extract session ID from request headers"""
+        return request.headers.get('X-Session-ID', 'anonymous')
+    
+    @app.route("/api/animation/status", methods=["GET"])
+    def animation_status():
+        """Get animation slot availability and current status"""
+        try:
+            status = crowd_interface.get_animation_status()
+            return jsonify(status)
+        except Exception as e:
+            print(f"❌ Error getting animation status: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/animation/start", methods=["POST"])
+    def start_animation():
+        """Start animation for the current user session"""
+        try:
+            session_id = get_session_id()
+            data = request.get_json() or {}
+            
+            # Extract goal pose and animation parameters
+            goal_pose = data.get('goal_pose')
+            goal_joints = data.get('goal_joints')
+            duration = data.get('duration', 3.0)
+            
+            # Validate input
+            if not goal_pose and not goal_joints:
+                return jsonify({"error": "Must provide either goal_pose or goal_joints"}), 400
+            
+            result = crowd_interface.start_animation(
+                session_id=session_id,
+                goal_pose=goal_pose,
+                goal_joints=goal_joints,
+                duration=duration
+            )
+            
+            if result.get("status") == "error":
+                return jsonify(result), 400
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            print(f"❌ Error starting animation: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/animation/stop", methods=["POST"])
+    def stop_animation():
+        """Stop animation for the current user session"""
+        try:
+            session_id = get_session_id()
+            
+            result = crowd_interface.stop_animation(session_id)
+            
+            if result.get("status") == "error":
+                return jsonify(result), 400
+                
+            return jsonify(result)
+            
+        except Exception as e:
+            print(f"❌ Error stopping animation: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/animation/frame", methods=["GET"])
+    def capture_animation_frame():
+        """Capture current animation frame for the user session"""
+        try:
+            session_id = get_session_id()
+            
+            result = crowd_interface.capture_animation_frame(session_id)
+            
+            if result.get("status") == "error":
+                return jsonify(result), 400
+                
+            return jsonify(result)
+            
+        except Exception as e:
+            print(f"❌ Error capturing animation frame: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/animation/release", methods=["POST"])
+    def release_animation_session():
+        """Release animation slot for disconnected session"""
+        try:
+            session_id = get_session_id()
+            
+            result = crowd_interface.release_animation_session(session_id)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            print(f"❌ Error releasing animation session: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/simulation/init", methods=["POST"])
+    def init_simulation():
+        """Initialize simulation mode by triggering initial state capture"""
+        try:
+            if hasattr(crowd_interface, 'isaac_manager') and crowd_interface.isaac_manager:
+                # Create a basic config to trigger simulation initialization
+                basic_config = {
+                    "usd_path": f"public/assets/usd/{crowd_interface.task_name}.usd",
+                    "robot_joints": [0.0] * 7,  # Default joint positions
+                    "object_poses": {
+                        "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                        "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                        "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                    }
+                }
+                # Use the actual method that exists
+                result = crowd_interface.isaac_manager.capture_initial_state(basic_config)
+                if isinstance(result, dict) and "status" in result:
+                    return jsonify(result)
+                else:
+                    # capture_initial_state returns file paths, not status
+                    return jsonify({"status": "success", "message": "Simulation initialized", "files": result})
+            else:
+                return jsonify({"status": "error", "message": "Isaac manager not available"}), 400
+        except Exception as e:
+            print(f"❌ Error initializing simulation: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    @app.route("/api/simulation/status", methods=["GET"])
+    def simulation_status():
+        """Get simulation status"""
+        try:
+            if hasattr(crowd_interface, 'isaac_manager') and crowd_interface.isaac_manager:
+                status = {
+                    "simulation_initialized": crowd_interface.isaac_manager.simulation_initialized,
+                    "worker_ready": crowd_interface.isaac_manager.worker_ready,
+                    "animation_initialized": crowd_interface.isaac_manager.animation_initialized
+                }
+                return jsonify(status)
+            else:
+                return jsonify({"status": "error", "message": "Isaac manager not available"}), 400
+        except Exception as e:
+            print(f"❌ Error getting simulation status: {e}")
+            return jsonify({"error": str(e)}), 500
     
     return app

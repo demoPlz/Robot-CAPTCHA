@@ -9,21 +9,25 @@ import json
 import time
 import subprocess
 import threading
-import queue
 from pathlib import Path
 from typing import Dict, Optional, Any
 
 class PersistentWorkerManager:
     """Manages a long-running Isaac Sim worker subprocess for state cycling"""
     
-    def __init__(self, isaac_sim_path: str, output_base_dir: str = "/tmp/isaac_worker"):
+    def __init__(self, isaac_sim_path: str, output_base_dir: str = "/tmp/isaac_worker", max_animation_users: int = 2):
         self.isaac_sim_path = isaac_sim_path  # Path to Isaac Sim installation
         self.output_base_dir = output_base_dir
+        self.max_animation_users = max_animation_users
         self.worker_process = None
-        self.command_queue = queue.Queue()
-        self.result_queue = queue.Queue()
         self.worker_ready = False
         self.simulation_initialized = False
+        self.animation_initialized = False
+        
+        # Animation user management
+        self.animation_users = {}  # user_id -> {'session_id': str, 'active': bool, 'start_time': float}
+        self.available_slots = set(range(max_animation_users))  # Available animation environment slots
+        self.session_to_user = {}  # session_id -> user_id mapping
         
         # Communication files
         self.command_file = f"{output_base_dir}/commands.json"
@@ -99,6 +103,9 @@ class PersistentWorkerManager:
         # Wait for worker to be ready
         self._wait_for_ready()
         
+        # Auto-initialize animation mode after first state capture (pre-clone strategy)
+        # This will be triggered in capture_initial_state()
+        
     def _start_output_monitor(self):
         """Monitor worker output in separate thread"""
         def monitor_stdout():
@@ -134,24 +141,6 @@ class PersistentWorkerManager:
             
         print("✓ Isaac Sim worker is ready for commands")
         
-    def update_state_and_capture(self, config: Dict[str, Any], state_id: str = None) -> Dict[str, str]:
-        """Update simulation state and capture images"""
-        if not self.worker_ready:
-            raise RuntimeError("Worker not ready. Call start_worker() first.")
-            
-        state_id = state_id or f"state_{int(time.time())}"
-        output_dir = f"{self.output_base_dir}/{state_id}"
-        
-        # Send command to worker
-        command = {
-            "action": "update_and_capture",
-            "config": config,
-            "output_dir": output_dir,
-            "state_id": state_id
-        }
-        
-        return self._send_command(command)
-        
     def capture_initial_state(self, config: Dict[str, Any]) -> Dict[str, str]:
         """Initialize simulation and capture first state"""
         if not self.worker_ready:
@@ -168,23 +157,37 @@ class PersistentWorkerManager:
         result = self._send_command(command)
         if result.get("status") == "success":
             self.simulation_initialized = True
-        return result
-        
-    def initialize_animation_mode(self, max_users: int = 8) -> Dict[str, Any]:
-        """Initialize animation mode with cloned environments"""
-        if not self.simulation_initialized:
-            raise RuntimeError("Must initialize simulation first. Call capture_initial_state().")
             
-        command = {
-            "action": "initialize_animation",
-            "max_users": max_users
-        }
-        
-        return self._send_command(command)
+            # Auto-initialize animation mode with pre-cloning
+            print(f"Auto-initializing animation mode with {self.max_animation_users} environments...")
+            try:
+                anim_command = {
+                    "action": "initialize_animation",
+                    "max_users": self.max_animation_users
+                }
+                anim_result = self._send_command(anim_command)
+                print(f"Animation initialization result: {anim_result}")
+                if anim_result.get("status") == "success":
+                    self.animation_initialized = True
+                    print("✓ Animation environments pre-cloned and ready")
+                else:
+                    print(f"⚠ Animation initialization failed: {anim_result.get('message', 'Unknown error')}")
+                    # Don't fail the whole system if animation fails, just disable it
+                    self.animation_initialized = False
+            except Exception as e:
+                print(f"⚠ Failed to initialize animation mode: {e}")
+                import traceback
+                traceback.print_exc()
+                self.animation_initialized = False
+                
+        return result
         
     def start_user_animation(self, user_id: int, goal_pose: Dict = None, 
                            goal_joints: list = None, duration: float = 3.0) -> Dict[str, Any]:
         """Start animation for specific user"""
+        if not self.animation_initialized:
+            return {"status": "error", "message": "Animation not initialized"}
+            
         command = {
             "action": "start_user_animation",
             "user_id": user_id,
@@ -204,30 +207,139 @@ class PersistentWorkerManager:
         
         return self._send_command(command)
         
-    def capture_user_frame(self, user_id: int, output_dir: str = None) -> Dict[str, Any]:
-        """Capture frame for specific user"""
-        output_dir = output_dir or f"{self.output_base_dir}/user_frames"
+    def update_state_and_sync_animations(self, config: Dict[str, Any], state_id: str = None) -> Dict[str, str]:
+        """Update simulation state and synchronize all animation environments"""
+        if not self.worker_ready:
+            raise RuntimeError("Worker not ready. Call start_worker() first.")
+            
+        state_id = state_id or f"state_{int(time.time())}"
+        output_dir = f"{self.output_base_dir}/{state_id}"
         
+        # First update the base state and capture static images
+        command = {
+            "action": "update_and_capture",
+            "config": config,
+            "output_dir": output_dir,
+            "state_id": state_id
+        }
+        
+        result = self._send_command(command)
+        
+        # Then synchronize all animation environments to the new state
+        if self.animation_initialized and result.get("status") == "success":
+            try:
+                sync_command = {
+                    "action": "sync_animation_environments",
+                    "config": config
+                }
+                sync_result = self._send_command(sync_command)
+                if sync_result.get("status") != "success":
+                    print(f"Warning: Failed to sync animation environments: {sync_result.get('message', 'Unknown error')}")
+            except Exception as e:
+                print(f"Warning: Failed to sync animation environments: {e}")
+                
+        return result
+    
+    def start_user_animation_managed(self, session_id: str, goal_pose: Dict = None, 
+                                   goal_joints: list = None, duration: float = 3.0) -> Dict[str, Any]:
+        """Start animation for a session (manages user slots automatically)"""
+        if not self.animation_initialized:
+            return {"status": "error", "message": "Animation not initialized"}
+            
+        # Check if session already has a slot
+        if session_id in self.session_to_user:
+            user_id = self.session_to_user[session_id]
+            if user_id in self.animation_users and self.animation_users[user_id]['active']:
+                return {"status": "error", "message": "Session already has active animation"}
+        
+        # Allocate a new slot
+        if not self.available_slots:
+            return {"status": "error", "message": "No animation slots available"}
+            
+        user_id = self.available_slots.pop()
+        
+        # Start animation
+        result = self.start_user_animation(user_id, goal_pose, goal_joints, duration)
+        
+        if result.get("status") == "success":
+            # Track session -> user mapping
+            self.session_to_user[session_id] = user_id
+            self.animation_users[user_id] = {
+                'session_id': session_id,
+                'active': True,
+                'start_time': time.time()
+            }
+        else:
+            # Return slot if animation failed
+            self.available_slots.add(user_id)
+            
+        return result
+    
+    def stop_user_animation_managed(self, session_id: str) -> Dict[str, Any]:
+        """Stop animation for a session"""
+        if session_id not in self.session_to_user:
+            return {"status": "error", "message": "Session not found"}
+            
+        user_id = self.session_to_user[session_id]
+        result = self.stop_user_animation(user_id)
+        
+        # Release slot
+        if user_id in self.animation_users:
+            del self.animation_users[user_id]
+        if session_id in self.session_to_user:
+            del self.session_to_user[session_id]
+        self.available_slots.add(user_id)
+        
+        return result
+    
+    def get_user_by_session(self, session_id: str) -> int | None:
+        """Get user_id for a session"""
+        return self.session_to_user.get(session_id)
+    
+    def capture_user_frame(self, user_id: int) -> Dict[str, Any]:
+        """Capture frame for specific user"""
+        if not self.animation_initialized:
+            return {"status": "error", "message": "Animation not initialized"}
+            
         command = {
             "action": "capture_user_frame",
             "user_id": user_id,
-            "output_dir": output_dir
+            "output_dir": f"{self.output_base_dir}/user_{user_id}_frame"
         }
         
         return self._send_command(command)
+    
+    def release_animation_slot(self, user_id: int) -> bool:
+        """Release animation slot for a user"""
+        if user_id in self.animation_users:
+            session_id = self.animation_users[user_id].get('session_id')
+            if session_id and session_id in self.session_to_user:
+                del self.session_to_user[session_id]
+            del self.animation_users[user_id]
         
-    def start_animation_loop(self, output_dir: str = None) -> Dict[str, Any]:
-        """Start the main animation loop (blocking operation)"""
-        output_dir = output_dir or f"{self.output_base_dir}/animation_frames"
+        self.available_slots.add(user_id)
+        return True
+    
+    def get_animation_status(self) -> Dict[str, Any]:
+        """Get comprehensive animation status"""
+        active_users = len([u for u in self.animation_users.values() if u.get('active')])
         
-        command = {
-            "action": "start_animation_loop",
-            "output_dir": output_dir
+        return {
+            "animation_initialized": self.animation_initialized,
+            "max_users": self.max_animation_users,
+            "available_slots": len(self.available_slots),
+            "active_users": active_users,
+            "users": {
+                session_id: {
+                    "user_id": user_id,
+                    "active": self.animation_users[user_id].get('active', False),
+                    "start_time": self.animation_users[user_id].get('start_time', 0)
+                }
+                for session_id, user_id in self.session_to_user.items()
+                if user_id in self.animation_users
+            }
         }
-        
-        # Note: This will block until animation loop ends
-        return self._send_command(command)
-        
+    
     def _send_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         """Send command to worker and wait for result"""
         # Write command to file
@@ -311,32 +423,25 @@ class PersistentWorkerManager:
 
 # Backend usage example
 class IsaacSimBackend:
-    """Example backend integration using the persistent worker"""
+    """Clean backend integration for dual-purpose Isaac Sim worker"""
     
     def __init__(self, isaac_sim_path: str):
         self.isaac_sim_path = isaac_sim_path
         self.worker_manager = None
         
     def initialize(self, initial_config: Dict[str, Any]):
-        """Initialize the Isaac Sim backend"""
+        """Initialize the Isaac Sim backend with dual-purpose functionality"""
         self.worker_manager = PersistentWorkerManager(self.isaac_sim_path)
         self.worker_manager.start_worker(initial_config)
         
-        # Capture initial state
+        # Capture initial state (auto-initializes animation mode)
         return self.worker_manager.capture_initial_state(initial_config)
         
-    def process_state_request(self, config: Dict[str, Any], state_id: str = None) -> Dict[str, str]:
-        """Process a state capture request from frontend"""
+    def update_state(self, config: Dict[str, Any], state_id: str = None) -> Dict[str, str]:
+        """Update state with dual-purpose sync (static images + animation environments)"""
         if not self.worker_manager:
             raise RuntimeError("Backend not initialized")
-            
-        return self.worker_manager.update_state_and_capture(config, state_id)
-        
-    def initialize_animation_mode(self, max_users: int = 8) -> Dict[str, Any]:
-        """Initialize animation mode"""
-        if not self.worker_manager:
-            raise RuntimeError("Backend not initialized")
-        return self.worker_manager.initialize_animation_mode(max_users)
+        return self.worker_manager.update_state_and_sync_animations(config, state_id)
         
     def start_user_animation(self, user_id: int, goal_pose: Dict = None, 
                            goal_joints: list = None, duration: float = 3.0) -> Dict[str, Any]:
@@ -351,47 +456,8 @@ class IsaacSimBackend:
             raise RuntimeError("Backend not initialized")
         return self.worker_manager.stop_user_animation(user_id)
         
-    def capture_user_frame(self, user_id: int) -> Dict[str, Any]:
-        """Capture frame for user"""
-        if not self.worker_manager:
-            raise RuntimeError("Backend not initialized")
-        return self.worker_manager.capture_user_frame(user_id)
-        
-    def get_status(self) -> Dict[str, Any]:
-        """Get backend status"""
-        if not self.worker_manager:
-            return {"status": "not_initialized"}
-        return self.worker_manager.get_worker_status()
-        
     def shutdown(self):
         """Shutdown the backend"""
         if self.worker_manager:
             self.worker_manager.stop_worker()
             self.worker_manager = None
-
-if __name__ == "__main__":
-    # Example usage
-    isaac_sim_path = "/path/to/isaac-sim"  # Update this
-    
-    initial_config = {
-        "usd_path": "/path/to/environment.usd",
-        "robot_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "object_poses": {
-            "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-            "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-            "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
-        }
-    }
-    
-    # Use context manager for automatic cleanup
-    with PersistentWorkerManager(isaac_sim_path) as manager:
-        manager.start_worker(initial_config)
-        
-        # State cycling example
-        for i in range(5):
-            # Modify config for different states
-            config = initial_config.copy()
-            config["robot_joints"] = [0.1 * i] * 7
-            
-            result = manager.update_state_and_capture(config, f"test_state_{i}")
-            print(f"State {i}: {result}")

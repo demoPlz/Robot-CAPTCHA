@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Isaac Sim worker script with two modes:
-1. Static image capture (for frontend IK interaction)
-2. Animation mode (for physics simulation with cloning)
+1. Static image capture (for frontend interaction)
+2. Animation mode (for physics simulation with direct joint control)
 """
 
 import sys
@@ -24,7 +24,6 @@ class IsaacSimWorker:
         self.active_animations = {}
         self.animation_mode = False
         self.running = True
-        self.ik_solver = None
         # State management for reuse
         self.simulation_initialized = False
         self.objects = {}  # Store object references for reuse
@@ -198,7 +197,7 @@ class IsaacSimWorker:
         }
         
     def capture_static_images(self, config, output_dir):
-        """Mode 1: Capture static images (robot hidden) for frontend IK
+        """Mode 1: Capture static images (robot hidden) for frontend
         Now uses reusable simulation initialization"""
         
         # Initialize simulation if not already done
@@ -225,73 +224,174 @@ class IsaacSimWorker:
         
     def initialize_animation_mode(self, max_users=8):
         """Mode 2: Initialize cloned environments for animation"""
-        from omni.isaac.cloner import Cloner
-        from omni.isaac.motion_generation import RmpFlow
+        try:
+            from omni.isaac.cloner import Cloner
+            import numpy as np
+            from omni.isaac.core.articulations import Articulation
+            
+            print(f"Initializing animation mode with {max_users} user environments...")
+            
+            # Check prerequisites
+            if not self.simulation_initialized:
+                raise RuntimeError("Simulation must be initialized before animation mode")
+            if not self.world:
+                raise RuntimeError("World object not available")
+            if not self.robot:
+                raise RuntimeError("Robot object not available")
+            
+            print("Restoring robot visibility for animation mode...")
+            # self.hide_robot_funcs['show']()
+            
+            # Show robot for animation mode - need to restore if it was hidden
+            # For now, assume robot is already visible from static capture mode
+            for step in range(10):
+                self.world.step(render=True)
+            
+            print("Animation mode will use direct joint control only")
+            
+            # Initialize cloner
+            cloner = Cloner()
+            
+            # Clone environments for each user
+            source_prim_path = "/World"
+            for user_id in range(max_users):
+                if user_id == 0:
+                    # User 0 uses original environment
+                    target_path = "/World"
+                else:
+                    # Clone for other users
+                    target_path = f"/World_User_{user_id}"
+                    cloner.clone(
+                        source_prim_path=source_prim_path,
+                        prim_paths=[target_path],
+                        copy_from_source=True
+                    )
+                
+                # Get robot for this environment
+                robot_path = f"{target_path}/wxai"
+                user_robot = self.world.scene.add(Articulation(
+                    prim_path=robot_path, 
+                    name=f"robot_user_{user_id}"
+                ))
+                
+                # Get cameras for this environment  
+                user_cameras = {}
+                from isaacsim.sensors.camera import get_all_camera_objects
+                all_user_cameras = get_all_camera_objects(root_prim=target_path)
+                for camera in all_user_cameras:
+                    camera.initialize()
+                    camera.set_resolution((640, 480))
+                    camera.add_rgb_to_frame()
+                    user_cameras[camera.name] = camera
+                
+                # Store environment data
+                self.user_environments[user_id] = {
+                    'robot': user_robot,
+                    'cameras': user_cameras,
+                    'world_path': target_path
+                }
+                
+            self.animation_mode = True
+            print(f"Animation mode initialized with {max_users} environments")
+        
+        except Exception as e:
+            print(f"❌ Animation mode initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.animation_mode = False
+            self.user_environments = {}
+            raise e  # Re-raise so the caller knows it failed
+        
+    def sync_animation_environments(self, config):
+        """Synchronize all animation environments to match the current state"""
+        if not self.animation_mode:
+            print("Animation mode not initialized, skipping sync")
+            return
+            
         import numpy as np
+        import omni.usd
+        from pxr import Gf, UsdGeom
+            
+        print("Synchronizing animation environments to new state...")
         
-        print(f"Initializing animation mode with {max_users} user environments...")
+        # Get state from config
+        initial_q = np.array(config.get('robot_joints', [0.0] * 7))
+        initial_q = np.append(initial_q, initial_q[-1])
+        object_states = config.get('object_poses', {
+            "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+            "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+        })
         
-        # Show robot for animation mode - need to restore if it was hidden
-        # For now, assume robot is already visible from static capture mode
+        # Update each animation environment
+        for user_id, env_data in self.user_environments.items():
+            try:
+                robot = env_data['robot']
+                world_path = env_data['world_path']
+                
+                # Update robot joints
+                robot.set_joint_positions(initial_q)
+                
+                # Update object poses for this environment
+                # Get object references for this cloned environment
+                stage = omni.usd.get_context().get_stage()
+                
+                # Update Cube_01
+                cube_01_path = f"{world_path}/Cube_01"
+                cube_01_prim = stage.GetPrimAtPath(cube_01_path)
+                if cube_01_prim.IsValid():
+                    pos = object_states["Cube_01"]["pos"]
+                    rot = object_states["Cube_01"]["rot"]  # quaternion [x,y,z,w]
+                    
+                    xformable = UsdGeom.Xformable(cube_01_prim)
+                    
+                    # Set translation
+                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
+                    
+                    # Set rotation (convert quaternion to rotation matrix)
+                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])  # Gf.Quatf(w, x, y, z)
+                    rotation_matrix = quat.GetMatrix()
+                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
+                
+                # Update Cube_02
+                cube_02_path = f"{world_path}/Cube_02"
+                cube_02_prim = stage.GetPrimAtPath(cube_02_path)
+                if cube_02_prim.IsValid():
+                    pos = object_states["Cube_02"]["pos"]
+                    rot = object_states["Cube_02"]["rot"]
+                    
+                    xformable = UsdGeom.Xformable(cube_02_prim)
+                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
+                    
+                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])
+                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
+                
+                # Update Tennis ball
+                tennis_path = f"{world_path}/Tennis"
+                tennis_prim = stage.GetPrimAtPath(tennis_path)
+                if tennis_prim.IsValid():
+                    pos = object_states["Tennis"]["pos"]
+                    rot = object_states["Tennis"]["rot"]
+                    
+                    xformable = UsdGeom.Xformable(tennis_prim)
+                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
+                    
+                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])
+                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
+                    
+                print(f"Synced environment {user_id} ({world_path})")
+                
+            except Exception as e:
+                print(f"Warning: Failed to sync environment {user_id}: {e}")
+        
+        # Let physics settle across all environments
         for step in range(5):
             self.world.step(render=True)
-        
-        # Initialize IK solver (RmpFlow for collision-aware IK)
-        self.ik_solver = RmpFlow(
-            robot_description_path=self.robot.robot_prim.GetPrimPath(),
-            urdf_path=None,  # Isaac Sim will use robot description
-            rmpflow_config_path=None,  # Use default config
-            end_effector_frame_name="ee_link"  # Adjust based on your robot
-        )
-        self.ik_solver.initialize()
-        
-        # Initialize cloner
-        cloner = Cloner()
-        
-        # Clone environments for each user
-        source_prim_path = "/World"
-        for user_id in range(max_users):
-            if user_id == 0:
-                # User 0 uses original environment
-                target_path = "/World"
-            else:
-                # Clone for other users
-                target_path = f"/World_User_{user_id}"
-                cloner.clone(
-                    source_prim_path=source_prim_path,
-                    prim_paths=[target_path],
-                    copy_from_source=True
-                )
             
-            # Get robot for this environment
-            robot_path = f"{target_path}/wxai"
-            user_robot = self.world.scene.add(Articulation(
-                prim_path=robot_path, 
-                name=f"robot_user_{user_id}"
-            ))
-            
-            # Get cameras for this environment  
-            user_cameras = {}
-            from isaacsim.sensors.camera import get_all_camera_objects
-            all_user_cameras = get_all_camera_objects(root_prim=target_path)
-            for camera in all_user_cameras:
-                camera.initialize()
-                camera.set_resolution((640, 480))
-                camera.add_rgb_to_frame()
-                user_cameras[camera.name] = camera
-            
-            # Store environment data
-            self.user_environments[user_id] = {
-                'robot': user_robot,
-                'cameras': user_cameras,
-                'world_path': target_path
-            }
-            
-        self.animation_mode = True
-        print(f"Animation mode initialized with {max_users} environments")
+        print("Animation environment synchronization complete")
         
-    def start_user_animation(self, user_id, goal_pose=None, goal_joints=None, duration=3.0):
-        """Start animation for specific user using IK or direct joint control"""
+    def start_user_animation(self, user_id, goal_joints, duration=3.0):
+        """Start animation for specific user using direct joint control"""
         if user_id not in self.user_environments:
             return {"error": f"User {user_id} environment not found"}
             
@@ -300,27 +400,8 @@ class IsaacSimWorker:
         robot = self.user_environments[user_id]['robot']
         current_joints = robot.get_joint_positions()
         
-        # Use IK to compute goal joints from pose, or use provided joints
-        if goal_pose is not None:
-            # Use Isaac Sim's IK solver
-            target_position = np.array(goal_pose['position'])
-            target_orientation = np.array(goal_pose['orientation'])  # quaternion [x,y,z,w]
-            
-            # Compute IK solution
-            ik_result = self.ik_solver.compute_inverse_kinematics(
-                target_position=target_position,
-                target_orientation=target_orientation,
-                current_joint_positions=current_joints
-            )
-            
-            if ik_result.success:
-                goal_joints = ik_result.joint_positions
-                print(f"IK solved for user {user_id}: {goal_joints}")
-            else:
-                return {"error": f"IK failed for user {user_id}"}
-                
-        elif goal_joints is None:
-            return {"error": "Must provide either goal_pose or goal_joints"}
+        if goal_joints is None:
+            return {"error": "Must provide goal_joints"}
             
         # Store animation parameters
         self.active_animations[user_id] = {
@@ -427,7 +508,6 @@ class IsaacSimWorker:
         if action == 'start_animation':
             return self.start_user_animation(
                 user_id=command['user_id'],
-                goal_pose=command.get('goal_pose'),
                 goal_joints=command.get('goal_joints'),
                 duration=command.get('duration', 3.0)
             )
@@ -441,55 +521,3 @@ class IsaacSimWorker:
             
         else:
             return {"error": f"Unknown action: {action}"}
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True, help='JSON config file path')
-    parser.add_argument('--output-dir', type=str, required=True, help='Output directory for images')
-    parser.add_argument('--mode', type=str, choices=['static', 'animation', 'both'], default='both',
-                       help='Operation mode: static images only, animation only, or both')
-    parser.add_argument('--max-users', type=int, default=8, help='Maximum users for animation mode')
-    args = parser.parse_args()
-    
-    # Load configuration
-    with open(args.config, 'r') as f:
-        config = json.load(f)
-    
-    # Start simulation
-    global simulation_app
-    simulation_app = SimulationApp({"headless": True})
-    
-    try:
-        worker = IsaacSimWorker()
-        
-        if args.mode in ['static', 'both']:
-            # Capture static images first
-            print("=== STATIC IMAGE CAPTURE MODE ===")
-            static_result = worker.capture_static_images(config, args.output_dir)
-            print(json.dumps(static_result))  # For backend to capture
-            
-        if args.mode in ['animation', 'both']:
-            # Initialize animation mode (can reuse same environment)
-            print("=== ANIMATION MODE ===")
-            worker.initialize_animation_mode(max_users=args.max_users)
-            
-            # Signal ready for animation (backend can start accepting commands)
-            ready_signal = {"status": "animation_ready", "max_users": args.max_users}
-            print(json.dumps(ready_signal))
-            
-            # Enter animation loop (handles commands and streams frames)
-            worker.animation_loop(args.output_dir)
-            
-        print("Worker completed successfully")
-        
-    except Exception as e:
-        print(f"ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    finally:
-        if 'simulation_app' in globals():
-            simulation_app.close()
-
-if __name__ == "__main__":
-    main()
