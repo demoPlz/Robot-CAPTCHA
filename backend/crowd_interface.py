@@ -1866,6 +1866,29 @@ class CrowdInterface():
                 return {"status": "error", "message": "No active animation for session"}
                 
             result = self.isaac_manager.capture_user_frame(user_id)
+            
+            if result.get("status") == "success" and "result" in result:
+                # Convert file paths to base64 data URLs for frontend consumption
+                frame_data = result["result"]
+                base64_frames = {}
+                
+                for frame_key, file_path in frame_data.items():
+                    try:
+                        if os.path.exists(file_path):
+                            with open(file_path, 'rb') as f:
+                                image_data = f.read()
+                            b64 = base64.b64encode(image_data).decode("ascii")
+                            base64_frames[frame_key] = f"data:image/jpeg;base64,{b64}"
+                        else:
+                            print(f"⚠️ Animation frame file not found: {file_path}")
+                    except Exception as e:
+                        print(f"⚠️ Error converting frame {frame_key} to base64: {e}")
+                
+                if base64_frames:
+                    return {"status": "success", "result": base64_frames}
+                else:
+                    return {"status": "error", "message": "No frames could be loaded"}
+            
             return result
             
         except Exception as e:

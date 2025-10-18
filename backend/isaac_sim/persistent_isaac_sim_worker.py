@@ -58,9 +58,21 @@ class PersistentWorker:
                 if command:
                     result = self._process_command(command)
                     self._send_result(result)
+                
+                # Continuously update physics and animations if animation mode is active
+                if self.isaac_worker.animation_mode and self.isaac_worker.active_animations:
+                    # Update physics
+                    if self.isaac_worker.world:
+                        self.isaac_worker.world.step(render=True)
                     
-                # Small delay to prevent busy waiting
-                time.sleep(0.1)
+                    # Update all user animations (joint interpolation)
+                    self.isaac_worker.update_animations()
+                    
+                    # Shorter delay for smoother animation
+                    time.sleep(0.016)  # ~60 FPS
+                else:
+                    # Longer delay when not animating
+                    time.sleep(0.1)
                 
             except Exception as e:
                 print(f"Error in worker loop: {e}")
@@ -162,7 +174,6 @@ class PersistentWorker:
             elif action == 'start_user_animation':
                 # Start animation for specific user
                 user_id = command['user_id']
-                goal_pose = command.get('goal_pose')
                 goal_joints = command.get('goal_joints')
                 duration = command.get('duration', 3.0)
                 

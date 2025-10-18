@@ -140,6 +140,31 @@ class PersistentWorkerManager:
             raise TimeoutError("Worker did not become ready within timeout")
             
         print("✓ Isaac Sim worker is ready for commands")
+
+    def _verify_worker_simulation_ready(self, timeout: int = 10) -> bool:
+        """Explicitly verify that worker's internal simulation state is ready"""
+        for attempt in range(timeout):
+            try:
+                # Query worker's actual internal state
+                status_command = {"action": "get_status"}
+                status_result = self._send_command(status_command)
+                
+                # Check if worker reports simulation as initialized
+                worker_sim_ready = status_result.get("simulation_initialized", False)
+                
+                if worker_sim_ready:
+                    print("✓ Worker simulation state verified as ready")
+                    return True
+                    
+                print(f"Worker simulation not ready yet (attempt {attempt + 1}/{timeout})")
+                time.sleep(0.5)  # Wait 500ms before retry
+                
+            except Exception as e:
+                print(f"Status check failed (attempt {attempt + 1}): {e}")
+                time.sleep(0.5)
+                
+        print(f"⚠ Worker simulation verification timed out after {timeout} attempts")
+        return False
         
     def capture_initial_state(self, config: Dict[str, Any]) -> Dict[str, str]:
         """Initialize simulation and capture first state"""
@@ -157,6 +182,11 @@ class PersistentWorkerManager:
         result = self._send_command(command)
         if result.get("status") == "success":
             self.simulation_initialized = True
+
+            print("Verifying worker simulation state before initializing animation...")
+            if not self._verify_worker_simulation_ready():
+                print("⚠ Worker simulation verification failed, skipping animation initialization")
+                return result
             
             # Auto-initialize animation mode with pre-cloning
             print(f"Auto-initializing animation mode with {self.max_animation_users} environments...")

@@ -1336,6 +1336,26 @@ async function getCurrentCloudflaredUrl() {
 // Initialize API_BASE_URL - will be set dynamically in the loader
 let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
 
+async function refreshViews() {
+  console.log('🔄 Refreshing views with latest static images...');
+  try {
+    const state = await getInitialState();
+    if (state && state.views) {
+      // Update each view with the static image
+      for (const [viewName, base64Data] of Object.entries(state.views)) {
+        if (views.has(viewName)) {
+          const view = views.get(viewName);
+          // Update the container's background image to show the static image
+          view.container.style.background = `center / cover no-repeat url("${base64Data}")`;
+          console.log(`✓ Refreshed ${viewName} view with static image`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to refresh views:', error);
+  }
+}
+
 async function getInitialState() {
   try {
     console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}/api/get-state`);
@@ -3991,14 +4011,24 @@ loader.load(
         // Get current joint positions from IK solver result
         const jointMap = {};
         Object.entries(robot.joints).forEach(([name, joint]) => {
-          jointMap[name] = joint.jointValue;
+          // joint.jointValue is an array with a single element, extract the numeric value
+          const value = Array.isArray(joint.jointValue) && joint.jointValue.length > 0 
+            ? joint.jointValue[0] 
+            : (joint.jointValue || 0.0);
+          console.log(`🔍 Joint ${name}: jointValue =`, joint.jointValue, `→ extracted: ${value} (${typeof value})`);
+          jointMap[name] = value;
         });
         
         // Convert to array format expected by backend (7 joint values)
         const jointNames = ['joint_0', 'joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'left_carriage_joint'];
-        const goalJoints = jointNames.map(name => jointMap[name] || 0.0);
+        const goalJoints = jointNames.map(name => {
+          const value = jointMap[name] || 0.0;
+          console.log(`🔍 Goal joint ${name}: ${value} (type: ${typeof value})`);
+          return value;
+        });
         
         console.log('Starting backend animation with goal joints:', goalJoints);
+        console.log('Goal joints types:', goalJoints.map(v => typeof v));
         
         const response = await apiFetch('/api/animation/start', {
           method: 'POST',
@@ -4069,6 +4099,8 @@ loader.load(
         const response = await apiFetch('/api/animation/frame');
         const result = await response.json();
         
+        console.log('🎬 Animation frame response:', result);
+        
         if (result.status === 'success') {
           backendAnimState.last_frame_time = now;
           
@@ -4086,46 +4118,62 @@ loader.load(
     function updateViewsWithAnimationFrames(frameData) {
       // frameData contains paths to animation frame images
       // Update the existing camera views with new images
-      if (!frameData) return;
+      console.log('🖼️ Updating views with frame data:', frameData);
+      
+      if (!frameData) {
+        console.warn('⚠️ No frame data received');
+        return;
+      }
       
       // Map result keys to view names
       const frameToView = {
-        'front_rgb': 'front',
-        'left_rgb': 'left', 
-        'right_rgb': 'right',
-        'top_rgb': 'top'
+        'front': 'front',
+        'left': 'left', 
+        'right': 'right',
+        'top': 'top'
       };
       
       for (const [frameKey, viewName] of Object.entries(frameToView)) {
+        console.log(`🔍 Checking frameKey: ${frameKey}, viewName: ${viewName}`);
+        console.log(`🔍 frameData has key: ${frameData.hasOwnProperty(frameKey)}`);
+        console.log(`🔍 views has view: ${views.has(viewName)}`);
+        
         if (frameData[frameKey] && views.has(viewName)) {
           const view = views.get(viewName);
+          console.log(`🎥 Updating ${viewName} view with animation frame`);
           // Load the new image and update the texture
           updateViewTexture(view, frameData[frameKey]);
+        } else if (frameData[frameKey]) {
+          console.warn(`⚠️ View ${viewName} not found for frame ${frameKey}`);
+        } else {
+          console.warn(`⚠️ Frame data missing key ${frameKey}`);
         }
       }
     }
     
-    async function updateViewTexture(view, imagePath) {
+    async function updateViewTexture(view, imageData) {
       try {
-        // Create a data URL from the file path (assuming it's base64 or URL)
-        const response = await fetch(imagePath);
-        const blob = await response.blob();
-        const imageUrl = URL.createObjectURL(blob);
+        // For animation frames, we need to update the CSS background image
+        // imageData should be a base64 data URL like "data:image/jpeg;base64,..."
         
-        // Update the texture
-        const texture = await makeTextureFromDataURL(imageUrl);
-        if (view.renderer && view.renderer.domElement) {
-          // Update the background or plane texture
-          // This depends on how the views are implemented
-          // For now, just log that we got a new frame
-          console.log(`Updated ${view.name} with new animation frame`);
+        console.log(`🖼️  updateViewTexture called for view:`, view.name);
+        console.log(`🖼️  Container element:`, view.container);
+        console.log(`🖼️  Base64 data length:`, imageData.length);
+        console.log(`🖼️  Base64 preview:`, imageData.substring(0, 50) + '...');
+        
+        // Update the container's background image to show the new animation frame
+        if (view.container) {
+          const oldBackground = view.container.style.background;
+          view.container.style.background = `center / cover no-repeat url("${imageData}")`;
+          console.log(`🖼️  Old background:`, oldBackground);
+          console.log(`🖼️  New background set to:`, view.container.style.background.substring(0, 50) + '...');
+          console.log(`✓ Updated ${view.name} with animation frame`);
+        } else {
+          console.warn(`⚠️ View ${view.name} has no container to update`);
         }
         
-        // Clean up
-        URL.revokeObjectURL(imageUrl);
-        
       } catch (error) {
-        console.error('❌ Error updating view texture:', error);
+        console.error(`❌ Error updating ${view.name} texture:`, error);
       }
     }
 
@@ -4142,13 +4190,26 @@ loader.load(
         animating = false;
         updateGripArrowVisibility();
         
-        // Restore UI elements
+        // Restore UI elements  
         setPoseGizmosVisible(true);
-        applyPostAnimationVisibility();
         setHUDHiddenForAnimation(false);
         
-        // Refresh status
-        checkAnimationStatus();
+        // IMPORTANT: Show Three.js robot and hide Isaac Sim stream
+        robotVisible = true;
+        robot.visible = true;
+        userHasAdjustedPose = true; // Ensure robot stays visible
+        if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+        
+        // Apply visibility settings (now that userHasAdjustedPose is true)
+        applyPostAnimationVisibility();
+        
+        // Stop Isaac Sim frame streaming
+        backendAnimState.streaming = false;
+        
+        // Return to static images (refresh views from server)
+        await refreshViews();
+        
+        console.log('✅ Animation stopped - showing Three.js robot and static images');
         
       } else {
         // Start backend animation
@@ -4163,19 +4224,17 @@ loader.load(
           
           // Hide UI elements during animation
           setPoseGizmosVisible(false);
-          showAllRobotMeshes();
-          setGhostMode(true);
           setHUDHiddenForAnimation(true);
           
-          // Make sure robot is visible
-          if (!robotVisible) {
-            robotVisible = true;
-            robot.visible = true;
-            if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
-          }
+          // IMPORTANT: Hide Three.js robot and start Isaac Sim streaming
+          robotVisible = false;
+          robot.visible = false;
+          if (toggleRobotBtn) toggleRobotBtn.textContent = 'show robot model';
           
-          // Refresh status
-          checkAnimationStatus();
+          // Start Isaac Sim frame streaming
+          backendAnimState.streaming = true;
+          
+          console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
         }
       }
     }
@@ -5371,6 +5430,19 @@ loader.load(
       // Stop backend animation if active
       if (backendAnimState.active) {
         stopBackendAnimation();
+        
+        // Show Three.js robot and stop streaming when animation is cancelled
+        robotVisible = true;
+        robot.visible = true;
+        if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+        
+        // Stop Isaac Sim frame streaming
+        backendAnimState.streaming = false;
+        
+        // Return to static images
+        refreshViews();
+        
+        console.log('✅ Animation cancelled - showing Three.js robot and static images');
       }
 
       // Turn OFF animation (same as clicking "Animate" again to stop)

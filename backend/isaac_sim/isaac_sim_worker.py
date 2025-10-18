@@ -29,6 +29,7 @@ class IsaacSimWorker:
         self.objects = {}  # Store object references for reuse
         self.hide_robot_funcs = None  # Store hide/show functions
         self.simulation_app = simulation_app  # Store simulation app reference
+        self.last_sync_config = None  # Store last synchronized config for animation reset
         
     def initialize_simulation(self, config):
         """One-time simulation setup that can be reused across state updates"""
@@ -116,6 +117,9 @@ class IsaacSimWorker:
         
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
+            
+        # Store the config for animation reset purposes
+        self.last_sync_config = config.copy()
             
         # Get state from config
         initial_q = np.array(config.get('robot_joints', [0.0] * 7))
@@ -240,7 +244,7 @@ class IsaacSimWorker:
                 raise RuntimeError("Robot object not available")
             
             print("Restoring robot visibility for animation mode...")
-            # self.hide_robot_funcs['show']()
+            self.hide_robot_funcs['show']()
             
             # Show robot for animation mode - need to restore if it was hidden
             # For now, assume robot is already visible from static capture mode
@@ -252,20 +256,41 @@ class IsaacSimWorker:
             # Initialize cloner
             cloner = Cloner()
             
-            # Clone environments for each user
+            # Clone environments for each user with spatial separation
             source_prim_path = "/World"
+            environment_spacing = 15.0  # 15 meters between environments
+            
             for user_id in range(max_users):
                 if user_id == 0:
-                    # User 0 uses original environment
+                    # User 0 uses original environment at (0, 0, 0)
                     target_path = "/World"
+                    offset = [0.0, 0.0, 0.0]
+                    print(f"User {user_id}: Using original environment at {target_path} with offset {offset}")
                 else:
-                    # Clone for other users
+                    # Simple linear spacing for now - place users in a line along X-axis
+                    offset = [user_id * environment_spacing, 0.0, 0.0]
+                    
+                    print(f"Debug: user_id={user_id}, offset={offset}")
+                    
+                    # Clone environment at offset position
                     target_path = f"/World_User_{user_id}"
+                    print(f"User {user_id}: Cloning environment to {target_path} with offset {offset}")
+                    
                     cloner.clone(
                         source_prim_path=source_prim_path,
                         prim_paths=[target_path],
                         copy_from_source=True
                     )
+                    
+                    # Apply spatial offset to the entire cloned environment
+                    print(f"Applying spatial offset {offset} to {target_path}")
+                    success = self._apply_environment_offset(target_path, offset)
+                    if not success:
+                        print(f"❌ Failed to apply offset to {target_path}")
+                    
+                    # Let physics settle after applying transform
+                    for step in range(10):
+                        self.world.step(render=True)
                 
                 # Get robot for this environment
                 robot_path = f"{target_path}/wxai"
@@ -288,7 +313,8 @@ class IsaacSimWorker:
                 self.user_environments[user_id] = {
                     'robot': user_robot,
                     'cameras': user_cameras,
-                    'world_path': target_path
+                    'world_path': target_path,
+                    'spatial_offset': offset
                 }
                 
             self.animation_mode = True
@@ -314,6 +340,15 @@ class IsaacSimWorker:
             
         print("Synchronizing animation environments to new state...")
         
+        # IMPORTANT: Ensure robot is visible for animation mode
+        # (It might be hidden from previous static image capture)
+        if self.hide_robot_funcs:
+            self.hide_robot_funcs['show']()
+            print("✅ Restored robot visibility for animation")
+        
+        # Store the sync config so animations can reset to this state
+        self.last_sync_config = config.copy()
+        
         # Get state from config
         initial_q = np.array(config.get('robot_joints', [0.0] * 7))
         initial_q = np.append(initial_q, initial_q[-1])
@@ -336,48 +371,22 @@ class IsaacSimWorker:
                 # Get object references for this cloned environment
                 stage = omni.usd.get_context().get_stage()
                 
-                # Update Cube_01
-                cube_01_path = f"{world_path}/Cube_01"
-                cube_01_prim = stage.GetPrimAtPath(cube_01_path)
-                if cube_01_prim.IsValid():
-                    pos = object_states["Cube_01"]["pos"]
-                    rot = object_states["Cube_01"]["rot"]  # quaternion [x,y,z,w]
-                    
-                    xformable = UsdGeom.Xformable(cube_01_prim)
-                    
-                    # Set translation
-                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
-                    
-                    # Set rotation (convert quaternion to rotation matrix)
-                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])  # Gf.Quatf(w, x, y, z)
-                    rotation_matrix = quat.GetMatrix()
-                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
+                # Define object mappings: USD name -> config key
+                object_mappings = {
+                    "Cube_01": "Cube_01",
+                    "Cube_02": "Cube_02", 
+                    "Tennis": "Tennis"
+                }
                 
-                # Update Cube_02
-                cube_02_path = f"{world_path}/Cube_02"
-                cube_02_prim = stage.GetPrimAtPath(cube_02_path)
-                if cube_02_prim.IsValid():
-                    pos = object_states["Cube_02"]["pos"]
-                    rot = object_states["Cube_02"]["rot"]
-                    
-                    xformable = UsdGeom.Xformable(cube_02_prim)
-                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
-                    
-                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])
-                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
-                
-                # Update Tennis ball
-                tennis_path = f"{world_path}/Tennis"
-                tennis_prim = stage.GetPrimAtPath(tennis_path)
-                if tennis_prim.IsValid():
-                    pos = object_states["Tennis"]["pos"]
-                    rot = object_states["Tennis"]["rot"]
-                    
-                    xformable = UsdGeom.Xformable(tennis_prim)
-                    xformable.AddTranslateOp().Set((pos[0], pos[1], pos[2]))
-                    
-                    quat = Gf.Quatf(rot[3], rot[0], rot[1], rot[2])
-                    xformable.AddOrientOp().Set(Gf.Quatf(quat.GetReal(), *quat.GetImaginary()))
+                # Update all objects using the helper function
+                for obj_name, config_key in object_mappings.items():
+                    if config_key in object_states:
+                        self._update_object_transform(
+                            stage=stage,
+                            object_path=f"{world_path}/{obj_name}",
+                            position=object_states[config_key]["pos"],
+                            rotation=object_states[config_key]["rot"]
+                        )
                     
                 print(f"Synced environment {user_id} ({world_path})")
                 
@@ -389,6 +398,76 @@ class IsaacSimWorker:
             self.world.step(render=True)
             
         print("Animation environment synchronization complete")
+
+    def _update_object_transform(self, stage, object_path, position, rotation):
+        """Helper method to update object transform with proper USD precision handling"""
+        from pxr import Gf, UsdGeom
+        
+        prim = stage.GetPrimAtPath(object_path)
+        if not prim.IsValid():
+            return
+            
+        xformable = UsdGeom.Xformable(prim)
+        
+        # Get or create transform operations with matching precision
+        xform_ops = xformable.GetOrderedXformOps()
+        translate_op = None
+        orient_op = None
+        
+        # Find existing ops
+        for op in xform_ops:
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                translate_op = op
+            elif op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                orient_op = op
+        
+        # Create ops if they don't exist
+        if translate_op is None:
+            translate_op = xformable.AddTranslateOp()
+        if orient_op is None:
+            orient_op = xformable.AddOrientOp()
+        
+        # Set translation and rotation with proper precision matching
+        translate_op.Set((position[0], position[1], position[2]))
+        
+        # Detect the precision type of the existing orient operation and match it
+        if orient_op is not None:
+            # Get the attribute to check its type
+            attr = orient_op.GetAttr()
+            type_name = attr.GetTypeName()
+            
+            # Use the appropriate quaternion type based on existing precision
+            if 'quatd' in str(type_name):
+                # Double precision quaternion
+                quat = Gf.Quatd(rotation[3], rotation[0], rotation[1], rotation[2])  # Gf.Quatd(w, x, y, z)
+            else:
+                # Float precision quaternion (default)
+                quat = Gf.Quatf(rotation[3], rotation[0], rotation[1], rotation[2])  # Gf.Quatf(w, x, y, z)
+            
+            orient_op.Set(quat)
+
+    def _apply_environment_offset(self, environment_path, offset):
+        """Apply spatial offset to an entire cloned environment"""
+        import omni.usd
+        from pxr import Gf, UsdGeom
+        
+        stage = omni.usd.get_context().get_stage()
+        env_prim = stage.GetPrimAtPath(environment_path)
+        
+        if not env_prim.IsValid():
+            print(f"Warning: Environment prim {environment_path} not found")
+            return False
+            
+        # Apply transform to the root environment prim
+        xformable = UsdGeom.Xformable(env_prim)
+        
+        # Clear any existing transforms and add translation
+        xformable.ClearXformOpOrder()
+        translate_op = xformable.AddTranslateOp()
+        translate_op.Set(Gf.Vec3d(offset[0], offset[1], offset[2]))
+        
+        print(f"✓ Applied offset {offset} to environment {environment_path}")
+        return True
         
     def start_user_animation(self, user_id, goal_joints, duration=3.0):
         """Start animation for specific user using direct joint control"""
@@ -398,15 +477,44 @@ class IsaacSimWorker:
         import numpy as np
         
         robot = self.user_environments[user_id]['robot']
-        current_joints = robot.get_joint_positions()
         
         if goal_joints is None:
             return {"error": "Must provide goal_joints"}
             
+        # Convert goal_joints to numpy array
+        goal_joints = np.array(goal_joints)
+        
+        # Get the initial state joints from the latest synchronized state
+        # This should be the current state that the frontend robot is in
+        if hasattr(self, 'last_sync_config') and 'robot_joints' in self.last_sync_config:
+            initial_joints_7d = np.array(self.last_sync_config['robot_joints'])
+        else:
+            # Fallback to current position if no sync config available
+            initial_joints_7d = np.array([0.0] * 7)
+            print("⚠️ No sync config available, using default initial position")
+        
+        # Convert to 8D (add mimic joint)
+        initial_joints = np.append(initial_joints_7d, initial_joints_7d[-1])
+        
+        # Ensure goal_joints has same dimension as initial_joints
+        # Frontend sends 7 values, but robot has 8 (last joint is mimic)
+        if len(goal_joints) == 7:
+            # Duplicate the last joint value for the mimic joint
+            goal_joints = np.append(goal_joints, goal_joints[-1])
+            print(f"Extended goal_joints from 7 to 8 dimensions: {goal_joints}")
+        elif len(goal_joints) != 8:
+            return {"error": f"Goal joints dimension mismatch: got {len(goal_joints)}, expected 7 or 8"}
+            
+        print(f"🔄 Animation reset - Initial: {initial_joints}, Goal: {goal_joints}")
+        
+        # IMPORTANT: Reset robot to initial state before starting animation
+        robot.set_joint_positions(initial_joints)
+        print(f"✅ Reset robot {user_id} to initial state: {initial_joints}")
+        
         # Store animation parameters
         self.active_animations[user_id] = {
-            'initial_joints': current_joints.copy(),
-            'goal_joints': np.array(goal_joints),
+            'initial_joints': initial_joints.copy(),
+            'goal_joints': goal_joints,
             'duration': duration,
             'start_time': time.time(),
             'active': True
@@ -440,6 +548,12 @@ class IsaacSimWorker:
             # Interpolate joint positions
             initial = anim_data['initial_joints']
             goal = anim_data['goal_joints']
+            
+            # Debug: Check shapes match
+            if initial.shape != goal.shape:
+                print(f"⚠️ Shape mismatch in user {user_id}: initial {initial.shape} vs goal {goal.shape}")
+                continue
+                
             current_joints = initial + (goal - initial) * smooth_progress
             
             # Apply to robot
