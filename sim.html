@@ -4030,12 +4030,23 @@ loader.load(
         console.log('Starting backend animation with goal joints:', goalJoints);
         console.log('Goal joints types:', goalJoints.map(v => typeof v));
         
+        // Determine gripper action based on gripDir
+        let gripperAction = null;
+        if (gripDir > 0) {
+          gripperAction = "open";
+        } else if (gripDir < 0) {
+          gripperAction = "close";
+        }
+        
+        console.log('Gripper action:', gripperAction, '(gripDir:', gripDir, ')');
+        
         const response = await apiFetch('/api/animation/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             goal_joints: goalJoints,
-            duration: 3.0  // 3 second animation
+            duration: 3.0,  // 3 second animation
+            gripper_action: gripperAction
           })
         });
         

@@ -213,7 +213,7 @@ class PersistentWorkerManager:
         return result
         
     def start_user_animation(self, user_id: int, goal_pose: Dict = None, 
-                           goal_joints: list = None, duration: float = 3.0) -> Dict[str, Any]:
+                           goal_joints: list = None, duration: float = 3.0, gripper_action: str = None) -> Dict[str, Any]:
         """Start animation for specific user"""
         if not self.animation_initialized:
             return {"status": "error", "message": "Animation not initialized"}
@@ -223,7 +223,8 @@ class PersistentWorkerManager:
             "user_id": user_id,
             "goal_pose": goal_pose,
             "goal_joints": goal_joints,
-            "duration": duration
+            "duration": duration,
+            "gripper_action": gripper_action
         }
         
         return self._send_command(command)
@@ -271,7 +272,7 @@ class PersistentWorkerManager:
         return result
     
     def start_user_animation_managed(self, session_id: str, goal_pose: Dict = None, 
-                                   goal_joints: list = None, duration: float = 3.0) -> Dict[str, Any]:
+                                   goal_joints: list = None, duration: float = 3.0, gripper_action: str = None) -> Dict[str, Any]:
         """Start animation for a session (manages user slots automatically)"""
         if not self.animation_initialized:
             return {"status": "error", "message": "Animation not initialized"}
@@ -289,7 +290,7 @@ class PersistentWorkerManager:
         user_id = self.available_slots.pop()
         
         # Start animation
-        result = self.start_user_animation(user_id, goal_pose, goal_joints, duration)
+        result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action)
         
         if result.get("status") == "success":
             # Track session -> user mapping

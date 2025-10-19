@@ -57,8 +57,11 @@ class AnimationFrameCache:
         
         if frame_index == self.total_frames - 1:
             self.is_complete = True
-            generation_time = time.time() - self.generation_start_time
-            print(f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames in {generation_time:.2f}s")
+            if self.generation_start_time is not None:
+                generation_time = time.time() - self.generation_start_time
+                print(f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames in {generation_time:.2f}s")
+            else:
+                print(f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames (no timing available)")
         
     def get_current_replay_frame(self) -> dict | None:
         """Get the current frame for replay based on elapsed time"""
@@ -643,7 +646,7 @@ class IsaacSimWorker:
         print(f"✓ Applied clean offset {offset} to environment {environment_path}")
         return True
         
-    def start_user_animation(self, user_id, goal_joints, duration=3.0):
+    def start_user_animation(self, user_id, goal_joints, duration=3.0, gripper_action=None):
         """Start animation for specific user using direct joint control
         NEW: First execution generates all frames headlessly, subsequent requests replay cached frames"""
         if user_id not in self.user_environments:
@@ -726,6 +729,17 @@ class IsaacSimWorker:
         elif len(goal_joints) != 8:
             self.frame_generation_in_progress.discard(user_id)
             return {"error": f"Goal joints dimension mismatch: got {len(goal_joints)}, expected 7 or 8"}
+            
+        # Handle gripper action if provided
+        if gripper_action is not None:
+            if gripper_action == "grasp" or gripper_action == "close":
+                goal_joints[-1] = goal_joints[-2] = 0.0  # Closed gripper position
+                print(f"🤏 Gripper action: {gripper_action} -> setting gripper to closed (0.0)")
+            elif gripper_action == "open":
+                goal_joints[-1] = goal_joints[-2] = 0.044  # Open gripper position  
+                print(f"✋ Gripper action: {gripper_action} -> setting gripper to open (0.044)")
+            else:
+                print(f"⚠️ Unknown gripper action: {gripper_action}, keeping original gripper position")
             
         print(f"🆕 FRESH START - Initial: {initial_joints}, Goal: {goal_joints}")
         

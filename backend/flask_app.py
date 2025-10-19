@@ -852,6 +852,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             goal_pose = data.get('goal_pose')
             goal_joints = data.get('goal_joints')
             duration = data.get('duration', 3.0)
+            gripper_action = data.get('gripper_action')  # NEW: extract gripper action
             
             # Validate input
             if not goal_pose and not goal_joints:
@@ -861,7 +862,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 session_id=session_id,
                 goal_pose=goal_pose,
                 goal_joints=goal_joints,
-                duration=duration
+                duration=duration,
+                gripper_action=gripper_action
             )
             
             if result.get("status") == "error":

@@ -1794,7 +1794,7 @@ class CrowdInterface():
     # Animation Management
     # =========================
     
-    def start_animation(self, session_id: str, goal_pose: dict = None, goal_joints: list = None, duration: float = 3.0) -> dict:
+    def start_animation(self, session_id: str, goal_pose: dict = None, goal_joints: list = None, duration: float = 3.0, gripper_action: str = None) -> dict:
         """Start animation for a user session"""
         if not self.use_sim or not self.isaac_manager:
             return {"status": "error", "message": "Simulation not available"}
@@ -1804,7 +1804,8 @@ class CrowdInterface():
                 session_id=session_id,
                 goal_pose=goal_pose, 
                 goal_joints=goal_joints,
-                duration=duration
+                duration=duration,
+                gripper_action=gripper_action
             )
             return result
             

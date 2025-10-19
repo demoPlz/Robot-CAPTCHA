@@ -190,11 +190,13 @@ class PersistentWorker:
                 user_id = command['user_id']
                 goal_joints = command.get('goal_joints')
                 duration = command.get('duration', 3.0)
+                gripper_action = command.get('gripper_action')  # NEW: gripper action parameter
                 
                 result = self.isaac_worker.start_user_animation(
                     user_id=user_id,
                     goal_joints=goal_joints,
-                    duration=duration
+                    duration=duration,
+                    gripper_action=gripper_action
                 )
                 
                 return {
