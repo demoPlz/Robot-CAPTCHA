@@ -232,9 +232,9 @@ class IsaacSimWorker:
         initial_q = np.array(config.get('robot_joints', [0.0] * 7))
         initial_q = np.append(initial_q, initial_q[-1])
         object_states = config.get('object_poses', {
-            "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-            "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-            "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+            "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+            "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
 
         # Grasp detection: Check if gripper force exceeds threshold (same as frontend)
@@ -493,9 +493,9 @@ class IsaacSimWorker:
         initial_q = np.array(config.get('robot_joints', [0.0] * 7))
         initial_q = np.append(initial_q, initial_q[-1])
         object_states = config.get('object_poses', {
-            "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-            "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-            "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+            "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+            "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
         
         # Update each animation environment
@@ -745,6 +745,12 @@ class IsaacSimWorker:
             return {"error": f"Goal joints dimension mismatch: got {len(goal_joints)}, expected 7 or 8"}
             
         # Handle gripper action if provided
+        # NOTE: Using physics-based apply_action for all animation - gripper control integrated
+        # For optimal gripper behavior, tune these USD parameters in your robot file:
+        # - Joint stiffness (drive:angular:physics:stiffness): Lower values (e.g., 1000) for softer grip
+        # - Joint damping (drive:angular:physics:damping): Higher values (e.g., 100) for smoother motion  
+        # - Joint force limits (drive:angular:physics:maxForce): Realistic limits (e.g., 100N) to prevent crushing
+        # - Contact friction (physics:friction): Higher values (e.g., 0.8-1.0) for better object gripping
         if gripper_action is not None:
             if gripper_action == "grasp" or gripper_action == "close":
                 goal_joints[-1] = goal_joints[-2] = 0.000  # Closed gripper position
@@ -868,17 +874,19 @@ class IsaacSimWorker:
                 
                 frame_idx = state['current_frame']
                 
-                # Calculate progress (0.0 to 1.0)
-                progress = frame_idx / (state['total_frames'] - 1) if state['total_frames'] > 1 else 0.0
-                
-                # Smooth interpolation (ease-in-out)
-                smooth_progress = 0.5 * (1 - np.cos(np.pi * progress))
-                
-                # Interpolate joint positions
-                current_joints = state['initial_joints'] + (state['goal_joints'] - state['initial_joints']) * smooth_progress
-                
-                # Apply to robot
-                robot.set_joint_positions(current_joints)
+                # Use apply_action for physics-based animation with PD controllers
+                # Apply the final goal position repeatedly - physics will handle smooth interpolation automatically
+                try:
+                    from omni.isaac.core.utils.types import ArticulationAction
+                    action = ArticulationAction(joint_positions=state['goal_joints'].tolist())
+                    robot.apply_action(action)
+                except ImportError:
+                    # Fallback to direct position setting if ArticulationAction not available
+                    print(f"Warning: ArticulationAction not available, using set_joint_positions fallback")
+                    robot.set_joint_positions(state['goal_joints'])
+                except Exception as e:
+                    print(f"Warning: apply_action failed for user {user_id}: {e}, using set_joint_positions fallback")
+                    robot.set_joint_positions(state['goal_joints'])
                 
                 # Let physics settle
                 self.world.step(render=True)
@@ -928,14 +936,25 @@ class IsaacSimWorker:
             
             # Check if there's a pending command
             if os.path.exists(command_signal_file) and os.path.exists(command_file):
-                with open(command_file, 'r') as f:
-                    command = json.load(f)
-                    
-                # Check if it's a stop command for this user
-                if (command.get('action') == 'stop_user_animation' and 
-                    command.get('user_id') == user_id):
-                    print(f"🛑 DETECTED stop command for user {user_id} during frame generation!")
-                    return True
+                try:
+                    # Check if file is not empty before trying to parse JSON
+                    if os.path.getsize(command_file) > 0:
+                        with open(command_file, 'r') as f:
+                            content = f.read().strip()
+                            if content:  # Only parse if there's actual content
+                                command = json.loads(content)
+                                
+                                # Check if it's a stop command for this user
+                                if (command.get('action') == 'stop_user_animation' and 
+                                    command.get('user_id') == user_id):
+                                    print(f"🛑 DETECTED stop command for user {user_id} during frame generation!")
+                                    return True
+                    else:
+                        print(f"Warning: Command file {command_file} is empty")
+                except json.JSONDecodeError as json_err:
+                    print(f"Warning: Invalid JSON in command file {command_file}: {json_err}")
+                except Exception as read_err:
+                    print(f"Warning: Could not read command file {command_file}: {read_err}")
                     
         except Exception as e:
             # If file reading fails, continue with generation
@@ -1018,9 +1037,9 @@ class IsaacSimWorker:
             # Use the correct object references for each environment type
             
             object_states = self.last_sync_config.get('object_poses', {
-                "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
             })
             
             if user_id == 0:
@@ -1096,7 +1115,7 @@ class IsaacSimWorker:
         
     def update_animations(self):
         """Update all active animations (called each frame)
-        NEW: Handles both legacy live animations and efficient replay system"""
+        Uses efficient replay system with pre-generated frames"""
         import numpy as np
         
         current_time = time.time()
@@ -1105,59 +1124,29 @@ class IsaacSimWorker:
             if not anim_data['active']:
                 continue
                 
-            anim_type = anim_data.get('type', 'legacy')
-            
-            if anim_type == 'replay':
-                # NEW: Frame-based replay system - no physics simulation needed
-                # Frames are already generated and cached, just update timing
-                cache = anim_data['cache']
-                if cache.is_complete:
-                    # The cache handles its own timing and looping
-                    # No robot position updates needed as frames contain all visual data
-                    pass
-                else:
-                    # If cache is not complete, something went wrong
-                    print(f"⚠️ Animation cache for user {user_id} is not complete, stopping animation")
-                    anim_data['active'] = False
-                    
+            # Frame-based replay system - no physics simulation needed
+            # Frames are already generated and cached, just update timing
+            cache = anim_data['cache']
+            if cache.is_complete:
+                # The cache handles its own timing and looping
+                # No robot position updates needed as frames contain all visual data
+                pass
             else:
-                # LEGACY: Original live physics simulation system
-                elapsed = current_time - anim_data['start_time']
-                progress = min(elapsed / anim_data['duration'], 1.0)
-                
-                # Smooth interpolation (ease-in-out)
-                smooth_progress = 0.5 * (1 - np.cos(np.pi * progress))
-                
-                # Interpolate joint positions
-                initial = anim_data['initial_joints']
-                goal = anim_data['goal_joints']
-                
-                # Debug: Check shapes match
-                if initial.shape != goal.shape:
-                    print(f"⚠️ Shape mismatch in user {user_id}: initial {initial.shape} vs goal {goal.shape}")
-                    continue
-                    
-                current_joints = initial + (goal - initial) * smooth_progress
-                
-                # Apply to robot
-                robot = self.user_environments[user_id]['robot']
-                robot.set_joint_positions(current_joints)
-                
-                # Loop animation when complete
-                if progress >= 1.0:
-                    anim_data['start_time'] = current_time  # Restart loop
+                # If cache is not complete, something went wrong
+                print(f"⚠️ Animation cache for user {user_id} is not complete, stopping animation")
+                anim_data['active'] = False
                 
     def capture_user_frame(self, user_id, output_dir):
         """Capture current frame for specific user
-        NEW: Serves cached frames if available, falls back to live capture"""
+        Serves cached frames if available, falls back to live capture"""
         if user_id not in self.user_environments:
             return None
             
         import os
         
-        # Check if this user has a frame cache and is in replay mode
+        # Check if this user has a frame cache and active animation
         if (user_id in self.active_animations and 
-            self.active_animations[user_id].get('type') == 'replay' and
+            self.active_animations[user_id].get('active') and
             user_id in self.frame_caches):
             
             cache = self.frame_caches[user_id]

@@ -1145,9 +1145,9 @@ class CrowdInterface():
                 "usd_path": f"public/assets/usd/{self.task_name}.usd",
                 "robot_joints": [0.0] * 7,
                 "object_poses": {
-                    "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                    "Cube_01": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_02": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
             }
             
@@ -1753,9 +1753,9 @@ class CrowdInterface():
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": {
-                    "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                    "Cube_01": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_02": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
             }            # Use persistent worker for fast capture with animation sync
             result = self.isaac_manager.update_state_and_sync_animations(
