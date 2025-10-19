@@ -800,16 +800,19 @@ class IsaacSimWorker:
             print(f"[Worker] ⚡ User {user_id} is generating frames - requesting immediate stop")
             self.animation_stop_requested.add(user_id)
         
+        # Reset the user environment (always do this for clean state)
+        reset_start = time.time()
+        reset_elapsed = 0.0
+        
         if user_id in self.active_animations:
             self.active_animations[user_id]['active'] = False
             del self.active_animations[user_id]
             print(f"[Worker] 🛑 Stopped animation for user {user_id}")
             
-            # Reset this user's environment back to the fresh synchronized state
-            reset_start = time.time()
-            self._reset_user_environment_to_sync_state(user_id)
-            reset_elapsed = time.time() - reset_start
-            print(f"[Worker] 🔄 Reset user {user_id} to fresh synchronized state in {reset_elapsed:.3f}s")
+        # Reset this user's environment back to the fresh synchronized state
+        self._reset_user_environment_to_sync_state(user_id)
+        reset_elapsed = time.time() - reset_start
+        print(f"[Worker] 🔄 Reset user {user_id} to fresh synchronized state in {reset_elapsed:.3f}s")
             
         # NEW: Clean up frame cache when animation stops
         cache_start = time.time()

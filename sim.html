@@ -2962,14 +2962,10 @@ loader.load(
 
     // Create a wrapper group to position the robot
     const robotGroup = new THREE.Group();
-    robotGroup.position.z = 0.025; // Raise by 0.025 units
+    const ROBOT_Z_OFFSET = 0.025; // Raise by 0.025 units
+    robotGroup.position.z = ROBOT_Z_OFFSET;
     robotGroup.add(robot);
     scene.add(robotGroup);
-    
-    console.log('[DEBUG] Robot loaded and added to scene with 0.025 offset:', robot);
-    console.log('[DEBUG] Robot position:', robot.position);
-    console.log('[DEBUG] Robot children count:', robot.children.length);
-    console.log('[DEBUG] Scene children count:', scene.children.length);
 
     /* === Gold tint helpers (applies to both opaque + ghost) ================== */
     const GOLD_HEX           = 0xffc83d;   // warm gold
@@ -3185,6 +3181,8 @@ loader.load(
 
 
     const initialJointPositions = state.joint_positions ?? {};
+    // Keep a separate copy of original backend positions to avoid IK contamination
+    const originalBackendJointPositions = JSON.parse(JSON.stringify(initialJointPositions));
     const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
 
     /* ---------- gripper finger-tip calibration (load + state) ---------- */
@@ -3331,6 +3329,10 @@ loader.load(
     for (const [name, val] of Object.entries(initialJointPositions)) {
       robot.setJointValue(name, val);
     }
+
+    // ===== IK CONTROL FLAG =====
+    // IK solving is always enabled (like in real.html)
+    let ikSolvingEnabled = true;
 
     /* ---------- gripper-motion arrows ---------------------------------- */
     let gripArrows = [];                       // keeps currently-shown arrow meshes
@@ -3963,7 +3965,9 @@ loader.load(
     eeVis.getWorldPosition   ( startPos  );
     eeVis.getWorldQuaternion ( startQuat );
 
-    goal.setPosition   ( startPos.x, startPos.y, startPos.z );
+    // eeVis.getWorldPosition already includes the robotGroup Z offset,
+    // so we need to subtract it for the IK goal but use as-is for visual marker
+    goal.setPosition   ( startPos.x, startPos.y, startPos.z - ROBOT_Z_OFFSET );
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
     /* ===== Animate button + loop state ===== */
@@ -4852,7 +4856,7 @@ loader.load(
 
       // 4) Push to IK only when NOT animating
       if (!animState.enabled) {
-        goal.setPosition(targetPose.pos.x, targetPose.pos.y, targetPose.pos.z);
+        goal.setPosition(targetPose.pos.x, targetPose.pos.y, targetPose.pos.z - ROBOT_Z_OFFSET);
         goal.setQuaternion(
           targetPose.quat.x, targetPose.quat.y, targetPose.quat.z, targetPose.quat.w
         );
@@ -5025,6 +5029,7 @@ loader.load(
         dragState.viewName  = viewName;
         dragState.pointerId = evt.pointerId;
         el.setPointerCapture(dragState.pointerId);
+        
         el.style.cursor = 'grabbing';
 
         // Update current view and gripper visibility
@@ -5318,7 +5323,7 @@ loader.load(
       const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
 
       // 2) Snap the IK goal to that target and explicitly solve to it now
-      goal.setPosition(tgtPos.x, tgtPos.y, tgtPos.z);
+      goal.setPosition(tgtPos.x, tgtPos.y, tgtPos.z - ROBOT_Z_OFFSET);
       goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
 
       setIKFromUrdf(ikRoot, robot);
@@ -5482,7 +5487,7 @@ loader.load(
 
       // Snap the goal to the current target to avoid jumps
       const { pos, quat } = getTargetPose();
-      goal.setPosition(pos.x, pos.y, pos.z);
+      goal.setPosition(pos.x, pos.y, pos.z - ROBOT_Z_OFFSET);
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
 
       // Restore normal visuals
@@ -5534,19 +5539,37 @@ loader.load(
       targetPose.pos.copy(startPos);
       targetPose.quat.copy(startQuat);
 
-      goal.setPosition(startPos.x, startPos.y, startPos.z);
+      goal.setPosition(startPos.x, startPos.y, startPos.z - ROBOT_Z_OFFSET);
       goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
 
       // Marker
       marker.position.copy(startPos);
       marker.quaternion.copy(startQuat);
 
-      // Snap robot back to initial joints for visual consistency
-      if (initialJointPositions) {
-        for (const [name, val] of Object.entries(initialJointPositions)) {
+      // Snap robot back to original backend joints (not IK-modified ones)
+      if (originalBackendJointPositions) {
+        for (const [name, val] of Object.entries(originalBackendJointPositions)) {
           robot.setJointValue(name, val);
         }
         robot.updateMatrixWorld(true);
+        
+        // Update goal to match the actual end-effector pose from the reset joint positions
+        const resetEEPos = new THREE.Vector3();
+        const resetEEQuat = new THREE.Quaternion();
+        eeVis.getWorldPosition(resetEEPos);
+        eeVis.getWorldQuaternion(resetEEQuat);
+        
+        // eeVis.getWorldPosition already includes robotGroup Z offset
+        // Use as-is for visual elements, subtract offset for IK goal
+        targetPose.pos.copy(resetEEPos);
+        targetPose.quat.copy(resetEEQuat);
+        goal.setPosition(resetEEPos.x, resetEEPos.y, resetEEPos.z - ROBOT_Z_OFFSET);
+        goal.setQuaternion(resetEEQuat.x, resetEEQuat.y, resetEEQuat.z, resetEEQuat.w);
+        marker.position.copy(resetEEPos);
+        marker.quaternion.copy(resetEEQuat);
+        
+        // Update params to match actual pose
+        params.x = resetEEPos.x; params.y = resetEEPos.y; params.z = resetEEPos.z;
       }
 
       // Treat this like "no pose changes yet" but keep robot visible
@@ -5570,10 +5593,24 @@ loader.load(
       const HOME_RAD = [0, 60, 75, -60, 0, 0, 2].map(d => d * D2R);
 
       // We'll map the angles onto the joint *order* provided by the server's
-      // initialJointPositions object (same order used during reset).
+      // original backend joint positions (not IK-modified ones).
       // This keeps the mapping robust without hardcoding joint names.
-      const jointNames = Object.keys(initialJointPositions || {});
+      const jointNames = Object.keys(originalBackendJointPositions || {});
       const count = Math.min(jointNames.length, HOME_RAD.length);
+
+      console.log('🏠 HOME: Joint names from backend:', jointNames);
+      console.log('🏠 HOME: Home angles (radians):', HOME_RAD.slice(0, count));
+      
+      // Log current robot positions before home
+      const currentPositions = {};
+      for (const name of jointNames) {
+        const joint = robot.joints[name];
+        const value = joint ? (Array.isArray(joint.jointValue) && joint.jointValue.length > 0 
+          ? joint.jointValue[0] 
+          : (joint.jointValue || 0.0)) : 0.0;
+        currentPositions[name] = value;
+      }
+      console.log('🏠 HOME: Current robot positions before home:', currentPositions);
 
       let applied = 0;
       for (let i = 0; i < count; i++) {
@@ -5584,6 +5621,17 @@ loader.load(
       }
 
       robot.updateMatrixWorld(true);
+      
+      // Log robot positions after home
+      const afterPositions = {};
+      for (const name of jointNames) {
+        const joint = robot.joints[name];
+        const value = joint ? (Array.isArray(joint.jointValue) && joint.jointValue.length > 0 
+          ? joint.jointValue[0] 
+          : (joint.jointValue || 0.0)) : 0.0;
+        afterPositions[name] = value;
+      }
+      console.log('🏠 HOME: Robot positions after home:', afterPositions);
 
       // Sample the EE pose for this joint configuration
       const p = new THREE.Vector3();
@@ -5591,12 +5639,15 @@ loader.load(
       eeVis.getWorldPosition(p);
       eeVis.getWorldQuaternion(q);
 
+      // eeVis.getWorldPosition already includes robotGroup Z offset
+      // Use as-is for visual elements, subtract offset for IK goal
+
       // Update the live target/marker/goal so IK keeps the robot at this pose
       targetPose.pos.copy(p);
       targetPose.quat.copy(q);
       marker.position.copy(p);
       marker.quaternion.copy(q);
-      goal.setPosition(p.x, p.y, p.z);
+      goal.setPosition(p.x, p.y, p.z - ROBOT_Z_OFFSET);
       goal.setQuaternion(q.x, q.y, q.z, q.w);
 
       // Keep the Cartesian params consistent (sliders are hidden, but state matters)
@@ -5612,6 +5663,7 @@ loader.load(
       recomputeLocks();
       updateGripHUDInteractivity();
 
+      console.log(`🏠 HOME: Applied to ${applied} joint(s), goal aligned to EE pose:`, p, q);
       console.log(`Home Pos applied to ${applied} joint(s) using order:`, jointNames.slice(0, applied));
     }
 
@@ -5824,24 +5876,24 @@ loader.load(
           }
           _interpPos.copy(startPos).lerp(tgtPos, animState.t);
           _interpQuat.copy(startQuat).slerp(tgtQuat, animState.t);
-          goal.setPosition  (_interpPos.x,  _interpPos.y,  _interpPos.z);
+          goal.setPosition  (_interpPos.x,  _interpPos.y,  _interpPos.z - ROBOT_Z_OFFSET);
           goal.setQuaternion(_interpQuat.x, _interpQuat.y, _interpQuat.z, _interpQuat.w);
         } else { // 'hold'
           animState.holdElapsed += dt;
           // Stay exactly at the (live) goal during the hold window
-          goal.setPosition  (tgtPos.x,  tgtPos.y,  tgtPos.z);
+          goal.setPosition  (tgtPos.x,  tgtPos.y,  tgtPos.z - ROBOT_Z_OFFSET);
           goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
           if (animState.holdElapsed >= animState.holdMs) {
-            // Teleport robot back to the *initial joint configuration*
-            if (initialJointPositions) {
-              for (const [name, val] of Object.entries(initialJointPositions)) {
+            // Teleport robot back to the *original backend joint configuration*
+            if (originalBackendJointPositions) {
+              for (const [name, val] of Object.entries(originalBackendJointPositions)) {
                 robot.setJointValue(name, val);
               }
               robot.updateMatrixWorld(true);
             }
 
             // Reset the IK goal to the original EE pose (start)
-            goal.setPosition(startPos.x, startPos.y, startPos.z);
+            goal.setPosition(startPos.x, startPos.y, startPos.z - ROBOT_Z_OFFSET);
             goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
 
             // Begin a fresh forward pass
@@ -5858,10 +5910,12 @@ loader.load(
         captureAnimationFrame();
       }
 
-      // Solve IK for this frame
-      setIKFromUrdf(ikRoot, robot);
-      solver.solve();
-      setUrdfFromIK(robot, ikRoot);
+      // Solve IK for this frame (only if enabled after user interaction)
+      if (ikSolvingEnabled) {
+        setIKFromUrdf(ikRoot, robot);
+        solver.solve();
+        setUrdfFromIK(robot, ikRoot);
+      }
 
       // ----- yellow drop lines from finger tips -----
       function updateFingerLine(link, lineMesh, localTipVec) {
