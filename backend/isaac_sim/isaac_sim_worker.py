@@ -530,13 +530,6 @@ class IsaacSimWorker:
             
         print("Synchronizing animation environments to new state...")
         
-        # Store the sync config so animations can reset to this state
-        self.last_sync_config = config.copy()
-        # Clone last dimension for mimic joint
-        self.last_sync_config['robot_joints'] = \
-            np.append(self.last_sync_config['robot_joints'], \
-                      self.last_sync_config['robot_joints'][-1])
-        
         object_states = config.get('object_poses', {
             "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
             "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
@@ -546,8 +539,6 @@ class IsaacSimWorker:
         # Update each animation environment
         for user_id, env_data in self.user_environments.items():
             try:
-                robot = env_data['robot']
-                world_path = env_data['world_path']
                 
                 # Update object poses for ALL environments using appropriate object references
                 if user_id == 0:
@@ -621,7 +612,10 @@ class IsaacSimWorker:
                                 print(f"⚠️ Scene object {scene_name} not found for user {user_id} - skipping sync")
                                 
                     print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
-                    
+                
+                for step in range(20):
+                    self.world.step(render=True)
+
                 self.set_robot_joints()
                 
             except Exception as e:
@@ -1231,9 +1225,12 @@ class IsaacSimWorker:
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
             
-            self.set_robot_joints()
-            
+            for step in range(20):  # Increased from 8 to account for gripper operations
+                self.world.step(render=True)
+
             robot.initialize()
+
+            self.set_robot_joints()
 
             # Let physics settle after all resets are complete (extended for gripper operations)
             for step in range(12):  # Increased from 8 to account for gripper operations
