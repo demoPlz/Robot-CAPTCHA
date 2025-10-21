@@ -1138,7 +1138,7 @@ class CrowdInterface():
             self.isaac_manager = PersistentWorkerManager(
                 isaac_sim_path=isaac_sim_path,
                 output_base_dir=str(self._obs_cache_root / "persistent_isaac"),
-                max_animation_users=2  # Pre-clone 2 animation environments for development
+                max_animation_users=1  # Pre-clone 2 animation environments for development
             )
             
             initial_config = {

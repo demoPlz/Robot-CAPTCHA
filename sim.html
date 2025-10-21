@@ -3977,7 +3977,8 @@ loader.load(
       streaming: false,        // Whether we're streaming frames
       user_id: null,          // Assigned animation slot
       last_frame_time: 0,     // For frame rate limiting
-      frame_interval: 100     // 10 FPS (100ms between frames)
+      frame_interval: 100,    // 10 FPS (100ms between frames)
+      capture_timer: null     // Timer for frame capture
     };
     
     // Keep legacy animState for compatibility with other parts of code
@@ -4061,6 +4062,7 @@ loader.load(
           backendAnimState.user_id = result.user_id;
           backendAnimState.streaming = true;
           backendAnimState.last_frame_time = 0;
+          startFrameCapture(); // Start timer-based frame capture
           
           console.log(`✓ Animation started - assigned slot ${result.user_id}`);
           return true;
@@ -4085,6 +4087,7 @@ loader.load(
         backendAnimState.active = false;
         backendAnimState.streaming = false;
         backendAnimState.user_id = null;
+        stopFrameCapture(); // Stop timer-based frame capture
         
         console.log('✓ Animation state updated immediately');
         
@@ -4112,19 +4115,12 @@ loader.load(
       try {
         if (!backendAnimState.streaming) return;
         
-        const now = Date.now();
-        if (now - backendAnimState.last_frame_time < backendAnimState.frame_interval) {
-          return; // Rate limiting
-        }
-        
         const response = await apiFetch('/api/animation/frame');
         const result = await response.json();
         
         console.log('🎬 Animation frame response:', result);
         
         if (result.status === 'success') {
-          backendAnimState.last_frame_time = now;
-          
           // Update camera views with new frames
           updateViewsWithAnimationFrames(result.result);
         } else {
@@ -4133,6 +4129,26 @@ loader.load(
         
       } catch (error) {
         console.error('❌ Frame capture error:', error);
+      }
+    }
+
+    function startFrameCapture() {
+      if (backendAnimState.capture_timer) return; // Already started
+      
+      backendAnimState.capture_timer = setInterval(() => {
+        if (backendAnimState.streaming) {
+          captureAnimationFrame();
+        }
+      }, backendAnimState.frame_interval);
+      
+      console.log('🎬 Started frame capture timer at', backendAnimState.frame_interval, 'ms intervals');
+    }
+
+    function stopFrameCapture() {
+      if (backendAnimState.capture_timer) {
+        clearInterval(backendAnimState.capture_timer);
+        backendAnimState.capture_timer = null;
+        console.log('🛑 Stopped frame capture timer');
       }
     }
     
@@ -4216,6 +4232,7 @@ loader.load(
         
         // Stop Isaac Sim frame streaming immediately
         backendAnimState.streaming = false;
+        stopFrameCapture(); // Stop timer-based frame capture
         
         // Restore UI elements immediately  
         setPoseGizmosVisible(true);
@@ -4260,6 +4277,7 @@ loader.load(
           
           // Start Isaac Sim frame streaming
           backendAnimState.streaming = true;
+          startFrameCapture(); // Start timer-based frame capture
           
           console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
         }
@@ -5464,6 +5482,7 @@ loader.load(
         
         // Stop Isaac Sim frame streaming immediately
         backendAnimState.streaming = false;
+        stopFrameCapture(); // Stop timer-based frame capture
         
         console.log('✅ Animation cancelled immediately - showing Three.js robot');
         
@@ -5905,10 +5924,8 @@ loader.load(
         }
       }
 
-      // Backend animation frame streaming
-      if (backendAnimState.streaming) {
-        captureAnimationFrame();
-      }
+      // Backend animation frame streaming is now handled by timer
+      // (removed from animation loop to prevent request flooding)
 
       // Solve IK for this frame (only if enabled after user interaction)
       if (ikSolvingEnabled) {

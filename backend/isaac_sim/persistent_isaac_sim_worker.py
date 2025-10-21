@@ -333,7 +333,7 @@ def main():
     
     # Start Isaac Sim
     global simulation_app
-    simulation_app = SimulationApp({"headless": True})
+    simulation_app = SimulationApp({"headless": False})
     
     try:
         # Create and start persistent worker
