@@ -300,41 +300,33 @@ class IsaacSimWorker:
         if grasp_detected and not self.animation_mode:
             print(f"🤏 Applying physics-based gripper closing for grasp (force: {gripper_force:.1f}N)")
             
-            try:
-                from omni.isaac.core.utils.types import ArticulationAction
+            from omni.isaac.core.utils.types import ArticulationAction
+            
+            # Create target position with original (closed) gripper values
+            target_q = initial_q.copy()  # This has the original closed gripper positions
+            
+            # Apply smooth closing action over several steps for stable grasp
+            for close_step in range(15):  # ~0.5 seconds at 30Hz
+                # Interpolate from current open position to target closed position
+                current_q = self.robot.get_joint_positions()
+                alpha = (close_step + 1) / 15  # Smooth interpolation factor
                 
-                # Create target position with original (closed) gripper values
-                target_q = initial_q.copy()  # This has the original closed gripper positions
+                # Only interpolate gripper joints, keep arm joints as-is
+                interpolated_q = current_q.copy()
+                interpolated_q[-2] = current_q[-2] + alpha * (target_q[-2] - current_q[-2])  # Left gripper
+                interpolated_q[-1] = current_q[-1] + alpha * (target_q[-1] - current_q[-1])  # Right gripper
                 
-                # Apply smooth closing action over several steps for stable grasp
-                for close_step in range(15):  # ~0.5 seconds at 30Hz
-                    # Interpolate from current open position to target closed position
-                    current_q = self.robot.get_joint_positions()
-                    alpha = (close_step + 1) / 15  # Smooth interpolation factor
-                    
-                    # Only interpolate gripper joints, keep arm joints as-is
-                    interpolated_q = current_q.copy()
-                    interpolated_q[-2] = current_q[-2] + alpha * (target_q[-2] - current_q[-2])  # Left gripper
-                    interpolated_q[-1] = current_q[-1] + alpha * (target_q[-1] - current_q[-1])  # Right gripper
-                    
-                    # Apply action with moderate force to avoid crushing
-                    action = ArticulationAction(
-                        joint_positions=interpolated_q.tolist(),
-                        joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
-                    )
-                    self.robot.apply_action(action)
-                    
-                    # Step physics
-                    self.world.step(render=True)
-                    
-                print(f"✅ Completed physics-based gripper closing in {15} steps")
+                # Apply action with moderate force to avoid crushing
+                action = ArticulationAction(
+                    joint_positions=interpolated_q.tolist(),
+                    joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
+                )
+                self.robot.apply_action(action)
                 
-            except Exception as e:
-                print(f"⚠️ Failed to apply physics-based gripper closing: {e}")
-                # Fallback: direct position setting
-                self.robot.set_joint_positions(initial_q)
-                for step in range(3):
-                    self.world.step(render=True)
+                # Step physics
+                self.world.step(render=True)
+                
+            print(f"✅ Completed physics-based gripper closing in {15} steps")
         
         # Final physics settling
         for step in range(3):
@@ -371,7 +363,7 @@ class IsaacSimWorker:
         self.hide_robot_funcs['show']()
         
         # Let physics settle with robot restored
-        for step in range(5):
+        for step in range(10):
             self.world.step(render=True)
 
         # Save static images
@@ -645,7 +637,7 @@ class IsaacSimWorker:
                 print(f"Warning: Failed to sync environment {user_id}: {e}")
         
         # Let physics settle across all environments
-        for step in range(5):
+        for step in range(10):
             self.world.step(render=True)
             
         print("Animation environment synchronization complete")
@@ -1292,45 +1284,37 @@ class IsaacSimWorker:
             robot.set_joint_positions(initial_q_open)  # Set with OPEN gripper first
             
             # Let physics settle with open gripper
-            for step in range(5):
+            for step in range(10):
                 self.world.step(render=True)
             
             # PHYSICS-BASED GRIPPER CLOSING: If gripper was closed in sync state, smoothly close it
             if needs_gripper_closing:
                 print(f"🤏 Applying physics-based gripper closing for animation reset")
                 
-                try:
-                    from omni.isaac.core.utils.types import ArticulationAction
+                from omni.isaac.core.utils.types import ArticulationAction
+                
+                # Apply smooth closing action over several steps for stable grasp
+                for close_step in range(10):  # Shorter duration for reset
+                    # Interpolate from current open position to target closed position
+                    current_q = robot.get_joint_positions()
+                    alpha = (close_step + 1) / 10  # Smooth interpolation factor
                     
-                    # Apply smooth closing action over several steps for stable grasp
-                    for close_step in range(10):  # Shorter duration for reset
-                        # Interpolate from current open position to target closed position
-                        current_q = robot.get_joint_positions()
-                        alpha = (close_step + 1) / 10  # Smooth interpolation factor
-                        
-                        # Only interpolate gripper joints, keep arm joints as-is
-                        interpolated_q = current_q.copy()
-                        interpolated_q[-2] = current_q[-2] + alpha * (initial_q[-2] - current_q[-2])  # Left gripper
-                        interpolated_q[-1] = current_q[-1] + alpha * (initial_q[-1] - current_q[-1])  # Right gripper
-                        
-                        # Apply action with moderate force to avoid crushing
-                        action = ArticulationAction(
-                            joint_positions=interpolated_q.tolist(),
-                            joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
-                        )
-                        robot.apply_action(action)
-                        
-                        # Step physics
-                        self.world.step(render=True)
-                        
-                    print(f"✅ Completed physics-based gripper closing for animation reset")
+                    # Only interpolate gripper joints, keep arm joints as-is
+                    interpolated_q = current_q.copy()
+                    interpolated_q[-2] = current_q[-2] + alpha * (initial_q[-2] - current_q[-2])  # Left gripper
+                    interpolated_q[-1] = current_q[-1] + alpha * (initial_q[-1] - current_q[-1])  # Right gripper
                     
-                except Exception as e:
-                    print(f"⚠️ Failed to apply physics-based gripper closing in reset: {e}")
-                    # Fallback: direct position setting
-                    robot.set_joint_positions(initial_q)
-                    for step in range(3):
-                        self.world.step(render=True)
+                    # Apply action with moderate force to avoid crushing
+                    action = ArticulationAction(
+                        joint_positions=interpolated_q.tolist(),
+                        joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
+                    )
+                    robot.apply_action(action)
+                    
+                    # Step physics
+                    self.world.step(render=True)
+                    
+                print(f"✅ Completed physics-based gripper closing for animation reset")
             
             # CRITICAL: Ensure articulation controller stays properly initialized after reset
             # This prevents the "_articulation_view is None" error in subsequent animations
