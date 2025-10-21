@@ -291,16 +291,23 @@ class IsaacSimWorker:
 
         # Update robot joints with OPEN gripper (prevents collision/ejection)
         self.robot.set_joint_positions(initial_q_open)
+        
+        ndof = len(self.robot.dof_names)
+        from omni.isaac.core.utils.types import ArticulationAction
+        self.robot.set_joint_velocities(np.zeros_like(initial_q_open))
+        action = ArticulationAction(
+            joint_positions=initial_q_open.tolist(),
+            joint_velocities=[0.0]*ndof  # optional but helps keep things quiet
+        )
+        self.robot.apply_action(action)   # sets drive targets == current pose; no motion
 
         # Let physics settle after initial positioning
-        for step in range(5):
+        for step in range(20):
             self.world.step(render=True)
             
         # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
         if grasp_detected and not self.animation_mode:
             print(f"🤏 Applying physics-based gripper closing for grasp (force: {gripper_force:.1f}N)")
-            
-            from omni.isaac.core.utils.types import ArticulationAction
             
             # Create target position with original (closed) gripper values
             target_q = initial_q.copy()  # This has the original closed gripper positions
@@ -345,6 +352,10 @@ class IsaacSimWorker:
         os.makedirs(output_dir, exist_ok=True)
         
         print("Capturing images with current state...")
+
+        # Let physics settle with robot hidden
+        for step in range(10):
+            self.world.step(render=True)
         
         # Temporarily hide robot for static capture
         self.hide_robot_funcs['hide']()
