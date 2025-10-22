@@ -5611,9 +5611,15 @@ loader.load(
       // Stop any animation
       cancelAnimationIfRunning('pose reset');
 
-      // Return pose to initial (does not touch gripper/TAC)
+      // Return pose to initial AND reset gripper to initial state
       params.x = initialParams.x; params.y = initialParams.y; params.z = initialParams.z;
       params.roll = initialParams.roll; params.pitch = initialParams.pitch; params.yaw = initialParams.yaw;
+
+      // Reset gripper to initial state
+      gripDir = initialGripDir;
+      drawGripArrows(gripDir);
+      updateGripArrowVisibility();
+      updateGripperButtonStates();
 
       prevAngles.roll = params.roll; prevAngles.pitch = params.pitch; prevAngles.yaw = params.yaw;
 

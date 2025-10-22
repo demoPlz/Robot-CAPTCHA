@@ -193,6 +193,8 @@ class IsaacSimWorker:
             camera.initialize()
             camera.set_resolution((640,480))
             camera.add_rgb_to_frame()
+
+        stage.GetPrimAtPath("/World/wxai/joints/right_carriage_joint").GetAttribute('drive:linear:physics:stiffness').Set(50000.0)
             
         # Create robot hide/show functions (only once)
         def hide_robot():
