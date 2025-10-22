@@ -280,7 +280,9 @@ class IsaacSimWorker:
         
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
-            
+        
+        self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
+
         # Store the config
         self.last_sync_config = config.copy()
         # Clone last dimension for mimic joint
@@ -539,7 +541,8 @@ class IsaacSimWorker:
         # Update each animation environment
         for user_id, env_data in self.user_environments.items():
             try:
-                
+                self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
+
                 # Update object poses for ALL environments using appropriate object references
                 if user_id == 0:
                     # User 0: Use original object references - reset to absolute positions
@@ -760,7 +763,7 @@ class IsaacSimWorker:
         
         # STEP 5: CRITICAL - Reset ENTIRE environment (robot + objects) to fresh synchronized state
         print(f"🆕 PERFORMING FULL FRESH RESET for user {user_id} before animation")
-        self._reset_user_environment_to_sync_state(user_id)
+        self._reset_user_environment_to_sync_state(user_id) #ATTENTION
         
         # STEP 6: Get the fresh initial state from the latest synchronized state
         initial_joints = self.last_sync_config['robot_joints']
@@ -856,7 +859,7 @@ class IsaacSimWorker:
             del self.active_animations[user_id]
             
         # Reset this user's environment back to the fresh synchronized state
-        self._reset_user_environment_to_sync_state(user_id)
+        # self._reset_user_environment_to_sync_state(user_id) #ATTENTION
             
         # Clean up frame cache when animation stops
         if user_id in self.frame_caches:
@@ -1151,6 +1154,7 @@ class IsaacSimWorker:
         from pxr import Gf, UsdGeom
         
         try:
+            self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
             env_data = self.user_environments[user_id]
             robot = env_data['robot']
             # Use the correct object references for each environment type
@@ -1226,15 +1230,15 @@ class IsaacSimWorker:
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
             
             for step in range(50):
-                self.world.step(render=False)
+                self.world.step(render=True)
 
-            robot.initialize()
+            # robot.initialize()
 
             self.set_robot_joints()
 
             # Let physics settle after all resets are complete (extended for gripper operations)
             for step in range(12):  # Increased from 8 to account for gripper operations
-                self.world.step(render=False)
+                self.world.step(render=True)
             
         except Exception as e:
             print(f"❌ Failed to reset user {user_id} environment: {e}")

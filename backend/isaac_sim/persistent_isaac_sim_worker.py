@@ -74,8 +74,7 @@ class PersistentWorker:
                 # Handle active animations (replay mode)
                 if self.isaac_worker.animation_mode and self.isaac_worker.active_animations:
                     # Update physics
-                    if self.isaac_worker.world:
-                        self.isaac_worker.world.step(render=True)
+                    self.isaac_worker.world.step(render=True)
                     
                     # Update all user animations (joint interpolation)
                     self.isaac_worker.update_animations()

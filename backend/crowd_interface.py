@@ -24,10 +24,10 @@ REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
-    "front":       12,   # change indices / paths as needed
+    "front":       18,   # change indices / paths as needed
     "left":        4,
     "right":       2,
-    "perspective": 0,
+    "perspective": 1,
 }
 
 JOINT_NAMES = [
@@ -1759,7 +1759,7 @@ class CrowdInterface():
                 }
             }            # Use persistent worker for fast capture with animation sync
             result = self.isaac_manager.update_state_and_sync_animations(
-                config, 
+                config,
                 f"ep_{episode_id}_state_{state_id}"
             )
             
