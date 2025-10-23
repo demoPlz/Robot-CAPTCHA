@@ -178,7 +178,6 @@ class IsaacSimWorker:
 
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
-        self._ensure_pd_for_arm()
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
         self.objects['cube_01'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
         self.objects['cube_02'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
@@ -217,8 +216,6 @@ class IsaacSimWorker:
     def set_robot_joints(self):
         import numpy as np
 
-        self._ensure_pd_for_arm()
-
         # Detect grasp
         gripper_external_force = self.last_sync_config.get('left_carriage_external_force',0)
         grasped = gripper_external_force > 50 # GRASPED_THRESHOLD
@@ -238,12 +235,6 @@ class IsaacSimWorker:
             np.zeros(7, dtype=float),
             joint_indices=list(range(7))
         )
-        action = ArticulationAction(
-            joint_positions=robot_joints_open_gripper.tolist(),
-            joint_velocities=[0.0]*7,  # optional but helps keep things quiet
-            joint_indices=list(range(7))
-        )
-        self.robot.apply_action(action)   # sets drive targets = current pose; no motion
 
         # Let physics settle after initial positioning
         for step in range(20):
@@ -1274,9 +1265,3 @@ class IsaacSimWorker:
             
         else:
             return {"error": f"Unknown action: {action}"}
-        
-
-    def _ensure_pd_for_arm(self):
-        """Set PD/limits for DOFs 0..6 (arm+left) and mirror same gains to DOF-7 (right follower).
-        We do NOT send position targets here; mimic on DOF-7 will set its own target each step."""
-        pass
