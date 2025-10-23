@@ -107,6 +107,9 @@ class AnimationFrameCache:
         self.current_replay_frame = 0
 
 class IsaacSimWorker:
+    GRIPPER_LEFT_IDX = 6
+    GRIPPER_RIGHT_IDX = 7
+    
     def __init__(self, simulation_app=None):
         self.world = None
         self.robot = None
@@ -175,6 +178,7 @@ class IsaacSimWorker:
 
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
+        self._ensure_pd_for_arm()
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
         self.objects['cube_01'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
         self.objects['cube_02'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
@@ -194,7 +198,7 @@ class IsaacSimWorker:
             camera.set_resolution((640,480))
             camera.add_rgb_to_frame()
 
-        stage.GetPrimAtPath("/World/wxai/joints/right_carriage_joint").GetAttribute('drive:linear:physics:stiffness').Set(50000.0)
+        # stage.GetPrimAtPath("/World/wxai/joints/right_carriage_joint").GetAttribute('drive:linear:physics:stiffness').Set(50000.0)
             
         # Create robot hide/show functions (only once)
         def hide_robot():
@@ -213,6 +217,8 @@ class IsaacSimWorker:
     def set_robot_joints(self):
         import numpy as np
 
+        self._ensure_pd_for_arm()
+
         # Detect grasp
         gripper_external_force = self.last_sync_config.get('left_carriage_external_force',0)
         grasped = gripper_external_force > 50 # GRASPED_THRESHOLD
@@ -220,23 +226,28 @@ class IsaacSimWorker:
         robot_joints_open_gripper = robot_joints.copy()
 
         if grasped:
-            robot_joints_open_gripper[-1] = robot_joints_open_gripper[-2] = 0.044
-        
-        self.robot.set_joint_positions(robot_joints_open_gripper)
+            robot_joints_open_gripper[-1] = 0.044   # left finger open
+            # do not touch the mimic DOF here
 
-        # erase velocity and goal from usd
-        ndof = 8
+        robot_joints_open_gripper_8dof = np.append(robot_joints_open_gripper, robot_joints_open_gripper[-1])
+
+        self.robot.set_joint_positions(robot_joints_open_gripper_8dof)
+        
         from omni.isaac.core.utils.types import ArticulationAction
-        self.robot.set_joint_velocities(np.zeros_like(robot_joints_open_gripper))
+        self.robot.set_joint_velocities(
+            np.zeros(7, dtype=float),
+            joint_indices=list(range(7))
+        )
         action = ArticulationAction(
             joint_positions=robot_joints_open_gripper.tolist(),
-            joint_velocities=[0.0]*ndof  # optional but helps keep things quiet
+            joint_velocities=[0.0]*7,  # optional but helps keep things quiet
+            joint_indices=list(range(7))
         )
         self.robot.apply_action(action)   # sets drive targets = current pose; no motion
 
         # Let physics settle after initial positioning
         for step in range(20):
-            self.world.step(render=False)
+            self.world.step(render=True)
             
         # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
         if grasped:
@@ -245,28 +256,25 @@ class IsaacSimWorker:
             
             # Apply smooth closing action over several steps for stable grasp
             for close_step in range(15):  # ~0.5 seconds at 30Hz
-                # Interpolate from current open position to target closed position
                 current_q = self.robot.get_joint_positions()
-                alpha = (close_step + 1) / 15  # Smooth interpolation factor
-                
-                # Only interpolate gripper joints, keep arm joints as-is
-                interpolated_q = current_q.copy()
-                interpolated_q[-2] = current_q[-2] + alpha * (target_q[-2] - current_q[-2])  # Left gripper
-                interpolated_q[-1] = current_q[-1] + alpha * (target_q[-1] - current_q[-1])  # Right gripper
-                
-                # Apply action with moderate force to avoid crushing
-                action = ArticulationAction(
-                    joint_positions=interpolated_q.tolist(),
-                    joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
+                alpha = (close_step + 1) / 15.0
+
+                # Interpolate ONLY the left finger (index 6)
+                new_left = current_q[6] + alpha * (
+                    target_q[6] - current_q[6]
                 )
-                self.robot.apply_action(action)
+
+                self.robot.apply_action(ArticulationAction(
+                    joint_positions=[new_left, new_left],
+                    joint_indices=[self.GRIPPER_LEFT_IDX, self.GRIPPER_RIGHT_IDX]
+                ))
                 
                 # Step physics
-                self.world.step(render=False)
+                self.world.step(render=True)
         
         # Final physics settling
         for step in range(3):
-            self.world.step(render=False)
+            self.world.step(render=True)
 
         
     def update_state(self, config):
@@ -276,15 +284,12 @@ class IsaacSimWorker:
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
         
-        self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
+        self.robot.set_joint_positions(np.zeros(8, dtype=float))
 
         # Store the config
         self.last_sync_config = config.copy()
-        # Clone last dimension for mimic joint
-        self.last_sync_config['robot_joints'] = \
-            np.append(self.last_sync_config['robot_joints'], \
-                      self.last_sync_config['robot_joints'][-1])
-        
+        self.last_sync_config['robot_joints'] = np.array(self.last_sync_config['robot_joints'])
+        # Clone last dimension for mimic join
         object_states = config.get('object_poses', {
             "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
             "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
@@ -315,7 +320,7 @@ class IsaacSimWorker:
 
         # Let physics settle after object positioning
         for step in range(20):
-            self.world.step(render=False)
+            self.world.step(render=True)
 
         self.set_robot_joints()
         
@@ -353,7 +358,7 @@ class IsaacSimWorker:
         
         # Let physics settle with robot restored
         for step in range(10):
-            self.world.step(render=False)  # After capture, render=False is fine
+            self.world.step(render=True)  # After capture, render=True is fine
 
         # Save static images
         Image.fromarray(front_rgb).save(f'{output_dir}/static_front_image.jpg', 'JPEG', quality=90)
@@ -419,7 +424,7 @@ class IsaacSimWorker:
             
             # Let physics settle
             for step in range(10):
-                self.world.step(render=False)
+                self.world.step(render=True)
             
             print("Animation mode will use direct joint control only")
             
@@ -453,7 +458,7 @@ class IsaacSimWorker:
                         
                         # Let physics settle
                         for step in range(20):
-                            self.world.step(render=False)
+                            self.world.step(render=True)
                         
                         # Get robot
                         robot_path = f"{target_path}/wxai"
@@ -536,7 +541,7 @@ class IsaacSimWorker:
         # Update each animation environment
         for user_id, env_data in self.user_environments.items():
             try:
-                self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
+                self.robot.set_joint_positions(np.zeros(8, dtype=float))
 
                 # Update object poses for ALL environments using appropriate object references
                 if user_id == 0:
@@ -612,7 +617,7 @@ class IsaacSimWorker:
                     print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
                 
                 for step in range(50):
-                    self.world.step(render=False)
+                    self.world.step(render=True)
 
                 self.set_robot_joints()
                 
@@ -621,7 +626,7 @@ class IsaacSimWorker:
         
         # Let physics settle across all environments
         # for step in range(10):
-        #     self.world.step(render=False)
+        #     self.world.step(render=True)
             
         print("Animation environment synchronization complete")
 
@@ -762,29 +767,14 @@ class IsaacSimWorker:
         
         # STEP 6: Get the fresh initial state from the latest synchronized state
         initial_joints = self.last_sync_config['robot_joints']
-        
-        # Ensure goal_joints has same dimension as initial_joints
-        if len(goal_joints) == 7:
-            goal_joints = np.append(goal_joints, goal_joints[-1])
-            print(f"Extended goal_joints from 7 to 8 dimensions: {goal_joints}")
-        elif len(goal_joints) != 8:
-            self.frame_generation_in_progress.discard(user_id)
-            return {"error": f"Goal joints dimension mismatch: got {len(goal_joints)}, expected 7 or 8"}
             
-        # Handle gripper action if provided
-        # NOTE: Using physics-based apply_action for all animation - gripper control integrated
-        # For optimal gripper behavior, tune these USD parameters in your robot file:
-        # - Joint stiffness (drive:angular:physics:stiffness): Lower values (e.g., 1000) for softer grip
-        # - Joint damping (drive:angular:physics:damping): Higher values (e.g., 100) for smoother motion  
-        # - Joint force limits (drive:angular:physics:maxForce): Realistic limits (e.g., 100N) to prevent crushing
-        # - Contact friction (physics:friction): Higher values (e.g., 0.8-1.0) for better object gripping
         if gripper_action is not None:
-            if gripper_action == "grasp" or gripper_action == "close":
-                goal_joints[-1] = goal_joints[-2] = 0.000  # Closed gripper position
-                print(f"🤏 Gripper action: {gripper_action} -> setting gripper to closed (0.0)")
+            if gripper_action in ("grasp", "close"):
+                goal_joints[-1] = 0.000
+                print(f"🤏 Gripper action: {gripper_action} -> setting left gripper to closed (0.0)")
             elif gripper_action == "open":
-                goal_joints[-1] = goal_joints[-2] = 0.044  # Open gripper position  
-                print(f"✋ Gripper action: {gripper_action} -> setting gripper to open (0.044)")
+                goal_joints[-1] = 0.044
+                print(f"✋ Gripper action: {gripper_action} -> setting left gripper to open (0.044)")
             else:
                 print(f"⚠️ Unknown gripper action: {gripper_action}, keeping original gripper position")
             
@@ -869,189 +859,105 @@ class IsaacSimWorker:
         return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True, "cache_cleared": True}
         
     def process_chunked_frame_generation(self, frames_per_chunk=3):
-        """Process a few frames of chunked generation for all active users
-        Returns True if any generation work was done, False if all complete"""
+        """Generate a few frames per call. Drives only DOFs 0..6 (arm + left finger).
+        The right finger (index 7) is a USD mimic and is never commanded here."""
         import numpy as np
+        from omni.isaac.core.utils.types import ArticulationAction
+
         work_done = False
-        
+        INDICES_7 = list(range(7))  # arm + left finger only
+
         for user_id in list(self.chunked_generation_state.keys()):
             state = self.chunked_generation_state[user_id]
-            
-            # Check if this user's generation should be stopped
+
+            # Stop request?
             if user_id in self.animation_stop_requested:
-                print(f"🛑 Stopping chunked generation for user {user_id} due to stop request")
                 self.animation_stop_requested.discard(user_id)
-                # Clean up
                 if user_id in self.frame_caches:
                     self.frame_caches[user_id].clear_cache()
                     del self.frame_caches[user_id]
                 del self.chunked_generation_state[user_id]
                 continue
-                
-            if state['generation_complete']:
+
+            if state.get("generation_complete"):
                 continue
-                
-            # Process a chunk of frames
-            cache = state['cache']
-            robot = state['robot']
+
+            cache = state["cache"]
+            robot = state["robot"]
             frames_processed = 0
-            
-            while (frames_processed < frames_per_chunk and 
-                   state['current_frame'] < state['total_frames']):
-                
-                frame_idx = state['current_frame']
-                
-                # Use apply_action for physics-based animation with PD controllers
-                # Fix articulation controller corruption by reinitializing when needed
-                try:
-                    from omni.isaac.core.utils.types import ArticulationAction
-                    
-                    # One-time controller setup + trajectory constants
-                    if frame_idx == 0:
-                        try:
-                            controller = robot.get_articulation_controller()
-                            kps, kds = controller.get_gains()
-                            print(f"🔍 Robot PD gains for user {user_id}: stiffness={kps}, damping={kds}")
-                            
-                            # Check if gains are too low (common cause of drooping)
-                            low_stiffness = any(kp < 1000 for kp in kps if kp is not None)
-                            if low_stiffness:
-                                print(f"⚠️ WARNING: Low stiffness detected! Robot may droop. Consider increasing stiffness.")
-                                
-                            # Apply comprehensive PD gains + force limits + velocity caps
-                            print(f"🎯 Applying optimal PD gains with proper limits...")
-                            import numpy as np
-                            
-                            # Tighter distal joint dynamics with minimum-jerk trajectories
-                            kps_arm = [2.0e5, 2.0e5, 1.6e5, 1.6e5, 1.6e5, 1.6e5]  # Higher stiffness for wrist
-                            kds_arm = [4.5e3, 4.5e3, 5.0e3, 5.0e3, 5.0e3, 5.0e3]  # Higher damping for stability
-                            
-                            # Gripper prismatic fingers: prevent sliding/creeping
-                            kps_grip = [5.0e4, 5.0e4] 
-                            kds_grip = [1.0e3, 1.0e3]
-                            
-                            # Combined arrays
-                            optimal_kps = np.array(kps_arm + kps_grip, dtype=np.float32)
-                            optimal_kds = np.array(kds_arm + kds_grip, dtype=np.float32)
-                            
-                            # Max torque/force limits: higher for base joints, realistic limits
-                            max_efforts_arm = [30.0, 30.0, 20.0, 20.0, 12.0, 12.0]  # N·m
-                            max_efforts_grip = [150.0, 150.0]  # N (prismatic force)
-                            max_efforts = np.array(max_efforts_arm + max_efforts_grip, dtype=np.float32)
-                            
-                            # Tighter velocity caps: prevent overshoot on moving targets
-                            max_vels_arm = [2.0, 2.0, 2.0, 1.8, 1.5, 1.5]  # rad/s (lower for distal joints)
-                            max_vels_grip = [0.3, 0.3]  # m/s (controlled prismatic motion)
-                            max_velocities = np.array(max_vels_arm + max_vels_grip, dtype=np.float32)
-                            
-                            # Apply all limits to controller
-                            controller.set_gains(kps=optimal_kps, kds=optimal_kds)
-                            controller.set_max_efforts(max_efforts)
-                            controller.set_max_velocities(max_velocities)
-                            
-                            print(f"✅ Applied trajectory-optimized gains:")
-                            print(f"   📍 PD: arm(200k→160k/4.5k→5k), gripper(50k/1k)")
-                            print(f"   ⚡ Max force: arm(30-12 N·m), gripper(150N)")
-                            print(f"   🚀 Max vel: arm(2.0→1.5 rad/s), gripper(0.3 m/s)")
-                            
-                        except Exception as gain_error:
-                            print(f"Could not apply trajectory gains: {gain_error}")
-                        
-                        # Precompute trajectory parameters once per animation
-                        state['q0'] = robot.get_joint_positions()  # Current actual position
-                        state['qg'] = state['goal_joints']         # Target goal position  
-                        state['T'] = state['total_frames'] / state['fps']  # Animation duration
-                        print(f"🎯 Trajectory setup: T={state['T']:.2f}s")
-                    
-                    # ---- per-frame trajectory waypoint (ALWAYS runs) ----
-                    t = frame_idx / state['fps']  # Current time
-                    tau = min(max(t / state['T'], 0.0), 1.0)  # Normalized time [0,1]
-                    
-                    # Minimum-jerk profile: s(τ) and its derivative ṡ(τ)
-                    s = 10*tau**3 - 15*tau**4 + 6*tau**5
-                    sdot = (30*tau**2 - 60*tau**3 + 30*tau**4) / state['T']  # ds/dt
-                    
-                    # Interpolated position and velocity targets
-                    q_des = state['q0'] + s * (state['qg'] - state['q0'])
-                    qd_des = sdot * (state['qg'] - state['q0'])
-                    
-                    # Feed both position AND velocity targets for smooth tracking
-                    action = ArticulationAction(
-                        joint_positions=q_des.tolist(),
-                        joint_velocities=qd_des.tolist()
-                    )
-                    robot.apply_action(action)
-                except Exception as gain_error:
-                    print(f"Could not apply trajectory gains: {gain_error}")
-                    # Fallback to simple step input
-                    action = ArticulationAction(joint_positions=state['goal_joints'].tolist())
-                    robot.apply_action(action)
-                except AttributeError as e:
-                    if "'NoneType' object has no attribute 'get_applied_actions'" in str(e):
-                        # Articulation controller lost connection to physics view - reinitialize it
-                        print(f"🔧 Reinitializing articulation controller for user {user_id} frame {frame_idx}")
-                        try:
-                            # Force reinitialize the articulation controller
-                            robot.initialize()
-                            # Retry the action after reinitialization - use trajectory if available
-                            if 'q0' in state and 'qg' in state and 'T' in state:
-                                # Use trajectory approach
-                                t = frame_idx / state['fps']
-                                tau = min(max(t / state['T'], 0.0), 1.0)
-                                s = 10*tau**3 - 15*tau**4 + 6*tau**5
-                                sdot = (30*tau**2 - 60*tau**3 + 30*tau**4) / state['T']
-                                q_des = state['q0'] + s * (state['qg'] - state['q0'])
-                                qd_des = sdot * (state['qg'] - state['q0'])
-                                action = ArticulationAction(
-                                    joint_positions=q_des.tolist(),
-                                    joint_velocities=qd_des.tolist()
-                                )
-                            else:
-                                # Fallback to step input
-                                action = ArticulationAction(joint_positions=state['goal_joints'].tolist())
-                            robot.apply_action(action)
-                            print(f"✅ Successfully reinitialized and applied action for user {user_id}")
-                        except Exception as reinit_error:
-                            print(f"❌ Failed to reinitialize articulation controller: {reinit_error}")
-                            raise reinit_error
-                    else:
-                        # Different AttributeError - re-raise it
-                        raise e
-                
-                # Let physics settle
-                self.world.step(render=True)  # Need render=True during frame generation for camera capture
-                
-                # Capture frame to cache
-                frame_data = self._capture_user_frame_to_cache(user_id, frame_idx)
+
+            while frames_processed < frames_per_chunk and state["current_frame"] < state["total_frames"]:
+                f = state["current_frame"]
+
+                # One-time trajectory setup (7-DOF only)
+                if f == 0:
+                    q0_full = robot.get_joint_positions()          # likely 8-long
+                    q0_7 = np.array(q0_full[:7], dtype=np.float32) # use first 7
+                    qg = np.array(state["goal_joints"], dtype=np.float32)
+                    if qg.shape[0] == 8:
+                        qg = qg[:7]
+                    elif qg.shape[0] != 7:
+                        raise ValueError(f"goal_joints must be 7 (or 8 to be sliced). Got {qg.shape[0]}")
+                    state["q0_7"] = q0_7
+                    state["qg_7"] = qg
+                    state["T"] = state["total_frames"] / state["fps"]
+
+                q0_7 = state["q0_7"]
+                right0 = q0_7[self.GRIPPER_LEFT_IDX]
+                q0_8  = q0_7.tolist() + [right0]
+
+                robot.apply_action(ArticulationAction(
+                    joint_positions=q0_8,
+                    joint_velocities=[0.0] * 8  # freeze all 8 DOFs
+                ))
+
+                # Min-jerk interpolation on 7 DOFs
+                T = state["T"]
+                tau = 0.0 if T <= 0 else max(0.0, min((f / state["fps"]) / T, 1.0))
+                s    = 10*tau**3 - 15*tau**4 + 6*tau**5
+                sdot = 0.0 if T <= 0 else (30*tau**2 - 60*tau**3 + 30*tau**4) / T
+
+                q0_7, qg_7 = state["q0_7"], state["qg_7"]
+                q_des_7  = q0_7 + s    * (qg_7 - q0_7)
+                qd_des_7 = sdot * (qg_7 - q0_7)
+
+                # Command ONLY 0..6; never the mimic DOF
+                right_pos = q_des_7[self.GRIPPER_LEFT_IDX]
+                right_vel = qd_des_7[self.GRIPPER_LEFT_IDX]
+
+                q_des_8  = q_des_7.tolist()  + [right_pos]
+                qd_des_8 = qd_des_7.tolist() + [right_vel]
+
+                robot.apply_action(ArticulationAction(
+                    joint_positions=q_des_8,
+                    joint_velocities=qd_des_8
+                    # no joint_indices → applies to all 8 DOFs
+                ))
+
+                # Step + capture
+                self.world.step(render=True)
+                frame_data = self._capture_user_frame_to_cache(user_id, f)
                 if frame_data:
-                    cache.add_frame(frame_idx, frame_data)
-                    
-                state['current_frame'] += 1
+                    cache.add_frame(f, frame_data)
+
+                state["current_frame"] += 1
                 frames_processed += 1
                 work_done = True
-                
-                # Progress indicator (only log major milestones to reduce overhead)
-                if frame_idx == 0 or frame_idx == state['total_frames'] - 1:
-                    percent = (frame_idx + 1) / state['total_frames'] * 100
-                    print(f"📹 Chunked generation: user {user_id} frame {frame_idx + 1}/{state['total_frames']} ({percent:.1f}%)")
-            
-            # Check if generation is complete for this user
-            if state['current_frame'] >= state['total_frames']:
-                state['generation_complete'] = True
-                
-                # Start replay mode
+
+            # Done with this user's sequence?
+            if state["current_frame"] >= state["total_frames"]:
+                state["generation_complete"] = True
                 cache.reset_replay()
                 self.active_animations[user_id] = {
-                    'type': 'replay',
-                    'cache': cache,
-                    'start_time': time.time(),
-                    'active': True
+                    "type": "replay",
+                    "cache": cache,
+                    "start_time": time.time(),
+                    "active": True,
                 }
-                
-                # Clean up generation state
                 del self.chunked_generation_state[user_id]
-                
+
         return work_done
+
         
     def _check_for_stop_command_during_generation(self, user_id: int) -> bool:
         """Check if a stop command is pending for this user during frame generation
@@ -1149,7 +1055,7 @@ class IsaacSimWorker:
         from pxr import Gf, UsdGeom
         
         try:
-            self.robot.set_joint_positions(np.array([0,0,0,0,0,0,0,0]))
+            self.robot.set_joint_positions(np.zeros(8, dtype=float),)
             env_data = self.user_environments[user_id]
             robot = env_data['robot']
             # Use the correct object references for each environment type
@@ -1327,7 +1233,7 @@ class IsaacSimWorker:
             self.process_chunked_frame_generation(frames_per_chunk=3)
             
             # 2) advance physics
-            self.world.step(render=False)
+            self.world.step(render=True)
             
             # 3) update replays
             self.update_animations()
@@ -1368,3 +1274,9 @@ class IsaacSimWorker:
             
         else:
             return {"error": f"Unknown action: {action}"}
+        
+
+    def _ensure_pd_for_arm(self):
+        """Set PD/limits for DOFs 0..6 (arm+left) and mirror same gains to DOF-7 (right follower).
+        We do NOT send position targets here; mimic on DOF-7 will set its own target each step."""
+        pass

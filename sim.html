@@ -915,7 +915,7 @@
 /* Square corners stay enforced globally (already covered by your blanket rule),
    but include these explicitly in case you keep per-button overrides elsewhere. */
 #viewport .confirm-bar .animate-button,
-#viewport .reset-bar .reset-button{
+                -bar .reset-button{
   border-radius:0 !important;
 }
 
@@ -5667,6 +5667,7 @@ loader.load(
       updateTaskCompletedAvailability();
       recomputeLocks();
       updateGripHUDInteractivity();
+      updateGripHUDState(); // Update gripper HUD state after reset
     }
 
     // --- NEW: applyHomePosition() ---
