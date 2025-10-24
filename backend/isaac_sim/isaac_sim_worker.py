@@ -848,7 +848,52 @@ class IsaacSimWorker:
         self.animation_stop_requested.discard(user_id)
             
         return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True, "cache_cleared": True}
+
+    def set_joint_positions_physics_inspector(self, target_positions):
+        """
+        Set joint positions using UsdPhysics.DriveAPI (direct drive targets)
         
+        Args:
+            target_positions: List of 8 target joint positions in RADIANS [joint_0 through joint_6, left_carriage_joint]
+                            Function converts radians to degrees for revolute joints automatically
+        """
+        from pxr import UsdPhysics
+        import omni.usd
+        import math
+        
+        stage = omni.usd.get_context().get_stage()
+        
+        # Your specific joint paths and types
+        joint_configs = [
+            ("/World/wxai/joints/joint_0", "angular"),      # revolute
+            ("/World/wxai/joints/joint_1", "angular"),      # revolute  
+            ("/World/wxai/joints/joint_2", "angular"),      # revolute
+            ("/World/wxai/joints/joint_3", "angular"),      # revolute
+            ("/World/wxai/joints/joint_4", "angular"),      # revolute
+            ("/World/wxai/joints/joint_5", "angular"),      # revolute
+            ("/World/wxai/joints/left_carriage_joint", "linear")  # prismatic
+        ]
+        
+        # Set drive targets directly
+        for i, (joint_path, drive_type) in enumerate(joint_configs[:len(target_positions)]):
+            joint_prim = stage.GetPrimAtPath(joint_path)
+            if joint_prim:
+                drive = UsdPhysics.DriveAPI.Get(joint_prim, drive_type)
+                if drive:
+                    if drive_type == "angular":
+                        # Convert radians to degrees for USD DriveAPI
+                        target_degrees = math.degrees(target_positions[i])
+                        drive.GetTargetPositionAttr().Set(target_degrees)
+                    else:  # linear/prismatic
+                        # Use meters directly
+                        drive.GetTargetPositionAttr().Set(float(target_positions[i]))
+                else:
+                    print(f"Warning: No {drive_type} drive found for {joint_path}")
+            else:
+                print(f"Warning: Joint not found at {joint_path}")
+        
+        print(f"✅ Set {len(target_positions)} joint drive targets (DriveAPI method)")   
+    
     def process_chunked_frame_generation(self, frames_per_chunk=3):
         """Generate a few frames per call. Drives only DOFs 0..6 (arm + left finger).
         The right finger (index 7) is a USD mimic and is never commanded here."""
@@ -920,8 +965,9 @@ class IsaacSimWorker:
                 qd_des_8 = qd_des_7.tolist() + [right_vel]
 
                 robot.apply_action(ArticulationAction(
-                    joint_positions=q_des_8,
-                    joint_velocities=qd_des_8
+                    joint_positions=q_des_7,
+                    joint_velocities=qd_des_7,
+                    joint_indices=list(range(7))
                     # no joint_indices → applies to all 8 DOFs
                 ))
 
