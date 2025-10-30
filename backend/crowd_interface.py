@@ -9,6 +9,7 @@ import random
 import queue
 import json
 import subprocess
+import uuid
 
 import datasets
 import re
@@ -257,6 +258,23 @@ class CrowdInterface():
 
         self._active_episode_id = None
         self._start_obs_stream_worker()
+
+        # ---------------- Pose estimation (cross-env) ----------------
+        # Disk-backed job queue shared with Any6D310 env workers
+        self.pose_jobs_root = (self._obs_cache_root / "pose_jobs").resolve()
+        self.pose_inbox = self.pose_jobs_root / "inbox"
+        self.pose_outbox = self.pose_jobs_root / "outbox"
+        self.pose_tmp = self.pose_jobs_root / "tmp"
+        for d in (self.pose_inbox, self.pose_outbox, self.pose_tmp):
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        # Spawn one worker per object (Any6D310 env)
+        self._pose_worker_procs: dict[str, subprocess.Popen] = {}
+        self._start_pose_workers()
+        # Watch for results from workers
+        self._start_pose_results_watcher()
 
         # --- Important-state cam_main image sequence sink ---
         self.save_maincam_sequence = bool(save_maincam_sequence)
@@ -509,18 +527,137 @@ class CrowdInterface():
         return f"data:image/jpeg;base64,{b64}"
     
 
-    def _start_pose_estimation_worker(self):
-        import trimesh
-        for object in self.objects.keys():
-            
-            mesh = trimesh.load(self.object_mesh_paths[object])
-            mesh = mesh.copy()
+    # =========================
+    # Pose estimation (cross-env) — job queue + workers
+    # =========================
+    def _start_pose_workers(self):
+        """
+        Spawn one worker process per object in the Any6D310 conda env.
+        Worker script path can be overridden via $POSE_WORKER_SCRIPT.
+        """
+        if not self.object_mesh_paths:
+            print("⚠️  No object_mesh_paths provided; pose workers not started.")
+            return
+        worker_script = os.getenv(
+            "POSE_WORKER_SCRIPT",
+            str((Path(__file__).resolve().parent / "pose_worker.py").resolve())
+        )
+        pose_env = os.getenv("POSE_ENV", "Any6D310")
+        for obj, mesh_path in self.object_mesh_paths.items():
+            # Optional language prompt per object (fallback: object name)
+            lang_prompt = (self.objects or {}).get(obj, obj)
+            cmd = [
+                "conda", "run", "-n", pose_env, "python", worker_script,
+                "--jobs-dir", str(self.pose_jobs_root),
+                "--object", obj,
+                "--mesh", str(mesh_path),
+                "--prompt", str(lang_prompt)
+            ]
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                self._pose_worker_procs[obj] = proc
+                print(f"🚀 Pose worker for '{obj}' started in env '{pose_env}' (PID {proc.pid})")
+            except Exception as e:
+                print(f"⚠️  Failed to start pose worker for '{obj}': {e}")
 
-            t = Thread(target=self._pose_estimation_worker, args=(mesh), daemon=True)
-            t.start()
+    def _start_pose_results_watcher(self):
+        self._pose_results_thread = Thread(target=self._pose_results_watcher, daemon=True)
+        self._pose_results_thread.start()
 
-    def _pose_estimation_worker(mesh_path):
-        
+    def _pose_results_watcher(self):
+        """
+        Poll pose_jobs/outbox for result JSONs and fold them into state_info['object_poses'].
+        """
+        while True:
+            try:
+                for p in self.pose_outbox.glob("*.json"):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            res = json.load(f)
+                    except Exception as e:
+                        print(f"⚠️  Failed to read pose result {p}: {e}")
+                        try:
+                            p.unlink()
+                        except Exception:
+                            pass
+                        continue
+
+                    episode_id = str(res.get("episode_id"))
+                    state_id = int(res.get("state_id"))
+                    obj = res.get("object")
+                    success = bool(res.get("success"))
+                    pose = res.get("pose_cam_T_obj")  # 4x4 list-of-lists or None
+
+                    with self.state_lock:
+                        ep = self.pending_states_by_episode.get(episode_id)
+                        if ep and state_id in ep:
+                            st = ep[state_id]
+                            st.setdefault("object_poses", {})
+                            st["object_poses"][obj] = pose if success else None
+                            # Optional: carry along debug meta/paths
+                            if "pose_viz_path" in res:
+                                st.setdefault("pose_debug", {})[f"{obj}_viz"] = res["pose_viz_path"]
+                        # else: state may have been finalized already; ignore
+
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                # Keep the watcher alive
+                time.sleep(0.2)
+            time.sleep(0.1)
+
+    def _intrinsics_for_pose(self) -> list[list[float]]:
+        """
+        Choose a 3x3 K to send to pose workers.
+        Prefers the 'front' camera Knew, else any available camera, else a safe default.
+        Returns a Python list-of-lists (JSON-serializable).
+        """
+        # Prefer front K
+        m = self._camera_models.get("front")
+        if m and "Knew" in m:
+            return m["Knew"]
+        # Any camera model
+        for m in self._camera_models.values():
+            if "Knew" in m:
+                return m["Knew"]
+        # Fallback default
+        return [[600.0, 0.0, 320.0],
+                [0.0, 600.0, 240.0],
+                [0.0,   0.0,   1.0]]
+
+    def _enqueue_pose_jobs_for_state(self, episode_id: str, state_id: int, state_info: dict):
+        """
+        Enqueue one pose-estimation job per object into pose_jobs/inbox.
+        """
+        if not self.object_mesh_paths:
+            return
+        state_info.setdefault("object_poses", {})
+        for obj in self.object_mesh_paths.keys():
+            job_id = f"{episode_id}_{state_id}_{obj}_{uuid.uuid4().hex[:8]}"
+            job = {
+                "job_id": job_id,
+                "episode_id": str(episode_id),
+                "state_id": int(state_id),
+                "object": obj,
+                "obs_path": state_info.get("obs_path"),
+                "K": self._intrinsics_for_pose(),             # 3x3 list
+                "prompt": (self.objects or {}).get(obj, obj), # language prompt
+                # Optional knobs:
+                "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
+                "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
+            }
+            tmp = self.pose_tmp / f"{job_id}.json"
+            dst = self.pose_inbox / f"{job_id}.json"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(job, f)
+                os.replace(tmp, dst)  # atomic move
+                # mark pending for visibility (optional)
+                state_info["object_poses"].setdefault(obj, None)
+            except Exception as e:
+                print(f"⚠️  Failed to enqueue pose job {job_id}: {e}")
     
     
     # =========================
@@ -939,6 +1076,7 @@ class CrowdInterface():
         for state_id in sorted(buffer.keys()):
             state = buffer[state_id]
             obs = self.load_obs_from_disk(state['obs_path'])
+            del obs['depth'] # delete the depth tensor
             frame = {**obs, "action": state["action_to_save"], "task": state["task_text"]}
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
@@ -1039,11 +1177,6 @@ class CrowdInterface():
 
         # Persist views to disk to avoid storing in memory
         view_paths = self._persist_views_to_disk(episode_id, state_id, self.snapshot_latest_views()) # legacy
-        
-        # Persist obs to disk
-        depth_map = obs_dict['depth'].copy()
-        depth_map[depth_map > 1000] = 0 # zeros out anything more than 1 meter away; for visualization, not function
-        del obs_dict['depth']
 
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():
@@ -1088,9 +1221,9 @@ class CrowdInterface():
             # Sim
             "sim_ready": False if self.use_sim else True,
 
-            "depth_map": depth_map
-
-            # No other fields; segmentation, and all others, no longer supported\
+            # Poses of each object in self.object will be computed when we call set_last_state_to_critical
+            # "object_poses"
+            # No other fields; segmentation, and all others, no longer supported
         }
 
         with self.state_lock:
@@ -1126,6 +1259,8 @@ class CrowdInterface():
 
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
+
+            ##TODO queue pose estimation job for each object
 
             # Handle sim capture asynchronously to avoid blocking
             if self.use_sim:
