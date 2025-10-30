@@ -23,8 +23,8 @@ USD_PATH = "/home/yilong/crowdsourcing-ui/public/assets/usd/drawer.usd"
 BACKEND_URL = "http://127.0.0.1:9000/initial-state"
 
 ROBOT_PATH = "/World/wxai"
-OBJ_CUBE_01_PATH = "/World/Cube_01"
-OBJ_CUBE_02_PATH = "/World/Cube_02"
+OBJ_Cube_Blue_PATH = "/World/Cube_Blue"
+OBJ_Cube_Red_PATH = "/World/Cube_Red"
 OBJ_TENNIS_PATH = "/World/Tennis"
 
 # --- Helper Functions (omitted for brevity, no changes needed) ---
@@ -42,8 +42,8 @@ def get_initial_state_from_backend():
         return {
             "q": [0.0] * 7,  # Default 7-DOF joint positions
             "objects": {
-                "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                "Cube_Blue": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                "Cube_Red": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                 "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
             }
         }
@@ -84,8 +84,8 @@ object_states = initial_state["objects"]
 
 # Get handles to the prims
 robot = world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
-cube_01 = world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
-cube_02 = world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
+Cube_Blue = world.scene.add(RigidPrim(prim_path=OBJ_Cube_Blue_PATH, name="Cube_Blue"))
+Cube_Red = world.scene.add(RigidPrim(prim_path=OBJ_Cube_Red_PATH, name="Cube_Red"))
 tennis_ball = world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
 
 cameras = {}
@@ -218,19 +218,19 @@ for camera_name, camera in cameras.items():
 robot.set_joint_positions(initial_q)
 
 # Set object poses
-if cube_01.is_valid():
-    state = object_states.get("Cube_01")
+if Cube_Blue.is_valid():
+    state = object_states.get("Cube_Blue")
     if state:
         pos = np.array(state["pos"])
         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]]) # WXYZ
-        cube_01.set_world_pose(position=pos, orientation=rot)
+        Cube_Blue.set_world_pose(position=pos, orientation=rot)
 
-if cube_02.is_valid():
-    state = object_states.get("Cube_02")
+if Cube_Red.is_valid():
+    state = object_states.get("Cube_Red")
     if state:
         pos = np.array(state["pos"])
         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]]) # WXYZ
-        cube_02.set_world_pose(position=pos, orientation=rot)
+        Cube_Red.set_world_pose(position=pos, orientation=rot)
         
 if tennis_ball.is_valid():
     state = object_states.get("Tennis")

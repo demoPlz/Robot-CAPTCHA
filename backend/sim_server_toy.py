@@ -24,8 +24,8 @@ def rand_pose(z):
 @app.get("/initial-state")
 def initial_state():
     objects = {
-        "Cube_01": rand_pose(1.025),
-        "Cube_02": rand_pose(1.025),
+        "Cube_Blue": rand_pose(1.025),
+        "Cube_Red": rand_pose(1.025),
         "Tennis":  rand_pose(1.0335),
     }
     return jsonify({"q": Q_EXAMPLE_RAD, "objects": objects})

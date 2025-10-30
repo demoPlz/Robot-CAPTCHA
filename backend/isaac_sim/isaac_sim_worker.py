@@ -152,8 +152,8 @@ class IsaacSimWorker:
         # Configuration
         USD_PATH = config['usd_path']
         ROBOT_PATH = "/World/wxai"
-        OBJ_CUBE_01_PATH = "/World/Cube_01"
-        OBJ_CUBE_02_PATH = "/World/Cube_02"
+        OBJ_Cube_Blue_PATH = "/World/Cube_Blue"
+        OBJ_Cube_Red_PATH = "/World/Cube_Red"
         OBJ_TENNIS_PATH = "/World/Tennis"
         
         # Load the USD stage (only once)
@@ -179,8 +179,8 @@ class IsaacSimWorker:
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
-        self.objects['cube_01'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
-        self.objects['cube_02'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
+        self.objects['Cube_Blue'] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Blue_PATH, name="Cube_Blue"))
+        self.objects['Cube_Red'] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Red_PATH, name="Cube_Red"))
         self.objects['tennis_ball'] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
         
         from omni.isaac.core.prims import XFormPrim
@@ -305,25 +305,25 @@ class IsaacSimWorker:
         self.last_sync_config['robot_joints'] = np.array(self.last_sync_config['robot_joints'])
         # Clone last dimension for mimic join
         object_states = config.get('object_poses', {
-            "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-            "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
             "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
 
         # Update object poses FIRST (before robot positioning)
-        if self.objects['cube_01'].is_valid():
-            state = object_states.get("Cube_01")
+        if self.objects['Cube_Blue'].is_valid():
+            state = object_states.get("Cube_Blue")
             if state:
                 pos = np.array(state["pos"])
                 rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                self.objects['cube_01'].set_world_pose(position=pos, orientation=rot)
+                self.objects['Cube_Blue'].set_world_pose(position=pos, orientation=rot)
 
-        if self.objects['cube_02'].is_valid():
-            state = object_states.get("Cube_02")
+        if self.objects['Cube_Red'].is_valid():
+            state = object_states.get("Cube_Red")
             if state:
                 pos = np.array(state["pos"])
                 rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                self.objects['cube_02'].set_world_pose(position=pos, orientation=rot)
+                self.objects['Cube_Red'].set_world_pose(position=pos, orientation=rot)
                 
         if self.objects['tennis_ball'].is_valid():
             state = object_states.get("Tennis")
@@ -484,12 +484,12 @@ class IsaacSimWorker:
                         # Register cloned objects in scene registry for easy access
                         from omni.isaac.core.prims import RigidPrim
                         try:
-                            cube_01_path = f"{target_path}/Cube_01"
-                            cube_02_path = f"{target_path}/Cube_02" 
+                            Cube_Blue_path = f"{target_path}/Cube_Blue"
+                            Cube_Red_path = f"{target_path}/Cube_Red" 
                             tennis_path = f"{target_path}/Tennis"
                             
-                            self.world.scene.add(RigidPrim(prim_path=cube_01_path, name=f"cube_01_user_{user_id}"))
-                            self.world.scene.add(RigidPrim(prim_path=cube_02_path, name=f"cube_02_user_{user_id}"))
+                            self.world.scene.add(RigidPrim(prim_path=Cube_Blue_path, name=f"Cube_Blue_user_{user_id}"))
+                            self.world.scene.add(RigidPrim(prim_path=Cube_Red_path, name=f"Cube_Red_user_{user_id}"))
                             self.world.scene.add(RigidPrim(prim_path=tennis_path, name=f"tennis_user_{user_id}"))
                             print(f"✅ Registered cloned objects for user {user_id}")
                         except Exception as obj_e:
@@ -547,8 +547,8 @@ class IsaacSimWorker:
         print("Synchronizing animation environments to new state...")
         
         object_states = config.get('object_poses', {
-            "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-            "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+            "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
             "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
 
@@ -562,23 +562,23 @@ class IsaacSimWorker:
                     # User 0: Use original object references - reset to absolute positions
                     print(f"🔧 Syncing objects for user 0 (original environment)")
                     
-                    if 'Cube_01' in object_states:
-                        state = object_states['Cube_01']
+                    if 'Cube_Blue' in object_states:
+                        state = object_states['Cube_Blue']
                         pos = np.array(state["pos"])
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        self.objects['cube_01'].set_world_pose(position=pos, orientation=rot)
-                        self.objects['cube_01'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects['cube_01'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ Synced Cube_01 to {pos} (physics cleared)")
+                        self.objects['Cube_Blue'].set_world_pose(position=pos, orientation=rot)
+                        self.objects['Cube_Blue'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Blue'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        print(f"✅ Synced Cube_Blue to {pos} (physics cleared)")
                         
-                    if 'Cube_02' in object_states:
-                        state = object_states['Cube_02'] 
+                    if 'Cube_Red' in object_states:
+                        state = object_states['Cube_Red'] 
                         pos = np.array(state["pos"])
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        self.objects['cube_02'].set_world_pose(position=pos, orientation=rot)
-                        self.objects['cube_02'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects['cube_02'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ Synced Cube_02 to {pos} (physics cleared)")
+                        self.objects['Cube_Red'].set_world_pose(position=pos, orientation=rot)
+                        self.objects['Cube_Red'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Red'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        print(f"✅ Synced Cube_Red to {pos} (physics cleared)")
                         
                     if 'Tennis' in object_states:
                         state = object_states['Tennis']
@@ -602,8 +602,8 @@ class IsaacSimWorker:
                     
                     # Sync each cloned object using scene registry with spatial offset applied
                     object_mappings = [
-                        ("Cube_01", f"cube_01_user_{user_id}"),
-                        ("Cube_02", f"cube_02_user_{user_id}"),
+                        ("Cube_Blue", f"Cube_Blue_user_{user_id}"),
+                        ("Cube_Red", f"Cube_Red_user_{user_id}"),
                         ("Tennis", f"tennis_user_{user_id}")
                     ]
                     
@@ -1121,33 +1121,33 @@ class IsaacSimWorker:
             # Use the correct object references for each environment type
             
             object_states = self.last_sync_config.get('object_poses', {
-                "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                 "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
             })
             
             if user_id == 0:
                 # User 0: Use original object references - reset to absolute positions
                 
-                if 'Cube_01' in object_states and 'cube_01' in self.objects:
-                    state = object_states['Cube_01']
+                if 'Cube_Blue' in object_states and 'Cube_Blue' in self.objects:
+                    state = object_states['Cube_Blue']
                     pos = np.array(state["pos"])
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                    if self.objects['cube_01'].is_valid():
+                    if self.objects['Cube_Blue'].is_valid():
                         # Reset position AND clear physics state
-                        self.objects['cube_01'].set_world_pose(position=pos, orientation=rot)
-                        self.objects['cube_01'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects['cube_01'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Blue'].set_world_pose(position=pos, orientation=rot)
+                        self.objects['Cube_Blue'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Blue'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                     
-                if 'Cube_02' in object_states and 'cube_02' in self.objects:
-                    state = object_states['Cube_02'] 
+                if 'Cube_Red' in object_states and 'Cube_Red' in self.objects:
+                    state = object_states['Cube_Red'] 
                     pos = np.array(state["pos"])
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                    if self.objects['cube_02'].is_valid():
+                    if self.objects['Cube_Red'].is_valid():
                         # Reset position AND clear physics state
-                        self.objects['cube_02'].set_world_pose(position=pos, orientation=rot)
-                        self.objects['cube_02'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects['cube_02'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Red'].set_world_pose(position=pos, orientation=rot)
+                        self.objects['Cube_Red'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        self.objects['Cube_Red'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                     
                 if 'Tennis' in object_states and 'tennis_ball' in self.objects:
                     state = object_states['Tennis']
@@ -1168,8 +1168,8 @@ class IsaacSimWorker:
                 
                 # Reset each object using scene registry with spatial offset
                 object_mappings = [
-                    ("Cube_01", f"cube_01_user_{user_id}"),
-                    ("Cube_02", f"cube_02_user_{user_id}"),
+                    ("Cube_Blue", f"Cube_Blue_user_{user_id}"),
+                    ("Cube_Red", f"Cube_Red_user_{user_id}"),
                     ("Tennis", f"tennis_user_{user_id}")
                 ]
                 

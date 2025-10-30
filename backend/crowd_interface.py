@@ -128,8 +128,11 @@ class CrowdInterface():
                  # --- read-only demo video display (independent of recording) ---
                  show_demo_videos: bool = False,
                  show_videos_dir: str | None = None,
-                 # ---sim---
-                 use_sim: bool = True
+                 # --- sim ---
+                 use_sim: bool = True,
+                 # --- objects ---
+                 objects: dict[str, str] | None = None,
+                 object_mesh_paths: dict[str, str] | None = None
     ):
         
         # --- UI prompt mode (simple vs MANUAL) ---
@@ -137,6 +140,10 @@ class CrowdInterface():
 
         # --- Sim ---
         self.use_sim = use_sim
+
+        # --- Objects ---
+        self.objects = objects
+        self.object_mesh_paths = object_mesh_paths
 
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
@@ -216,6 +223,10 @@ class CrowdInterface():
         self._obs_img_queue: queue.Queue = queue.Queue(maxsize=int(os.getenv("OBS_STREAM_QUEUE", "8")))
         self._obs_img_running: bool = False
         self._obs_img_thread: Thread | None = None
+
+        # Pose estimation thread
+        self._pose_estimation_threads: dict[str, Thread] = {}
+        self._pose_estimation_queue: queue.Queue = queue.Queue(maxsize=8)
 
         # Will be filled by _load_calibrations()
         self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -496,6 +507,21 @@ class CrowdInterface():
             return ""
         b64 = base64.b64encode(buf).decode("ascii")
         return f"data:image/jpeg;base64,{b64}"
+    
+
+    def _start_pose_estimation_worker(self):
+        import trimesh
+        for object in self.objects.keys():
+            
+            mesh = trimesh.load(self.object_mesh_paths[object])
+            mesh = mesh.copy()
+
+            t = Thread(target=self._pose_estimation_worker, args=(mesh), daemon=True)
+            t.start()
+
+    def _pose_estimation_worker(mesh_path):
+        
+    
     
     # =========================
     # Observation image streaming
@@ -1015,6 +1041,10 @@ class CrowdInterface():
         view_paths = self._persist_views_to_disk(episode_id, state_id, self.snapshot_latest_views()) # legacy
         
         # Persist obs to disk
+        depth_map = obs_dict['depth'].copy()
+        depth_map[depth_map > 1000] = 0 # zeros out anything more than 1 meter away; for visualization, not function
+        del obs_dict['depth']
+
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():
             obs_dict_deep_copy[key] = value.clone().detach()
@@ -1056,7 +1086,9 @@ class CrowdInterface():
             "task_text": self.task_text,
 
             # Sim
-            "sim_ready": False if self.use_sim else True
+            "sim_ready": False if self.use_sim else True,
+
+            "depth_map": depth_map
 
             # No other fields; segmentation, and all others, no longer supported\
         }
@@ -1145,8 +1177,8 @@ class CrowdInterface():
                 "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
                 "robot_joints": [0.0] * 7,
                 "object_poses": {
-                    "Cube_01": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_02": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_Blue": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_Red": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                     "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
             }
@@ -1753,8 +1785,8 @@ class CrowdInterface():
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": {
-                    "Cube_01": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_02": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_Blue": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_Red": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                     "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
             }            # Use persistent worker for fast capture with animation sync

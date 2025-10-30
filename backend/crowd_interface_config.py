@@ -33,6 +33,18 @@ class CrowdInterfaceConfig():
         # Sim
         self.use_sim: bool = True
 
+        # Objects. Can only be configured in __init__ and not overriden
+        self.objects: dict[str, str] = {
+            "Cube_Blue": "Blue cube", 
+            "Cube_Red": "Red cube", 
+            "Tennis": "Tennis ball"
+        } # {name of xform: name for langsam}
+        self.object_mesh_paths: dict[str, str] = {
+            "Cube_Blue": "public/assets/cube.obj",
+            "Cube_Red": "public/assets/cube.obj",
+            "Tennis":  "public/assets/sphere.obj"
+        }
+
     @classmethod
     def from_cli_args(cls, argv=None):
         """

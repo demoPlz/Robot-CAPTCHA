@@ -933,8 +933,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "usd_path": f"public/assets/usd/{crowd_interface.task_name}_flattened.usd",
                     "robot_joints": [0.0] * 7,  # Default joint positions
                     "object_poses": {
-                        "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                        "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                        "Cube_Blue": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                        "Cube_Red": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                         "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                     }
                 }
