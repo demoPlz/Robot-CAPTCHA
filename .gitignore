@@ -37,6 +37,6 @@ __pycache__/
 **/snapshots
 output/
 
-**.yml
-**.pth
-**.obj
+external/**/*.yml
+external/**/*.pth
+external/**/*.obj
