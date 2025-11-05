@@ -25,6 +25,7 @@ from calibration_manager import CalibrationManager
 from demo_video_manager import DemoVideoManager
 from webcam_manager import WebcamManager
 from pose_estimation_manager import PoseEstimationManager
+from observation_stream_manager import ObservationStreamManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -176,12 +177,6 @@ class CrowdInterface():
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
 
-        # Observation camera (obs_dict) live previews → background-encoded JPEGs
-        self._latest_obs_jpeg: dict[str, str] = {}
-        self._obs_img_queue: queue.Queue = queue.Queue(maxsize=int(os.getenv("OBS_STREAM_QUEUE", "8")))
-        self._obs_img_running: bool = False
-        self._obs_img_thread: Thread | None = None
-
         # Calibration manager
         repo_root = Path(__file__).resolve().parent.parent
         self.calibration = CalibrationManager(
@@ -212,6 +207,11 @@ class CrowdInterface():
             jpeg_quality=int(os.getenv("JPEG_QUALITY", "80"))
         )
 
+        # Observation stream manager
+        self.obs_stream = ObservationStreamManager(
+            encoder_func=self.webcam_manager.encode_jpeg_base64
+        )
+
         # Debounced episode finalization
         self.episode_finalize_grace_s = 2.0
         self._episode_finalize_timers: dict[str, Timer] = {}
@@ -232,7 +232,6 @@ class CrowdInterface():
         self._exec_gate_by_session: dict[str, dict] = {}
 
         self._active_episode_id = None
-        self._start_obs_stream_worker()
 
         # Pose estimation manager
         self.pose_estimator = PoseEstimationManager(
@@ -261,11 +260,9 @@ class CrowdInterface():
         # Get webcam views from manager
         out = self.webcam_manager.snapshot_latest_views()
         
-        # Include latest observation camera previews if available
-        for name in ("obs_main", "obs_wrist"):
-            s = self._latest_obs_jpeg.get(name)
-            if s is not None:
-                out[name] = s
+        # Include latest observation camera previews from manager
+        out.update(self.obs_stream.get_latest_obs_jpeg())
+        
         return out
     
     def state_to_json(self, state: dict) -> dict:
@@ -325,75 +322,6 @@ class CrowdInterface():
         return self.webcam_manager.encode_jpeg_base64(img_rgb, quality)
     
 
-    # =========================
-    # Observation image streaming
-    # =========================
-    # --- Observation image streaming (background encoder) ---
-    def _start_obs_stream_worker(self):
-        if self._obs_img_running:
-            return
-        self._obs_img_running = True
-        self._obs_img_thread = Thread(target=self._obs_stream_worker, daemon=True)
-        self._obs_img_thread.start()
-
-    def _to_uint8_rgb(self, arr) -> np.ndarray | None:
-        if arr is None:
-            return None
-        if isinstance(arr, torch.Tensor):
-            arr = arr.detach().to("cpu").numpy()
-        if not isinstance(arr, np.ndarray):
-            return None
-        # Accept HxWx3 or 3xHxW
-        if arr.ndim != 3:
-            return None
-        if arr.shape[0] == 3 and arr.shape[2] != 3:
-            arr = np.transpose(arr, (1, 2, 0))
-        if arr.dtype != np.uint8:
-            try:
-                maxv = float(np.nanmax(arr))
-            except Exception:
-                maxv = 255.0
-            if arr.dtype.kind in "fc" and maxv <= 1.0:
-                arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
-            else:
-                arr = np.clip(arr, 0, 255).astype(np.uint8)
-        if not arr.flags["C_CONTIGUOUS"]:
-            arr = np.ascontiguousarray(arr)
-        # Expect RGB already; do not swap channels here.
-        return arr if arr.shape[2] == 3 else None
-
-    def _obs_stream_worker(self):
-        while True:
-            try:
-                item = self._obs_img_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if item is None:
-                break
-            try:
-                name, img = item
-                rgb = self._to_uint8_rgb(img)
-                if rgb is not None:
-                    self._latest_obs_jpeg[name] = self.encode_jpeg_base64(rgb)
-            except Exception:
-                pass
-            finally:
-                try:
-                    self._obs_img_queue.task_done()
-                except Exception:
-                    pass
-
-    def _push_obs_view(self, name: str, img):
-        """Enqueue an observation image for background JPEG encoding; drop if queue is full."""
-        if img is None:
-            return
-        try:
-            self._obs_img_queue.put_nowait((name, img))
-        except queue.Full:
-            # Drop frame to avoid backpressure on add_state
-            pass
-
-    # =========================
     # Calibration Management (delegated to CalibrationManager)
     # =========================
     
@@ -613,8 +541,8 @@ class CrowdInterface():
         del obs_dict_deep_copy
 
         # Push obs to monitoring frontend
-        self._push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
-        self._push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+        self.obs_stream.push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
+        self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
         
         state_info = {
             # Identity
@@ -1448,5 +1376,5 @@ class CrowdInterface():
             return None
         for k in ("observation.images.cam_main", "observation.images.main", "observation.cam_main"):
             if k in obs:
-                return self._to_uint8_rgb(obs[k])
+                return self.obs_stream._to_uint8_rgb(obs[k])
         return None
