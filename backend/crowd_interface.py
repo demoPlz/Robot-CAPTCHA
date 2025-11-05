@@ -24,6 +24,7 @@ from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robo
 from calibration_manager import CalibrationManager
 from demo_video_manager import DemoVideoManager
 from webcam_manager import WebcamManager
+from pose_estimation_manager import PoseEstimationManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -181,10 +182,6 @@ class CrowdInterface():
         self._obs_img_running: bool = False
         self._obs_img_thread: Thread | None = None
 
-        # Pose estimation thread
-        self._pose_estimation_threads: dict[str, Thread] = {}
-        self._pose_estimation_queue: queue.Queue = queue.Queue(maxsize=8)
-
         # Calibration manager
         repo_root = Path(__file__).resolve().parent.parent
         self.calibration = CalibrationManager(
@@ -237,22 +234,15 @@ class CrowdInterface():
         self._active_episode_id = None
         self._start_obs_stream_worker()
 
-        # ---------------- Pose estimation (cross-env) ----------------
-        # Disk-backed job queue shared with any6d env workers
-        self.pose_jobs_root = (self._obs_cache_root / "pose_jobs").resolve()
-        self.pose_inbox = self.pose_jobs_root / "inbox"
-        self.pose_outbox = self.pose_jobs_root / "outbox"
-        self.pose_tmp = self.pose_jobs_root / "tmp"
-        for d in (self.pose_inbox, self.pose_outbox, self.pose_tmp):
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-        # Spawn one worker per object (any6d env)
-        self._pose_worker_procs: dict[str, subprocess.Popen] = {}
-        self._start_pose_workers()
-        # Watch for results from workers
-        self._start_pose_results_watcher()
+        # Pose estimation manager
+        self.pose_estimator = PoseEstimationManager(
+            obs_cache_root=self._obs_cache_root,
+            object_mesh_paths=object_mesh_paths,
+            objects=objects,
+            calibration_manager=self.calibration,
+            state_lock=self.state_lock,
+            pending_states_by_episode=self.pending_states_by_episode
+        )
 
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow
@@ -335,246 +325,6 @@ class CrowdInterface():
         return self.webcam_manager.encode_jpeg_base64(img_rgb, quality)
     
 
-    # =========================
-    # Pose estimation (cross-env) — job queue + workers
-    # =========================
-    def _start_pose_workers(self):
-        """
-        Spawn ONE persistent worker per object (they run continuously and process jobs sequentially).
-        Worker script path can be overridden via $POSE_WORKER_SCRIPT.
-        
-        Set SKIP_POSE_WORKERS=1 to disable auto-spawning (useful for manual debugging).
-        """
-        if os.getenv("SKIP_POSE_WORKERS", "0") == "1":
-            print("🐛 SKIP_POSE_WORKERS=1: Not spawning pose workers (attach manually)")
-            return
-            
-        if not self.object_mesh_paths:
-            print("⚠️  No object_mesh_paths provided; pose workers not started.")
-            return
-        
-        worker_script = os.getenv(
-            "POSE_WORKER_SCRIPT",
-            str((Path(__file__).resolve().parent / "any6d" / "pose_worker.py").resolve())
-        )
-        pose_env = os.getenv("POSE_ENV", "any6d")
-        
-        # Build CUDA library paths for any6d
-        conda_prefix = Path.home() / "miniconda3" / "envs" / pose_env
-        cuda_lib_path = f"{conda_prefix}/lib:{conda_prefix}/targets/x86_64-linux/lib"
-        worker_env = os.environ.copy()
-        worker_env["LD_LIBRARY_PATH"] = cuda_lib_path
-        
-        # Spawn ONE persistent worker per object (parallel processing)
-        print("🔄 Starting pose estimation workers (one per object)...")
-        for obj, mesh_path in self.object_mesh_paths.items():
-            lang_prompt = (self.objects or {}).get(obj, obj)
-            
-            cmd = [
-                "conda", "run", "--no-capture-output", "-n", pose_env,
-                "python", worker_script,
-                "--jobs-dir", str(self.pose_jobs_root),
-                "--object", obj,
-                "--mesh", str(mesh_path),
-                "--prompt", str(lang_prompt)
-            ]
-            
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    env=worker_env
-                )
-                self._pose_worker_procs[obj] = proc
-                print(f"✓ Pose worker for '{obj}' started (PID {proc.pid})")
-                
-                # Start thread to print worker output
-                def _print_worker_output(proc, obj_name):
-                    try:
-                        for line in proc.stdout:
-                            print(f"[Worker:{obj_name}] {line.rstrip()}", flush=True)
-                        proc.wait()
-                        if proc.returncode != 0:
-                            print(f"⚠️ [Worker:{obj_name}] exited with code {proc.returncode}")
-                        else:
-                            print(f"✓ [Worker:{obj_name}] exited normally")
-                    except Exception as e:
-                        print(f"⚠️ [Worker:{obj_name}] output thread error: {e}")
-                Thread(target=_print_worker_output, args=(proc, obj), daemon=True).start()
-                
-            except Exception as e:
-                print(f"⚠️  Failed to start pose worker for '{obj}': {e}")
-
-    def _start_pose_results_watcher(self):
-        self._pose_results_thread = Thread(target=self._pose_results_watcher, daemon=True)
-        self._pose_results_thread.start()
-
-    def _pose_results_watcher(self):
-        """
-        Poll pose_jobs/outbox for result JSONs and fold them into state_info['object_poses'].
-        """
-        print("📬 Results watcher thread started")
-        while True:
-            try:
-                for p in self.pose_outbox.glob("*.json"):
-                    print(f"📥 Found result file: {p.name}")
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            res = json.load(f)
-                    except Exception as e:
-                        print(f"⚠️  Failed to read pose result {p}: {e}")
-                        try:
-                            p.unlink()
-                        except Exception:
-                            pass
-                        continue
-
-                    episode_id = int(res.get("episode_id"))
-                    state_id = int(res.get("state_id"))
-                    obj = res.get("object")
-                    success = bool(res.get("success"))
-                    pose = res.get("pose_cam_T_obj")  # 4x4 list-of-lists or None
-
-                    print(f"📊 Result: episode={episode_id} state={state_id} obj={obj} success={success}")
-                    if pose is not None:
-                        print(f"   Pose: {pose[0][:2]}... (showing first row, first 2 cols)")
-                    else:
-                        print(f"   Pose: None")
-
-                    with self.state_lock:
-                        ep = self.pending_states_by_episode.get(episode_id)
-                        if ep and state_id in ep:
-                            st = ep[state_id]
-                            st.setdefault("object_poses", {})
-                            st["object_poses"][obj] = pose if success else None
-                            print(f"✅ Stored pose for {obj} in state {state_id}")
-                            # Optional: carry along debug meta/paths
-                            if "pose_viz_path" in res:
-                                st.setdefault("pose_debug", {})[f"{obj}_viz"] = res["pose_viz_path"]
-                        else:
-                            print(f"⚠️  No pending state found for episode={episode_id} state={state_id}")
-
-                    try:
-                        p.unlink()
-                        print(f"🗑️  Deleted result file: {p.name}")
-                    except Exception:
-                        pass
-            except Exception:
-                # Keep the watcher alive
-                time.sleep(0.2)
-            time.sleep(0.1)
-
-    def _intrinsics_for_pose(self) -> list[list[float]]:
-        """
-        Choose a 3x3 K to send to pose workers.
-        Priority:
-        1. RealSense D455 intrinsics (if available) - matches run_demo_realsense.py
-        2. Front camera Knew
-        3. Any available camera Knew
-        4. Fallback default
-        Returns a Python list-of-lists (JSON-serializable).
-        """
-        realsense_calib = self.calibration.repo_root / "data" / "calib" / "intrinsics_realsense_d455.npz"
-        if realsense_calib.exists():
-            data = np.load(realsense_calib, allow_pickle=True)
-            K = np.asarray(data["Knew"], dtype=np.float64)  # Use Knew (same as K for RealSense)
-            return K.tolist()
-        else:
-            print("⚠️  RealSense D455 intrinsics not found")
-            exit(1)
-        
-
-    def _enqueue_pose_jobs_for_state(
-        self,
-        episode_id: str,
-        state_id: int,
-        state_info: dict,
-        wait: bool = True,
-        timeout_s: float | None = None,
-    ) -> bool:
-        """
-        Enqueue one pose-estimation job per object into pose_jobs/inbox, then
-        (optionally) block until results for *all* objects are folded into
-        pending_states_by_episode[episode_id][state_id]['object_poses'] by the
-        results watcher.
-
-        Returns:
-            True  -> all objects reported (success or failure) within timeout
-            False -> state disappeared or timed out before all objects reported
-        """
-        if not self.object_mesh_paths:
-            # Nothing to do; treat as ready.
-            return True
-
-        expected_objs = list(self.object_mesh_paths.keys())
-
-        # ---------- Enqueue jobs (do not mark object_poses yet) ----------
-        print(f"📬 Enqueueing pose jobs for episode={episode_id} state={state_id}")
-        for obj, mesh_path in self.object_mesh_paths.items():
-            job_id = f"{episode_id}_{state_id}_{obj}_{uuid.uuid4().hex[:8]}"
-            job = {
-                "job_id": job_id,
-                "episode_id": int(episode_id),
-                "state_id": int(state_id),
-                "object": obj,
-                "obs_path": state_info.get("obs_path"),
-                "K": self._intrinsics_for_pose(),             # 3x3 list
-                "prompt": (self.objects or {}).get(obj, obj), # language prompt
-                # Optional knobs:
-                "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
-                "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
-            }
-            print(f"   📝 Creating job {job_id}")
-            print(f"      obj={obj}, obs_path={job['obs_path']}")
-            tmp = self.pose_tmp / f"{job_id}.json"
-            dst = self.pose_inbox / f"{job_id}.json"
-            try:
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(job, f)
-                os.replace(tmp, dst)  # atomic move
-                print(f"   ✅ Job written to inbox: {dst.name}")
-            except Exception as e:
-                print(f"⚠️  Failed to enqueue pose job {job_id}: {e}")
-
-        if not wait:
-            return True
-
-        # ---------- Wait for watcher to fold ALL results into state ----------
-        # NOTE: Do NOT hold self.state_lock while sleeping; watcher needs it.
-        try:
-            timeout = float(timeout_s if timeout_s is not None else os.getenv("POSE_WAIT_TIMEOUT_S", "20.0"))
-        except Exception:
-            timeout = 20.0
-        deadline = time.time() + max(0.0, timeout)
-
-        # We consider a job "done" when the watcher has inserted a key for that object,
-        # regardless of success (pose may be None on failure). Presence == finished.
-        while True:
-            with self.state_lock:
-                ep = self.pending_states_by_episode.get(episode_id)
-                if not ep or state_id not in ep:
-                    print(f"⚠️  State ep={episode_id} id={state_id} disappeared while waiting for poses")
-                    return False
-                st = ep[state_id]
-                poses = st.get("object_poses", {})
-                done = all(obj in poses for obj in expected_objs)
-
-            if done:
-                return True
-
-            # if time.time() > deadline:
-            #     with self.state_lock:
-            #         poses_now = list(self.pending_states_by_episode.get(episode_id, {}).get(state_id, {}).get("object_poses", {}).keys())
-            #     print(f"⚠️  Timed out waiting for poses (ep={episode_id}, state={state_id}). "
-            #         f"Have={poses_now}, expected={expected_objs}")
-            #     return False
-
-            time.sleep(0.02)
-    
-    
     # =========================
     # Observation image streaming
     # =========================
@@ -938,7 +688,7 @@ class CrowdInterface():
             self.auto_label_previous_states(latest_state_id)
 
         # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
-        poses_ready = self._enqueue_pose_jobs_for_state(
+        poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
             latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
         )
 
