@@ -23,6 +23,7 @@ from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robo
 
 from calibration_manager import CalibrationManager
 from demo_video_manager import DemoVideoManager
+from webcam_manager import WebcamManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -64,43 +65,6 @@ SIM_CALIB_PATHS = {
     "right": "data/calib/calibration_right_sim.json",
     "top": "data/calib/calibration_top_sim.json",
 }
-
-_REALSENSE_BLOCKLIST = (
-    "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
-)
-
-# =========================
-# Module helpers
-# =========================
-
-### HELPERS
-
-def _v4l2_node_name(idx: int) -> str:
-    """Fast sysfs read of V4L2 device name; '' if unknown."""
-    try:
-        with open(f"/sys/class/video4linux/video{idx}/name", "r", encoding="utf-8") as f:
-            return f.read().strip().lower()
-    except Exception:
-        return ""
-
-def _is_webcam_idx(idx: int) -> bool:
-    """True if /dev/video{idx} looks like a regular webcam, not a RealSense node."""
-    name = _v4l2_node_name(idx)
-    if not name:
-        # If we can't read the name, allow it and let open/read decide.
-        return True
-    return not any(term in name for term in _REALSENSE_BLOCKLIST)
-
-def _prep_capture(cap: cv2.VideoCapture, width=640, height=480, fps=None, mjpg=True):
-    """Apply low-latency, webcam-friendly settings once at open."""
-    # Keep the buffer tiny to minimize latency
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    # Many webcams unlock higher modes with MJPG
-    if mjpg:
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    if width:  cap.set(cv2.CAP_PROP_FRAME_WIDTH,  int(width))
-    if height: cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
-    if fps:    cap.set(cv2.CAP_PROP_FPS,          float(fps))
 
 class CrowdInterface():
     '''
@@ -154,7 +118,6 @@ class CrowdInterface():
         except Exception:
             pass
 
-        self.cams = {}
         self.latest_goal = None
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
@@ -212,13 +175,6 @@ class CrowdInterface():
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
 
-        # Background capture state
-        self._cap_threads: dict[str, Thread] = {}
-        self._cap_running: bool = False
-        self._latest_jpeg: dict[str, str] = {}
-        # JPEG quality for base64 encoding (override with env JPEG_QUALITY)
-        self._jpeg_quality = int(os.getenv("JPEG_QUALITY", "80"))
-
         # Observation camera (obs_dict) live previews → background-encoded JPEGs
         self._latest_obs_jpeg: dict[str, str] = {}
         self._obs_img_queue: queue.Queue = queue.Queue(maxsize=int(os.getenv("OBS_STREAM_QUEUE", "8")))
@@ -250,6 +206,13 @@ class CrowdInterface():
             prompt_sequence_dir=prompt_sequence_dir,
             prompt_sequence_clear=prompt_sequence_clear,
             repo_root=repo_root
+        )
+
+        # Webcam manager
+        self.webcam_manager = WebcamManager(
+            cam_ids=CAM_IDS,
+            undistort_maps=self.calibration.get_undistort_maps(),
+            jpeg_quality=int(os.getenv("JPEG_QUALITY", "80"))
         )
 
         # Debounced episode finalization
@@ -297,93 +260,17 @@ class CrowdInterface():
 
     ### ---Camera Management---
     def init_cameras(self):
-        """Open only *webcams* (skip RealSense nodes) once; skip any that fail."""
-        self.cams = getattr(self, "cams", {})
-        for name, idx in CAM_IDS.items():
-            # Only attempt indices that look like webcams
-            if not _is_webcam_idx(idx):
-                print(f"⏭️  skipping '{name}' (/dev/video{idx}) - not a webcam")
-                continue
-
-            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
-                continue
-
-            # One-time efficiency settings
-            _prep_capture(cap, width=640, height=480, fps=None, mjpg=True)
-
-            try:
-                cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-            except Exception:
-                pass
-
-            # Verify we can actually read one frame
-            ok, _ = cap.read()
-            if not ok:
-                cap.release()
-                print(f"⚠️  camera “{name}” (id {idx}) opens but won't deliver frames")
-                continue
-
-            self.cams[name] = cap
-            print(f"✓ Camera '{name}' opened successfully (/dev/video{idx})")
-
-        # Start background capture workers after all cameras are opened
-        if self.cams and not self._cap_running:
-            self._start_camera_workers()
+        """Open webcams and start background capture. Delegates to WebcamManager."""
+        self.webcam_manager.init_cameras()
     
-    def _start_camera_workers(self):
-        """
-        Spawn one thread per opened camera to capture continuously.
-        """
-        if self._cap_running:
-            return
-        self._cap_running = True
-        for name, cap in self.cams.items():
-            t = Thread(target=self._capture_worker, args=(name, cap), daemon=True)
-            t.start()
-            self._cap_threads[name] = t
-
-    def _capture_worker(self, name: str, cap: cv2.VideoCapture):
-        """
-        Background loop: capture frames and encode them as JPEG base64 for web streaming.
-        """
-        # Small sleep to avoid a tight spin when frames aren't available
-        backoff = 0.002
-        while self._cap_running and cap.isOpened():
-            # Prefer grab/retrieve to drop old frames quickly
-            ok = cap.grab()
-            if ok:
-                ok, frame = cap.retrieve()
-            else:
-                ok, frame = cap.read()
-            if ok and frame is not None:
-                # ---- Process in worker: resize → BGR2RGB → undistort (if maps) ----
-                if frame.shape[1] != 640 or frame.shape[0] != 480:
-                    frame_resized = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
-                else:
-                    frame_resized = frame
-                rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
-                maps = self._undistort_maps.get(name)
-                if maps is not None:
-                    m1, m2 = maps
-                    rgb = cv2.remap(rgb, m1, m2, interpolation=cv2.INTER_LINEAR)
-                # Pre-encode JPEG base64 (string) for zero-cost serving
-                self._latest_jpeg[name] = self.encode_jpeg_base64(rgb)
-            else:
-                time.sleep(backoff)
-
     def snapshot_latest_views(self) -> dict[str, str]:
         """
         Snapshot the latest **JPEG base64 strings** for each camera.
-        We copy dict entries to avoid referencing a dict being mutated by workers.
+        Includes both webcam views and observation camera previews.
         """
-        out: dict[str, str] = {}
-        for name in ("left", "right", "front", "top"):
-            s = self._latest_jpeg.get(name)
-            if s is not None:
-                out[name] = s
-
+        # Get webcam views from manager
+        out = self.webcam_manager.snapshot_latest_views()
+        
         # Include latest observation camera previews if available
         for name in ("obs_main", "obs_wrist"):
             s = self._latest_obs_jpeg.get(name)
@@ -443,17 +330,9 @@ class CrowdInterface():
     def encode_jpeg_base64(self, img_rgb: np.ndarray, quality: int | None = None) -> str:
         """
         Encode an RGB image to a base64 JPEG data URL.
+        Delegates to WebcamManager.
         """
-        q = int(self._jpeg_quality if quality is None else quality)
-        if not img_rgb.flags["C_CONTIGUOUS"]:
-            img_rgb = np.ascontiguousarray(img_rgb)
-        # OpenCV imencode expects BGR
-        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        ok, buf = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
-        if not ok:
-            return ""
-        b64 = base64.b64encode(buf).decode("ascii")
-        return f"data:image/jpeg;base64,{b64}"
+        return self.webcam_manager.encode_jpeg_base64(img_rgb, quality)
     
 
     # =========================
