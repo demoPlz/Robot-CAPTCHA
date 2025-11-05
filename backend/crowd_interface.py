@@ -21,9 +21,6 @@ from math import cos, sin
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
-REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
-REQUIRED_RESPONSES_PER_STATE = 1
-
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
     "left":        4,
@@ -111,8 +108,8 @@ class CrowdInterface():
     # (general & camera management, JSON building, encoding)
     # =========================
     def __init__(self, 
-                 required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
-                 required_responses_per_critical_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
+                 required_responses_per_state= 1,
+                 required_responses_per_critical_state=10,
                  autofill_critical_states: bool = False,
                  num_autofill_actions: int | None = None,
                  use_manual_prompt: bool = False,

@@ -1,81 +1,120 @@
+"""Configuration for CrowdInterface crowd-sourced data collection."""
+
 import argparse
 import sys
 from pathlib import Path
 
 
-class CrowdInterfaceConfig():
+class CrowdInterfaceConfig:
+    """
+    Configuration for crowd-sourced robot data collection interface.
+    
+    This config manages settings for:
+    - Task definition and labeling requirements
+    - Critical state annotation (user responses per state)
+    - Demo video recording and display
+    - Simulation integration
+    - Object tracking and pose estimation
+    """
 
     def __init__(self):
-        # Task
-        self.task_name = "drawer"  # one word
-        self.task_text = "Put the objects on the desk into the middle drawer."
+        # ========== Task Settings ==========
+        self.task_name: str = "drawer"  # Single-word identifier for the task
+        self.task_text: str = "Put the objects on the desk into the middle drawer."
 
-        # Number of responses per state settings
-        self.required_responses_per_state: int = 1
-        self.required_responses_per_critical_state: int = 10
+        # ========== Labeling Requirements ==========
+        self.required_responses_per_state: int = 1  # Non-critical states
+        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
 
-        # Critical state autofill settings
+        # ========== Critical State Autofill ==========
+        # When enabled, critical states are auto-completed after a certain number of responses
         self.autofill_critical_states: bool = False
-        self.num_autofill_actions: int | None = None
+        self.num_autofill_actions: int | None = None  # If None, uses required_responses_per_critical_state
 
-        # UI Prompt control settings
-        self.use_manual_prompt: bool = False
-        self.show_demo_videos: bool = False
+        # ========== UI Prompting ==========
+        self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state
+        self.show_demo_videos: bool = False  # Display reference videos to users
 
-        # UI setting
-        self.simulated_frontend: bool = True
-
-        # UI usage video demonstration recording settings
+        # ========== Demo Video Recording ==========
+        # Records user interaction videos for training/demonstration purposes
         self.record_ui_demo_videos: bool = False
-        self.ui_demo_videos_dir: str | None = None
-        self.clear_ui_demo_videos_dir: bool = False
+        self.ui_demo_videos_dir: str | None = None  # Defaults to data/prompts/{task_name}/videos
+        self.clear_ui_demo_videos_dir: bool = False  # Clear directory on startup
 
-        # Sim
-        self.use_sim: bool = True
+        # ========== Simulation ==========
+        self.use_sim: bool = True  # Use Isaac Sim for state visualization
 
-        # Objects. Can only be configured in __init__ and not overriden
+        # ========== Object Tracking ==========
+        # Object names and their language descriptions for pose estimation
+        # Note: Keys must match USD prim names in Isaac Sim
         self.objects: dict[str, str] = {
-            "Cube_Blue": "Blue cube", 
-            "Cube_Red": "Red cube", 
+            "Cube_Blue": "Blue cube",
+            "Cube_Red": "Red cube",
             "Tennis": "Tennis ball"
-        } # {name of xform: name for langsam}
+        }
         
-        # Resolve mesh paths to absolute paths
+        # Resolve mesh paths for pose estimation (relative to repo root)
         repo_root = Path(__file__).resolve().parent.parent
         self.object_mesh_paths: dict[str, str] = {
-            "Cube_Blue": str((repo_root / "public/assets/cube.obj").resolve()),
-            "Cube_Red": str((repo_root / "public/assets/cube.obj").resolve()),
-            "Tennis":  str((repo_root / "public/assets/sphere.obj").resolve())
+            "Cube_Blue": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+            "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+            "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve())
         }
 
     @classmethod
     def from_cli_args(cls, argv=None):
         """
         Create a CrowdInterfaceConfig instance with CLI overrides.
-        Parses only the crowd-specific CLI args and removes them from sys.argv.
+        
+        Parses crowd-specific CLI arguments and removes them from sys.argv,
+        allowing LeRobot's argument parser to process remaining args without conflicts.
+        
+        Args:
+            argv: Command-line arguments to parse (defaults to sys.argv[1:])
+            
+        Returns:
+            CrowdInterfaceConfig: Configuration instance with CLI overrides applied
         """
-        # Parse CLI args that can override config
         parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("--task-name", type=str, help="One-word task name")
-        parser.add_argument("--required-responses-per-critical-state", type=int)
-        parser.add_argument("--autofill-critical-states", action="store_true")
-        parser.add_argument("--num-autofill-actions", type=int)
-        parser.add_argument("--use-manual-prompt", action="store_true")
-        parser.add_argument("--show-demo-videos", action="store_true")
-        parser.add_argument("--record-ui-demo-videos", action="store_true")
-        parser.add_argument("--ui-demo-videos-dir", type=str)
-        parser.add_argument("--clear-ui-demo-videos-dir", action="store_true")
-        parser.add_argument("--use_sim", action="store_true")
+        
+        # Task settings
+        parser.add_argument("--task-name", type=str, 
+                          help="Single-word task identifier (e.g., 'drawer', 'pick_place')")
+        
+        # Labeling settings
+        parser.add_argument("--required-responses-per-critical-state", type=int,
+                          help="Number of user responses required for critical states")
+        parser.add_argument("--autofill-critical-states", action="store_true",
+                          help="Auto-complete critical states after partial responses")
+        parser.add_argument("--num-autofill-actions", type=int,
+                          help="Number of responses before auto-fill (default: all required)")
+        
+        # UI settings
+        parser.add_argument("--use-manual-prompt", action="store_true",
+                          help="Require manual text/video prompt selection per state")
+        parser.add_argument("--show-demo-videos", action="store_true",
+                          help="Display reference videos to labelers")
+        
+        # Demo video recording
+        parser.add_argument("--record-ui-demo-videos", action="store_true",
+                          help="Record user interaction videos")
+        parser.add_argument("--ui-demo-videos-dir", type=str,
+                          help="Directory for demo videos (default: data/prompts/{task}/videos)")
+        parser.add_argument("--clear-ui-demo-videos-dir", action="store_true",
+                          help="Clear demo videos directory on startup")
+        
+        # Simulation
+        parser.add_argument("--use-sim", action="store_true",
+                          help="Enable Isaac Sim integration")
         
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
         
-        # Remove our args from sys.argv so LeRobot doesn't see them
+        # Remove crowd-specific args from sys.argv for downstream parsers
         sys.argv = [sys.argv[0]] + remaining
         
-        # Create config instance
+        # Create config and apply overrides
         config = cls()
         
-        # Apply CLI overrides
         if args.task_name is not None:
             config.task_name = args.task_name
         if args.required_responses_per_critical_state is not None:
@@ -101,23 +140,34 @@ class CrowdInterfaceConfig():
 
     def to_crowd_interface_kwargs(self) -> dict:
         """
-        Convert this config to kwargs suitable for CrowdInterface constructor.
-        Maps config fields to the expected CrowdInterface parameter names.
+        Convert configuration to CrowdInterface constructor kwargs.
+        
+        Returns:
+            dict: Keyword arguments for CrowdInterface.__init__()
         """
         kwargs = {
+            # Core settings
             "task_name": self.task_name,
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
+            
+            # Autofill
             "autofill_critical_states": self.autofill_critical_states,
             "num_autofill_actions": self.num_autofill_actions,
+            
+            # UI
             "use_manual_prompt": self.use_manual_prompt,
             "show_demo_videos": self.show_demo_videos,
+            
+            # Simulation
             "use_sim": self.use_sim,
+            
+            # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths
         }
         
-        # Handle demo video recording settings
+        # Optional: demo video recording (only include if enabled)
         if self.record_ui_demo_videos:
             kwargs["record_demo_videos"] = True
             if self.ui_demo_videos_dir is not None:
