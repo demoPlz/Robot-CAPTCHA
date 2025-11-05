@@ -60,7 +60,7 @@
                 "--required-responses-per-critical-state=2",
                 // "--num-autofill-actions=10",
 
-                // "--use-manual-prompt",
+                "--use-manual-prompt",
 
                 "--show-demo-videos",
 

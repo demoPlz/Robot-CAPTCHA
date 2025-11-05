@@ -43,7 +43,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             payload["prompt"] = f"Task: {crowd_interface.task_text or 'crowdsourced_task'}. What should the arm do next?"
 
         # Tell the frontend what to do with demo videos
-        payload["demo_video"] = crowd_interface.get_demo_video_config()
+        payload["demo_video"] = crowd_interface.video_manager.get_demo_video_config()
 
         response = jsonify(payload)
         # Prevent caching
@@ -65,7 +65,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         Mirrors the 'demo_video' object we also embed in /api/get-state.
         """
         try:
-            return jsonify(crowd_interface.get_demo_video_config())
+            return jsonify(crowd_interface.video_manager.get_demo_video_config())
         except Exception as e:
             return jsonify({"enabled": False, "error": str(e)}), 500
     
@@ -521,7 +521,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         This endpoint is independent of the recording feature and supports HTTP Range.
         """
 
-        if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
+        if not crowd_interface.video_manager.show_demo_videos or not crowd_interface.video_manager._show_videos_dir:
             return jsonify({"error": "Show demo videos is not enabled"}), 404
 
         # Sanitize; we only accept digits for ids.
@@ -529,7 +529,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         if not vid:
             return jsonify({"error": "Invalid video id"}), 400
 
-        file_path, mime = crowd_interface.find_show_video_by_id(vid)
+        file_path, mime = crowd_interface.video_manager.find_show_video_by_id(vid)
         if not file_path:
             return jsonify({"error": "Video file not found"}), 404
 
@@ -584,11 +584,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         Accept-Ranges: bytes
         """
 
-        if not crowd_interface.show_demo_videos or not crowd_interface._show_videos_dir:
+        if not crowd_interface.video_manager.show_demo_videos or not crowd_interface.video_manager._show_videos_dir:
             return jsonify({"error": "Show demo videos is not enabled"}), 404
 
         # Resolve the latest numeric .webm (e.g., 1.webm, 2.webm, ...)
-        latest_path, latest_id = crowd_interface.find_latest_show_video()
+        latest_path, latest_id = crowd_interface.video_manager.find_latest_show_video()
         if not latest_path or not latest_path.exists():
             return jsonify({"error": "No video file found"}), 404
 
@@ -646,7 +646,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         nonlocal current_recording
         
         
-        if not crowd_interface.record_demo_videos:
+        if not crowd_interface.video_manager.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
         
         try:
@@ -679,7 +679,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         nonlocal current_recording
         
         
-        if not crowd_interface.record_demo_videos:
+        if not crowd_interface.video_manager.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
         
         try:
@@ -710,7 +710,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     def record_stop():
         nonlocal current_recording
         
-        if not crowd_interface.record_demo_videos:
+        if not crowd_interface.video_manager.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
         
         try:
@@ -734,8 +734,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             try:
                 # Get next filename using the counter system
                 ext = current_recording['ext']
-                filename, index = crowd_interface.next_video_filename(ext)
-                file_path = crowd_interface._demo_videos_dir / filename
+                filename, index = crowd_interface.video_manager.next_video_filename(ext)
+                file_path = crowd_interface.video_manager._demo_videos_dir / filename
                 
                 # Write all chunks to the file
                 with open(file_path, 'wb') as f:
@@ -772,7 +772,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         
         """Manual save endpoint for demo video recordings"""
         
-        if not crowd_interface.record_demo_videos:
+        if not crowd_interface.video_manager.record_demo_videos:
             return jsonify({"error": "Demo video recording is not enabled"}), 400
         
         try:
@@ -794,8 +794,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             # Get next filename using the counter system
             ext = current_recording['ext']
-            filename, index = crowd_interface.next_video_filename(ext)
-            file_path = crowd_interface._demo_videos_dir / filename
+            filename, index = crowd_interface.video_manager.next_video_filename(ext)
+            file_path = crowd_interface.video_manager._demo_videos_dir / filename
             
             # Write all chunks to the file
             with open(file_path, 'wb') as f:

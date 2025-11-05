@@ -22,6 +22,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
 from calibration_manager import CalibrationManager
+from demo_video_manager import DemoVideoManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -237,6 +238,20 @@ class CrowdInterface():
             sim_calib_paths=SIM_CALIB_PATHS
         )
 
+        # Demo video manager
+        self.video_manager = DemoVideoManager(
+            task_name=task_name,
+            record_demo_videos=record_demo_videos,
+            demo_videos_dir=demo_videos_dir,
+            demo_videos_clear=demo_videos_clear,
+            show_demo_videos=show_demo_videos,
+            show_videos_dir=show_videos_dir,
+            save_maincam_sequence=save_maincam_sequence,
+            prompt_sequence_dir=prompt_sequence_dir,
+            prompt_sequence_clear=prompt_sequence_clear,
+            repo_root=repo_root
+        )
+
         # Debounced episode finalization
         self.episode_finalize_grace_s = 2.0
         self._episode_finalize_timers: dict[str, Timer] = {}
@@ -275,89 +290,6 @@ class CrowdInterface():
         self._start_pose_workers()
         # Watch for results from workers
         self._start_pose_results_watcher()
-
-        # --- Important-state cam_main image sequence sink ---
-        self.save_maincam_sequence = bool(save_maincam_sequence)
-        self._prompt_seq_dir = Path(prompt_sequence_dir or "data/prompts/drawer/snapshots").resolve()
-        self._prompt_seq_index = 1
-        # Track which states have been saved to maintain chronological ordering
-        self._saved_sequence_states: set[tuple[str, int]] = set()  # (episode_id, state_id)
-        self._max_saved_state_id: int | None = None
-
-        if self.save_maincam_sequence:
-            try:
-                self._prompt_seq_dir.mkdir(parents=True, exist_ok=True)
-                if prompt_sequence_clear:
-                    removed = 0
-                    for p in self._prompt_seq_dir.glob("*"):
-                        try:
-                            if p.is_file():
-                                p.unlink()
-                                removed += 1
-                        except Exception:
-                            pass
-                    print(f"🧹 Cleared {removed} files in {self._prompt_seq_dir}")
-                    # Reset tracking when clearing
-                    self._saved_sequence_states.clear()
-                    self._max_saved_state_id = None
-                self._prompt_seq_index = self._compute_next_prompt_seq_index()
-                print(f"📸 Important-state capture → {self._prompt_seq_dir} (next index {self._prompt_seq_index:06d})")
-            except Exception as e:
-                print(f"⚠️ Could not prepare sequence directory '{self._prompt_seq_dir}': {e}")
-
-        # --- Demo video recording ---
-        self.record_demo_videos = bool(record_demo_videos)
-        self._demo_videos_dir = None
-        self._video_index_lock = Lock()
-        self._video_index = 1   # 1-based, reset on each process start
-        if self.record_demo_videos:
-            if demo_videos_dir:
-                self._demo_videos_dir = Path(demo_videos_dir).resolve()
-            else:
-                # Default: data/prompts/{task-name}/videos
-                task_name = self.task_name
-                repo_root = Path(__file__).resolve().parent / ".."
-                self._demo_videos_dir = (repo_root / "data" / "prompts" / task_name / "videos").resolve()
-            
-            try:
-                self._demo_videos_dir.mkdir(parents=True, exist_ok=True)
-                print(f"🎥 Demo video recording → {self._demo_videos_dir}")
-                # Clear dir (recommended) so numbering restarts at 1 every run
-                if demo_videos_clear:
-                    removed = 0
-                    for p in self._demo_videos_dir.iterdir():
-                        try:
-                            p.unlink()
-                            removed += 1
-                        except Exception:
-                            pass
-                    if removed:
-                        print(f"🧹 Cleared {removed} old files in {self._demo_videos_dir}")
-                # Ensure index starts at 1 (or next if directory not empty)
-                self._video_index = self._compute_next_video_index()
-            except Exception as e:
-                print(f"⚠️ Could not prepare demo videos directory '{self._demo_videos_dir}': {e}")
-                self.record_demo_videos = False
-
-        # --- Demo video display ---
-        self.show_demo_videos = bool(show_demo_videos or int(os.getenv("SHOW_DEMO_VIDEOS", "0")))
-        self._show_videos_dir = None
-        self._show_video_exts = (".webm",)  # VP9-only
-
-        if self.show_demo_videos:
-            if show_videos_dir:
-                self._show_videos_dir = Path(show_videos_dir).resolve()
-            else:
-                task_name = self.task_name or "default"
-                repo_root = Path(__file__).resolve().parent / ".."
-                self._show_videos_dir = (repo_root / "data" / "prompts" / task_name / "videos").resolve()
-
-            try:
-                self._show_videos_dir.mkdir(parents=True, exist_ok=True)
-                print(f"🎬 Demo video display (read-only, VP9/WebM only) → {self._show_videos_dir}")
-            except Exception as e:
-                print(f"⚠️ Could not prepare show videos directory '{self._show_videos_dir}': {e}")
-                self.show_demo_videos = False
 
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow
@@ -487,18 +419,18 @@ class CrowdInterface():
         out["gripper_tip_calib"] = self.calibration.get_gripper_tip_calib()
         
         # --- Attach example video URL (direct file URL; byte-range capable) ---
-        if self.show_demo_videos:
+        if self.video_manager.show_demo_videos:
             # Prefer a VLM-selected clip if available and present  
             video_id = state.get("video_prompt")
             chosen_url = None
             if video_id is not None:
-                p, _ = self.find_show_video_by_id(video_id)
+                p, _ = self.video_manager.find_show_video_by_id(video_id)
                 if p:
                     chosen_url = f"/api/show-videos/{video_id}"  # serves the exact id
 
             # Fallback: latest available .webm
             if not chosen_url:
-                lp, lid = self.find_latest_show_video()
+                lp, lid = self.video_manager.find_latest_show_video()
                 if lp and lid:
                     # Stable "latest" URL for the player; resolves dynamically on the server
                     chosen_url = "/api/show-videos/latest.webm"
@@ -1617,111 +1549,6 @@ class CrowdInterface():
         tn = task_name or self.task_name()
         return (self._prompts_root_dir() / tn).resolve()
     
-    def _compute_next_prompt_seq_index(self) -> int:
-        """
-        Scan the target directory and return next numeric index (1-based).
-        Accepts files like 000001.jpg / 42.png / 7.jpeg, ignoring non-numeric stems.
-        """
-        nums = []
-        for p in self._prompt_seq_dir.iterdir():
-            if not p.is_file():
-                continue
-            m = re.match(r"^(\d+)$", p.stem)
-            if m:
-                nums.append(int(m.group(1)))
-        return (max(nums) + 1) if nums else 1
-
-    def _compute_next_video_index(self) -> int:
-        """
-        Scan current videos dir and return the next integer index.
-        Accepts files named like '1.webm', '2.mp4', etc.
-        If directory is empty (typical after clear), returns 1.
-        """
-        if not self._demo_videos_dir:
-            return 1
-        max_idx = 0
-        try:
-            for p in self._demo_videos_dir.iterdir():
-                if not p.is_file():
-                    continue
-                m = re.match(r"^(\d+)\.[A-Za-z0-9]+$", p.name)
-                if m:
-                    max_idx = max(max_idx, int(m.group(1)))
-        except Exception:
-            pass
-        return (max_idx + 1) if max_idx > 0 else 1
-
-    def next_video_filename(self, ext: str) -> tuple[str, int]:
-        """Return ('{index}{ext}', index) and atomically increment the counter."""
-        if not ext.startswith("."):
-            ext = "." + ext
-        with self._video_index_lock:
-            idx = self._video_index
-            self._video_index += 1
-        return f"{idx}{ext}", idx
-
-    def find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
-        """
-        VP9-only: resolve <id>.webm inside the show_videos_dir and return its path + mime.
-        """
-        vid = str(video_id).strip()
-        if not vid.isdigit() or not self._show_videos_dir:
-            return None, None
-
-        p = self._show_videos_dir / f"{vid}.webm"
-        if not p.is_file():
-            return None, None
-
-        mime = mimetypes.guess_type(str(p))[0] or "video/webm"
-        return p, mime
-
-    def find_latest_show_video(self) -> tuple[Path | None, str | None]:
-        """
-        Return (path, id_str) of the latest .webm in _show_videos_dir.
-        Files must be named like '<number>.webm' (e.g., 1.webm, 2.webm).
-        """
-        try:
-            d = self._show_videos_dir
-            if not d:
-                return None, None
-            latest_path = None
-            latest_id = None
-            for p in d.iterdir():
-                if not (p.is_file() and p.suffix.lower() == ".webm"):
-                    continue
-                stem = p.stem.strip()
-                if not stem.isdigit():
-                    continue
-                if latest_id is None or int(stem) > int(latest_id):
-                    latest_path, latest_id = p, stem
-            return latest_path, latest_id
-        except Exception:
-            return None, None
-
-    def get_demo_video_config(self) -> dict:
-        """
-        Small, stable contract the frontend can consume.
-        VP9-only: prefer .webm (VP9) and only accept VP9/WebM uploads.
-        """
-        cfg = {
-            "enabled": bool(self.record_demo_videos),
-            "task_name": self.task_name,
-            "save_dir_abs": None,
-            "save_dir_rel": None,
-            "upload_url": "/api/upload-demo-video" if self.record_demo_videos else None,
-            "preferred_extension": "webm",
-            "preferred_mime": "video/webm",
-            "suggest_canvas_capture": True,
-            "filename_pattern": "{index}.{ext}",
-            "sequence_start_index": 1,
-            "reset_numbering_each_run": True,
-            "accept_mimes": ["video/webm"]  # VP9-only
-        }
-        if self.record_demo_videos and self._demo_videos_dir:
-            cfg["save_dir_abs"] = str(self._demo_videos_dir)
-            cfg["save_dir_rel"] = self.rel_path_from_repo(self._demo_videos_dir)
-        return cfg
-
     def _parse_description_bank_entries(self, file_path: str) -> list[dict]:
         """
         Read description bank from file. Each line is a text prompt.

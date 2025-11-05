@@ -27,9 +27,9 @@ class CrowdInterfaceConfig:
         self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
 
         # ========== Critical State Autofill ==========
-        # When enabled, critical states are auto-completed after a certain number of responses
+        # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
         self.autofill_critical_states: bool = False
-        self.num_autofill_actions: int | None = None  # If None, uses required_responses_per_critical_state
+        self.num_autofill_actions: int | None = None 
 
         # ========== UI Prompting ==========
         self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state
@@ -42,7 +42,7 @@ class CrowdInterfaceConfig:
         self.clear_ui_demo_videos_dir: bool = False  # Clear directory on startup
 
         # ========== Simulation ==========
-        self.use_sim: bool = True  # Use Isaac Sim for state visualization
+        self.use_sim: bool = True  # Use Isaac Sim for state simulaion
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
