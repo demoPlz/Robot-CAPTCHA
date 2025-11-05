@@ -30,8 +30,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-# Local Netlify folder
-.netlify
+
+# Local Netlify folder (auto-generated)
+.netlify/
 
 # Large files
 **/videos/

@@ -314,10 +314,10 @@ class CrowdInterface():
             if demo_videos_dir:
                 self._demo_videos_dir = Path(demo_videos_dir).resolve()
             else:
-                # Default: prompts/demos/{task-name}/videos
+                # Default: data/prompts/{task-name}/videos
                 task_name = self.task_name
                 repo_root = Path(__file__).resolve().parent / ".."
-                self._demo_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
+                self._demo_videos_dir = (repo_root / "data" / "prompts" / task_name / "videos").resolve()
             
             try:
                 self._demo_videos_dir.mkdir(parents=True, exist_ok=True)
@@ -350,7 +350,7 @@ class CrowdInterface():
             else:
                 task_name = self.task_name or "default"
                 repo_root = Path(__file__).resolve().parent / ".."
-                self._show_videos_dir = (repo_root / "prompts" / task_name / "videos").resolve()
+                self._show_videos_dir = (repo_root / "data" / "prompts" / task_name / "videos").resolve()
 
             try:
                 self._show_videos_dir.mkdir(parents=True, exist_ok=True)

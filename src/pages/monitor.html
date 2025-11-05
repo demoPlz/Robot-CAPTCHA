@@ -401,35 +401,35 @@
     <div class="toast" id="app-toast"></div>
 
     <script>
-        // === API bootstrap (unchanged except used by new endpoints) ===
+        // === API bootstrap - use Flask backend directly ===
         async function getCurrentCloudflaredUrl() {
             try {
-                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                    return '/.netlify/functions/api';
-                }
                 // For local development, use localhost backend directly
-                console.log('[DEV] Using localhost backend');
-                return 'http://127.0.0.1:9000';
+                if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+                    console.log('[DEV] Using localhost backend');
+                    return 'http://127.0.0.1:9000';
+                }
+                // For production (Netlify), use Tailscale backend URL
+                console.log('[PROD] Using Tailscale backend');
+                return 'https://ztclab-1.tail503d36.ts.net';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
-                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                    return '/.netlify/functions/api';
-                }
-                return 'https://reconstruction-parker-put-push.trycloudflare.com';
+                // Fallback to Tailscale URL
+                return 'https://ztclab-1.tail503d36.ts.net';
             }
         }
-        let API_BASE_URL = '/.netlify/functions/api';
+        let API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
                     API_BASE_URL = await getCurrentCloudflaredUrl();
-                    console.log('[DEBUG] Monitor using direct cloudflared URL:', API_BASE_URL);
+                    console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
                 } else {
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                API_BASE_URL = '/.netlify/functions/api';
-                console.log('[DEBUG] Monitor using Netlify proxy:', API_BASE_URL);
+                API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
+                console.log('[DEBUG] Monitor using Tailscale backend:', API_BASE_URL);
             }
         }
 

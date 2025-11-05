@@ -1350,29 +1350,27 @@ import {
   DOF
 } from 'closed-chain-ik';
 
-// Simple API Configuration - use appropriate proxy based on environment
+// Simple API Configuration - use Flask backend directly
 async function getCurrentCloudflaredUrl() {
   try {
-    // For production (Netlify), always use the function proxy to avoid CORS issues
-    if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      return '/.netlify/functions/api';
+    // For local development, use localhost backend directly
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      console.log('[DEV] Using localhost backend');
+      return 'http://127.0.0.1:9000';
     }
     
-    // For local development, use localhost backend directly
-    console.log('[DEV] Using localhost backend');
-    return 'http://127.0.0.1:9000';
+    // For production (Netlify), use Tailscale backend URL
+    console.log('[PROD] Using Tailscale backend');
+    return 'https://ztclab-1.tail503d36.ts.net';
   } catch (error) {
     console.error('Error getting backend URL:', error);
-    // Fallback based on environment
-    if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      return '/.netlify/functions/api'; // Use proxy for production
-    }
-    return 'https://reconstruction-parker-put-push.trycloudflare.com'; // Direct for local dev
+    // Fallback to Tailscale URL
+    return 'https://ztclab-1.tail503d36.ts.net';
   }
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
-let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
+let API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net'; // Default to Tailscale backend
 
 async function refreshViews() {
   console.log('🔄 Refreshing views with latest static images...');
@@ -2983,17 +2981,17 @@ loader.load(
     // Set API_BASE_URL dynamically based on environment
     if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
       if (location.port === '5173' || location.port === '5174') {
-        // Running on Vite dev server - get direct cloudflared URL
+        // Running on Vite dev server - get backend URL
         API_BASE_URL = await getCurrentCloudflaredUrl();
-        console.log('[DEBUG] Using direct cloudflared URL for Vite dev server:', API_BASE_URL);
+        console.log('[DEBUG] Using backend URL for Vite dev server:', API_BASE_URL);
       } else {
         // Running on production build locally
         API_BASE_URL = 'http://127.0.0.1:9000';
       }
     } else {
-      // Running on deployed Netlify - use function proxy to avoid CORS
-      API_BASE_URL = '/.netlify/functions/api';
-      console.log('[DEBUG] Using Netlify function proxy for production:', API_BASE_URL);
+      // Running on deployed Netlify - use Tailscale backend directly
+      API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
+      console.log('[DEBUG] Using Tailscale backend for production:', API_BASE_URL);
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
