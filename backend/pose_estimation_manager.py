@@ -73,6 +73,9 @@ class PoseEstimationManager:
             except Exception:
                 pass
         
+        # Clean up stale jobs from previous runs
+        self._cleanup_job_queues()
+        
         # Worker process management
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
         self._pose_results_thread: Thread | None = None
@@ -80,6 +83,37 @@ class PoseEstimationManager:
         # Start workers and results watcher
         self._start_pose_workers()
         self._start_pose_results_watcher()
+    
+    def _cleanup_job_queues(self):
+        """
+        Remove stale job files from inbox and outbox directories.
+        Called on initialization to prevent workers from processing jobs from previous runs.
+        """
+        try:
+            # Clean inbox (pending jobs)
+            for f in self.pose_inbox.glob("*.json"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            
+            # Clean outbox (completed results)
+            for f in self.pose_outbox.glob("*.json"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            
+            # Clean tmp (partially written jobs)
+            for f in self.pose_tmp.glob("*.json"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            
+            print("🧹 Cleaned up stale pose jobs from previous runs")
+        except Exception as e:
+            print(f"⚠️  Failed to cleanup job queues: {e}")
     
     def _start_pose_workers(self):
         """
@@ -110,6 +144,11 @@ class PoseEstimationManager:
         
         # Spawn ONE persistent worker per object (parallel processing)
         print("🔄 Starting pose estimation workers (one per object)...")
+        
+        # Track ready status for each worker (True=ready, False=pending, None=failed)
+        workers_status = {obj: False for obj in self.object_mesh_paths.keys()}
+        status_lock = Lock()
+        
         for obj, mesh_path in self.object_mesh_paths.items():
             lang_prompt = (self.objects or {}).get(obj, obj)
             
@@ -134,12 +173,20 @@ class PoseEstimationManager:
                 self._pose_worker_procs[obj] = proc
                 print(f"✓ Pose worker for '{obj}' started (PID {proc.pid})")
                 
-                # Start thread to print worker output
+                # Start thread to print worker output and detect ready/failure signals
                 def _print_worker_output(proc, obj_name):
                     try:
                         for line in iter(proc.stdout.readline, ""):
                             if line:
                                 print(f"[{obj_name}] {line.rstrip()}")
+                                # Detect ready signal: "✅ worker ready (watching ...)"
+                                if "✅" in line and "worker ready" in line:
+                                    with status_lock:
+                                        workers_status[obj_name] = True
+                                # Detect initialization failures: "✖ mesh load failed" or "✖ engines init failed"
+                                elif "✖" in line and ("mesh load failed" in line or "engines init failed" in line):
+                                    with status_lock:
+                                        workers_status[obj_name] = None  # None indicates failure
                     except Exception:
                         pass
                     finally:
@@ -148,6 +195,41 @@ class PoseEstimationManager:
                 
             except Exception as e:
                 print(f"⚠️  Failed to start pose worker for '{obj}': {e}")
+                with status_lock:
+                    workers_status[obj] = None  # Mark as failed
+        
+        # Wait for all workers to be ready or fail (with timeout)
+        print("⏳ Waiting for pose workers to initialize...")
+        timeout_s = float(os.getenv("POSE_WORKER_INIT_TIMEOUT", "30.0"))
+        deadline = time.time() + timeout_s
+        
+        while time.time() < deadline:
+            with status_lock:
+                # Check if any workers failed (None status)
+                failed = [obj for obj, status in workers_status.items() if status is None]
+                if failed:
+                    print(f"❌ Worker initialization FAILED for: {failed}")
+                    print(f"❌ Check worker logs above for details (mesh load or engine init errors)")
+                    # Continue anyway - maybe other workers can still work
+                    return
+                
+                # Check if all workers are ready (True status)
+                if all(status is True for status in workers_status.values()):
+                    print("✅ All pose workers ready!")
+                    return
+            time.sleep(0.1)
+        
+        # Timeout - report which workers are still pending
+        with status_lock:
+            pending = [obj for obj, status in workers_status.items() if status is False]
+            failed = [obj for obj, status in workers_status.items() if status is None]
+        
+        if failed:
+            print(f"❌ Workers failed during initialization: {failed}")
+        if pending:
+            print(f"⚠️  Timeout waiting for pose workers: {pending} not ready after {timeout_s}s")
+        if pending or failed:
+            print(f"⚠️  Continuing anyway, but pose estimation may fail for affected objects...")
 
     def _start_pose_results_watcher(self):
         self._pose_results_thread = Thread(target=self._pose_results_watcher, daemon=True)
@@ -169,7 +251,7 @@ class PoseEstimationManager:
                         ep_id = result.get("episode_id")
                         st_id = result.get("state_id")
                         obj = result.get("object")
-                        pose = result.get("pose")  # may be None on failure
+                        pose = result.get("pose_cam_T_obj")  # may be None on failure
                         
                         with self.state_lock:
                             ep = self.pending_states_by_episode.get(ep_id)
