@@ -1,15 +1,15 @@
-"""
-Hardware Configuration Constants
+"""Hardware Configuration Constants.
 
-Camera IDs and calibration file paths for the physical setup.
-Modify these values to match your specific hardware configuration.
+Camera IDs and calibration file paths for the physical setup. Modify these values to match your specific hardware
+configuration.
+
 """
 
 # Camera device indices (change to match your system's USB camera enumeration)
 CAM_IDS = {
-    "front":       18,
-    "left":        4,
-    "right":       2,
+    "front": 18,
+    "left": 4,
+    "right": 2,
     "perspective": 1,
 }
 

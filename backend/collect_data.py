@@ -1,5 +1,4 @@
-'''
-Entry point for collecting robot manipulation data with crowd-sourced labeling.
+"""Entry point for collecting robot manipulation data with crowd-sourced labeling.
 
 Example usage:
     python backend/collect_data.py \
@@ -19,14 +18,19 @@ Example usage:
         --control.play_sound=false \
         --required-responses-per-critical-state=2 \
         --show-demo-videos
-'''
+
+"""
 
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from pprint import pformat
-
 from threading import Thread
-from werkzeug.serving import make_server
+
+import cv2  # for closing display windows
+from crowd_interface import *
+from crowd_interface_config import CrowdInterfaceConfig
+from flask_app import create_flask_app
 
 # from safetensors.torch import load_file, save_file
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -46,18 +50,15 @@ from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_con
 from lerobot.common.robot_devices.utils import safe_disconnect
 from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
+from werkzeug.serving import make_server
 
-from crowd_interface import *
-from crowd_interface_config import CrowdInterfaceConfig
-from flask_app import create_flask_app
-import cv2  # for closing display windows
-from pathlib import Path
 
 def _stop_display_only(listener, display_cameras: bool):
-    """
-    Minimal UI teardown that does NOT touch the robot.
+    """Minimal UI teardown that does NOT touch the robot.
+
     - Listener is a daemon thread; it dies with the process.
     - Close any OpenCV windows if we showed cameras.
+
     """
     try:
         if display_cameras:
@@ -65,17 +66,15 @@ def _stop_display_only(listener, display_cameras: bool):
     except Exception:
         pass
 
+
 # Parse crowd interface config once at import time so @parser.wrap can run normally later
 _CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 
+
 @safe_disconnect
-def record(
-    robot: Robot,
-    crowd_interface: CrowdInterface,
-    cfg: RecordControlConfig
-) -> LeRobotDataset:
+def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConfig) -> LeRobotDataset:
     if cfg.resume:
-        dataset = LeRobotDataset( 
+        dataset = LeRobotDataset(
             cfg.repo_id,
             root=cfg.root,
         )
@@ -142,7 +141,7 @@ def record(
                 fps=cfg.fps,
                 single_task=cfg.single_task,
                 crowd_interface=crowd_interface,
-                episode_id = recorded_episodes
+                episode_id=recorded_episodes,
             )
         finally:
             # Leave no active episode once the loop exits (including early exit).
@@ -152,9 +151,7 @@ def record(
         # Current code logic doesn't allow to teleoperate during this time.
         # TODO(rcadene): add an option to enable teleoperation during reset
         # Skip reset for the last episode to be recorded
-        if not events["stop_recording"] and (
-            (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
-        ):
+        if not events["stop_recording"] and ((recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]):
             log_say("Reset the environment", cfg.play_sounds)
             reset_environment_crowd(robot, events, cfg.reset_time_s, cfg.fps, crowd_interface)
 
@@ -172,7 +169,7 @@ def record(
 
         if events["stop_recording"]:
             break
-    
+
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     _stop_display_only(listener, cfg.display_cameras)
 
@@ -180,11 +177,11 @@ def record(
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
         crowd_interface.dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
 
-
     log_say("Users have finished labeling. Exiting", cfg.play_sounds)
 
     return dataset
-    
+
+
 @parser.wrap()
 def control_robot(cfg: ControlPipelineConfig):
     # exact same pattern as lerobot/scripts/control_robot.py
@@ -192,7 +189,7 @@ def control_robot(cfg: ControlPipelineConfig):
     logging.info(pformat(asdict(cfg)))
 
     # Disable Flask request logging to reduce terminal noise
-    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     # Log the prompt mode being used
     prompt_mode = "manual" if _CROWD_CONFIG.use_manual_prompt else "simple"
@@ -211,14 +208,14 @@ def control_robot(cfg: ControlPipelineConfig):
 
     robot = make_robot_from_config(cfg.robot)
 
-    assert isinstance(cfg.control, RecordControlConfig), 'This script is for data collection'
+    assert isinstance(cfg.control, RecordControlConfig), "This script is for data collection"
 
     record(robot, crowd_interface, cfg.control)
 
     if robot.is_connected:
         robot.disconnect()
 
-    print('Data Collection Completed')
+    print("Data Collection Completed")
 
 
 if __name__ == "__main__":

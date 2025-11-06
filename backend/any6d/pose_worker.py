@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""
-pose_worker.py
+"""pose_worker.py.
+
 Runs inside the any6d conda environment.
 - Watches <jobs_dir>/inbox for JSON jobs
 - Loads RGB/Depth tensors from 'obs_path'
@@ -13,9 +13,10 @@ Usage:
     --object Cube_Blue \
     --mesh assets/meshes/cube_blue.obj \
     --prompt "blue cube"
-  
+
 Debug mode:
   Set POSE_WORKER_DEBUG=1 to enable debugpy - worker will WAIT for debugger to attach
+
 """
 
 import argparse
@@ -34,12 +35,13 @@ import trimesh
 if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
     try:
         import debugpy
+
         # Use a different port for each object to avoid conflicts
         object_name = sys.argv[sys.argv.index("--object") + 1] if "--object" in sys.argv else "unknown"
         # Hash object name to get a consistent port offset (0-9)
         port_offset = hash(object_name) % 10
         debug_port = 5678 + port_offset
-        
+
         # Check if already listening (in case of restart)
         if not debugpy.is_client_connected():
             try:
@@ -50,11 +52,11 @@ if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
                 print(f"🐛 Attach config: 'Attach to Pose Worker ({object_name})'", flush=True)
                 print(f"🐛 WAITING FOR DEBUGGER TO ATTACH...", flush=True)
                 print(f"{'='*60}\n", flush=True)
-                
+
                 # BLOCK until debugger attaches
                 debugpy.wait_for_client()
                 print(f"✅ [{object_name}] Debugger attached! Continuing...\n", flush=True)
-                
+
                 # Optional: break at the start
                 # debugpy.breakpoint()
             except Exception as listen_err:
@@ -66,6 +68,7 @@ if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
     except Exception as e:
         print(f"⚠️  Debugpy setup failed: {e}", flush=True)
         import traceback
+
         traceback.print_exc()
 # =====================================
 
@@ -81,17 +84,20 @@ from estimate_pose import (
     visualize_estimation,
 )
 
+
 def _load_obs(obs_path: str) -> dict:
     try:
         return torch.load(obs_path, map_location="cpu")
     except Exception as e:
         raise RuntimeError(f"failed to torch.load obs_path={obs_path}: {e}")
 
+
 def _extract_rgb_depth(obs: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Try common keys. Returns (rgb_t, depth_t).
+    """Try common keys. Returns (rgb_t, depth_t).
+
     - RGB expected shape (480,640,3) uint8 or float
     - Depth expected shape (480,640) float meters
+
     """
     # RGB
     rgb = obs.get("observation.images.cam_main")
@@ -114,16 +120,16 @@ def _extract_rgb_depth(obs: dict) -> tuple[torch.Tensor, torch.Tensor]:
         depth = depth.squeeze(-1)
     return rgb, depth
 
+
 def _as_K_array(K_like) -> np.ndarray:
     K = np.asarray(K_like, dtype=np.float32)
     if K.shape != (3, 3):
         raise ValueError(f"K must be 3x3, got {K.shape}")
     return K
 
+
 def claim_job(inbox: Path, tmpdir: Path, object_name: str) -> Path | None:
-    """
-    Atomically move one job for 'object_name' from inbox -> tmpdir and return its path.
-    """
+    """Atomically move one job for 'object_name' from inbox -> tmpdir and return its path."""
     for p in inbox.glob("*.json"):
         try:
             with open(p, "r", encoding="utf-8") as f:
@@ -151,12 +157,14 @@ def claim_job(inbox: Path, tmpdir: Path, object_name: str) -> Path | None:
             continue
     return None
 
+
 def write_json_atomic(obj: dict, outdir: Path, name: str):
     tmp = outdir / (name + ".tmp")
     dst = outdir / name
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f)
     os.replace(tmp, dst)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -275,17 +283,25 @@ def main():
             result["error"] = f"pose exception: {e}"
             print(f"[{args.object}] ❌ Pose estimation EXCEPTION: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
 
         # Optional visualization
         try:
             if result["success"] and (args.save_viz or bool(os.getenv("POSE_SAVE_VIZ", "0") == "1")):
                 viz = visualize_estimation(
-                    rgb_t=rgb_t, depth_t=depth_t, K=K, pose_out=out,
-                    axis_scale=0.05, depth_min=0.1, depth_max=1.0, overlay_mask=True
+                    rgb_t=rgb_t,
+                    depth_t=depth_t,
+                    K=K,
+                    pose_out=out,
+                    axis_scale=0.05,
+                    depth_min=0.1,
+                    depth_max=1.0,
+                    overlay_mask=True,
                 )
                 png_path = outbox / f"viz_{job_id}.png"
                 import cv2  # local import to avoid import cycles
+
                 cv2.imwrite(str(png_path), viz["rgb_with_pose_bgr"])
                 result["pose_viz_path"] = str(png_path)
         except Exception:
@@ -295,7 +311,9 @@ def main():
         # Emit result JSON
         try:
             write_json_atomic(result, outbox, f"{job_id}.json")
-            print(f"[{args.object}] 📤 Result written to outbox: {job_id}.json (success={result['success']})", flush=True)
+            print(
+                f"[{args.object}] 📤 Result written to outbox: {job_id}.json (success={result['success']})", flush=True
+            )
         except Exception as e:
             print(f"[{args.object}] ⚠️ failed to write result for {job_id}: {e}", flush=True)
 
