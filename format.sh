@@ -3,21 +3,21 @@
 
 set -e
 
-echo "🔧 Formatting Python code..."
+echo "Formatting Python code..."
 
 # Backend Python files
 BACKEND_DIR="backend"
 
 # Format with isort (import sorting) first
-echo "📦 Sorting imports with isort..."
+echo "Sorting imports with isort..."
 isort "$BACKEND_DIR" --profile black
 
 # Format with black (code formatting)
-echo "🎨 Formatting code with black..."
+echo "Formatting code with black..."
 black "$BACKEND_DIR" --line-length 120
 
 # Format docstrings with docformatter
-echo "📝 Formatting docstrings with docformatter..."
+echo "Formatting docstrings with docformatter..."
 docformatter --in-place --recursive "$BACKEND_DIR" \
     --wrap-summaries 120 \
     --wrap-descriptions 120 \
