@@ -5,10 +5,8 @@ episode finalization.
 
 """
 
-import os
 import queue
 import random
-import time
 from threading import Lock, Thread, Timer
 
 import torch

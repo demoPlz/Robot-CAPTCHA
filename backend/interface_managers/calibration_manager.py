@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 from threading import Lock
 
-import cv2
 import numpy as np
 
 

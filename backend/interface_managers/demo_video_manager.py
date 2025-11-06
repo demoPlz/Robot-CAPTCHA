@@ -1,5 +1,7 @@
 """Demo Video Management Module.
 
+Demo videos are for the user to reference while solving the puzzle.
+
 Handles demo video recording, display, and prompt sequence snapshot functionality. Manages video file operations,
 indexing, and configuration for the crowd interface.
 

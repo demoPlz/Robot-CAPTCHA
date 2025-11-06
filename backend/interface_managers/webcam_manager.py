@@ -8,7 +8,6 @@ with RealSense filtering and undistortion.
 import base64
 import os
 import time
-from pathlib import Path
 from threading import Thread
 
 import cv2
