@@ -27,6 +27,7 @@ from webcam_manager import WebcamManager
 from pose_estimation_manager import PoseEstimationManager
 from observation_stream_manager import ObservationStreamManager
 from sim_manager import SimManager
+from state_manager import StateManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -121,7 +122,6 @@ class CrowdInterface():
         except Exception:
             pass
 
-        self.latest_goal = None
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
         
@@ -146,22 +146,14 @@ class CrowdInterface():
         self.num_autofill_actions = max(1, min(self.num_autofill_actions,
                                                self.required_responses_per_critical_state))
         
-        # Episode-based state management
+        # Episode-based state management (shared with StateManager via reference)
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int}}
         self.completed_states_by_episode = {}  # episode_id -> {state_id -> {responses_received: int, completion_time: float}}
         self.completed_states_buffer_by_episode = {}  # episode_id -> {state_id -> completed_state_dict} - buffer for chronological add_frame
         self.served_states_by_episode = {}  # episode_id -> {session_id -> state_id}
-        self.current_serving_episode = None  # The episode currently being served to users
-        self.episodes_completed = set()  # Set of episode_ids that are fully completed
-        
-        self.next_state_id = 0
-        self.state_lock = Lock()  # Protects all episode-based state management
         self.episodes_being_completed = set()  # Track episodes currently being processed for completion
-
-        # Auto-labeling queue and worker thread
-        self.auto_label_queue = queue.Queue()
-        self.auto_label_worker_thread = None
-        self.auto_label_worker_running = False
+        
+        self.state_lock = Lock()  # Protects all episode-based state management
 
         # Dataset
         self.dataset = None
@@ -216,17 +208,10 @@ class CrowdInterface():
 
         # Debounced episode finalization
         self.episode_finalize_grace_s = 2.0
-        self._episode_finalize_timers: dict[str, Timer] = {}
-
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
         
-        # Start the auto-labeling worker thread
-        self._start_auto_label_worker()
-
         self._exec_gate_by_session: dict[str, dict] = {}
-
-        self._active_episode_id = None
 
         # Pose estimation manager
         self.pose_estimator = PoseEstimationManager(
@@ -241,6 +226,31 @@ class CrowdInterface():
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow
         self._episodes_pending_save: set[str] = set()
+
+        # State manager (handles episode-based state lifecycle)
+        self.state_manager = StateManager(
+            required_responses_per_state=self.required_responses_per_state,
+            required_responses_per_critical_state=self.required_responses_per_critical_state,
+            autofill_critical_states=self.autofill_critical_states,
+            num_autofill_actions=self.num_autofill_actions,
+            use_manual_prompt=self.use_manual_prompt,
+            use_sim=self.use_sim,
+            task_text=self.task_text,
+            obs_cache_root=self._obs_cache_root,
+            state_lock=self.state_lock,
+            pending_states_by_episode=self.pending_states_by_episode,
+            completed_states_by_episode=self.completed_states_by_episode,
+            completed_states_buffer_by_episode=self.completed_states_buffer_by_episode,
+            episode_finalize_grace_s=self.episode_finalize_grace_s,
+            episodes_pending_save=self._episodes_pending_save,
+            obs_stream_manager=self.obs_stream,
+            pose_estimation_manager=self.pose_estimator,
+            sim_manager=self.sim_manager,
+            persist_views_callback=self._persist_views_to_disk,
+            persist_obs_callback=self._persist_obs_to_disk,
+            snapshot_views_callback=self.snapshot_latest_views,
+            save_episode_callback=self.save_episode,
+        )
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -427,7 +437,8 @@ class CrowdInterface():
         for state_id in sorted(buffer.keys()):
             state = buffer[state_id]
             obs = self.load_obs_from_disk(state['obs_path'])
-            del obs['depth'] # delete the depth tensor
+            if 'depth' in obs:
+                del obs['depth'] # delete the depth tensor
             frame = {**obs, "action": state["action_to_save"], "task": state["task_text"]}
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
@@ -463,6 +474,9 @@ class CrowdInterface():
 
         # For UI fallback and dataset writes, always use cfg.single_task
         self.task_text = getattr(cfg, "single_task", None)
+        
+        # Update state manager's task_text since it was None during initialization
+        self.state_manager.task_text = self.task_text
         
         # Update dataset action shape to accommodate crowd responses
         self._update_dataset_action_shape()
@@ -501,17 +515,6 @@ class CrowdInterface():
     # =========================
     # State management
     # =========================
-    def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
-        '''
-        Demote critical states before state_id in episode with episode_id to non-critical
-        '''
-        for state_id in self.pending_states_by_episode[episode_id].keys():
-            if state_id < current_state_id \
-                  and self.pending_states_by_episode[episode_id][state_id]['critical'] \
-                  and not self.pending_states_by_episode[episode_id][state_id]['actions']:
-                self.pending_states_by_episode[episode_id][state_id]['critical'] = False
-
-    # --- State Management ---
     def add_state(self,
                   joint_positions: dict,
                   gripper_motion: int = None,
@@ -519,424 +522,37 @@ class CrowdInterface():
                   episode_id: str = None,
                   left_carriage_external_force: float | None = None):
         '''
-        Called by lerobot code to add states to backend.
+        Called by lerobot code to add states to backend. Delegates to state_manager.
         '''
-        joint_positions_float = {k: float(v) for k, v in joint_positions.items()}
-
-        state_id = self.next_state_id
-        self.next_state_id += 1
-
-        # Persist views to disk to avoid storing in memory
-        view_paths = self._persist_views_to_disk(episode_id, state_id, self.snapshot_latest_views()) # legacy
-
-        obs_dict_deep_copy = {}
-        for key, value in obs_dict.items():
-            obs_dict_deep_copy[key] = value.clone().detach()
-        obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
-        del obs_dict_deep_copy
-
-        # Push obs to monitoring frontend
-        self.obs_stream.push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
-        self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
-        
-        state_info = {
-            # Identity
-            "state_id": state_id,
-            "episode_id": episode_id,
-
-            # Robot state
-            "joint_positions": joint_positions_float,
-            "gripper": gripper_motion,
-            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'], # legacy, will remove
-            "left_carriage_external_force": left_carriage_external_force,
-
-            # Observations
-            "obs_path": obs_path,
-
-            # Views
-            "view_paths": view_paths,
-
-            # Labels
-            "actions": [],
-            "responses_received": 0,
-
-            # Critical state fields
-            "critical": False,
-            "prompt_ready": False if self.use_manual_prompt else True,
-            "text_prompt": None, # replaces flex_text_prompt
-            "video_prompt": None, # replaces flex_video_id
-
-            # Task
-            "task_text": self.task_text,
-
-            # Sim
-            "sim_ready": False if self.use_sim else True,
-
-            # Poses of each object in self.object will be computed when we call set_last_state_to_critical
-            # "object_poses"
-            # No other fields; segmentation, and all others, no longer supported
-        }
-
-        with self.state_lock:
-            # Initialize episode containers if needed
-            if episode_id not in self.pending_states_by_episode:
-                self.pending_states_by_episode[episode_id] = {}
-                self.completed_states_by_episode[episode_id] = {}
-                
-            # Add state to pending states
-            self.pending_states_by_episode[episode_id][state_id] = state_info
-
-            self.current_serving_episode = episode_id
-
-    def set_last_state_to_critical(self):
-        # ---- Phase 1: figure out which state to mark, under lock ----
-        with self.state_lock:
-            if not self.pending_states_by_episode:
-                return
-
-            latest_episode_id = max(self.pending_states_by_episode.keys())
-            episode_states = self.pending_states_by_episode[latest_episode_id]
-            if not episode_states:
-                return
-
-            latest_state_id = max(episode_states.keys())
-            info = episode_states[latest_state_id]
-
-            if info['critical']:
-                # Already set
-                return
-
-            info['critical'] = True
-            self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
-            self.auto_label_previous_states(latest_state_id)
-
-        # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
-        poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
-            latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
+        return self.state_manager.add_state(
+            joint_positions=joint_positions,
+            gripper_motion=gripper_motion,
+            obs_dict=obs_dict,
+            episode_id=episode_id,
+            left_carriage_external_force=left_carriage_external_force
         )
 
-        # ---- Phase 3: only then consider sim ----
-        with self.state_lock:
-            # Re-lookup the state in case the dict changed
-            ep = self.pending_states_by_episode.get(latest_episode_id)
-            if not ep or latest_state_id not in ep:
-                return
-            info = ep[latest_state_id]
+    def set_last_state_to_critical(self):
+        '''Delegates to state_manager'''
+        return self.state_manager.set_last_state_to_critical()
 
-            if self.use_sim and poses_ready:
-                info['sim_ready'] = False  # Mark as not ready initially
-                self.sim_manager.enqueue_sim_capture(latest_episode_id, latest_state_id, info)
-            else:
-                # Not using sim, or poses not ready within timeout
-                info['sim_ready'] = not self.use_sim
-                if self.use_sim and not poses_ready:
-                    print(f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}")
-            
-
-    def auto_label_previous_states(self, critical_state_id):
-        self.auto_label_queue.put_nowait(critical_state_id)
-    
-    def _start_auto_label_worker(self):
-        self.auto_label_worker_thread = Thread(target=self._auto_label_worker, daemon=True)
-        self.auto_label_worker_thread.start()
-
-    def _auto_label_worker(self):
-        for critical_state_id in iter(self.auto_label_queue.get, None):
-            self._auto_label(critical_state_id)
-    
-    
-    
-    def _auto_label(self, critical_state_id):
-        '''
-        Given critical_state_id, auto-labels noncritical states in the same episode before the critical state with:"
-        1. The executed action of the previous important state
-        2. If no previous important state exists, the joint positions of the first state in the episode
-        '''
-        with self.state_lock:
-            episode_id = max(self.pending_states_by_episode.keys())
-
-            episode_states = {
-                **self.pending_states_by_episode[episode_id],
-                **self.completed_states_by_episode[episode_id]
-            }
-
-            template_action = None
-
-            previous_critical_id_in_episode = []
-            for state_id in episode_states.keys():
-                if episode_states[state_id]['critical'] \
-                    and state_id < critical_state_id \
-                    and len(episode_states[state_id]['actions']) > 0:
-                    previous_critical_id_in_episode.append(state_id)
-
-            if previous_critical_id_in_episode: # Previous critical states exist
-                latest_critical_state = episode_states[max(previous_critical_id_in_episode)]
-                template_action = latest_critical_state['actions'][0]
-            else: # This is the first critical state in the episode
-                first_state_id = min(episode_states.keys())
-                first_state = episode_states[first_state_id]
-                # Direct access to joint_positions and gripper in flattened structure
-                joint_positions = first_state['joint_positions']
-                gripper_action = first_state['gripper']
-                goal_positions = []
-                for joint_name in JOINT_NAMES:
-                    joint_value = joint_positions[joint_name]
-                    goal_positions.append(float(joint_value))
-
-                goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
-                template_action = torch.tensor(goal_positions, dtype=torch.float32)
-
-            states_to_label = []
-            for state_id, state_info in episode_states.items():
-                if state_id < critical_state_id and not state_info['critical'] \
-                and state_id not in self.completed_states_by_episode[episode_id]:
-                    states_to_label.append(state_id)
-
-            for state_id in states_to_label:
-                state_info = episode_states[state_id]
-
-                while state_info["responses_received"] < self.required_responses_per_state:
-                    state_info["actions"].append(template_action.clone())
-                    state_info['responses_received'] += 1
-
-                all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
-                        
-                # Pad with inf values to match critical state shape
-                missing_responses = self.required_responses_per_critical_state - self.required_responses_per_state
-                action_dim = len(JOINT_NAMES)
-                padding_size = missing_responses * action_dim
-                padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
-                all_actions = torch.cat([all_actions, padding], dim=0)
-
-                state_info['action_to_save'] = all_actions
-
-                # Save to completed_states buffer (for forming training set)
-                if episode_id not in self.completed_states_buffer_by_episode:
-                    self.completed_states_buffer_by_episode[episode_id] = {}
-                self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-
-                # Save to completed states (for monitoring)
-                if episode_id not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[episode_id] = {}
-                self.completed_states_by_episode[episode_id][state_id] = state_info
-
-                del self.pending_states_by_episode[episode_id][state_id]
-
-    def _schedule_episode_finalize_after_grace(self, episode_id: int):
-        delay = self.episode_finalize_grace_s
-        timer = Timer(delay, self._finalize_episode_if_still_empty, args=(episode_id,))
-        timer.daemon = True
-        self._episode_finalize_timers[episode_id] = timer
-        timer.start()
-
-    def _finalize_episode_if_still_empty(self, episode_id: int):
-        """
-        Timer callback
-        """
-        with self.state_lock:
-            self._episode_finalize_timers.pop(episode_id, None)
-
-            if self.pending_states_by_episode.get(episode_id):
-                # New states has become pending in the episode
-                return
-            
-            self.episodes_completed.add(episode_id) # for monitoring
-
-            buffer = self.completed_states_buffer_by_episode[episode_id]
-            self.save_episode(buffer)
-
-            del self.completed_states_buffer_by_episode[episode_id]
 
     def get_latest_state(self) -> dict:
-        """
-        Get a pending state from current serving episode
-        We only implement crowd mode, meaning that we serve the last state
-        of the last episode always.
-        """
-
-        with self.state_lock:
-            episode_id = self.current_serving_episode
-            state_id = self.next_state_id - 1
-
-            if episode_id not in self.pending_states_by_episode \
-            or state_id not in self.pending_states_by_episode[episode_id]\
-            or not self.pending_states_by_episode[episode_id][state_id]['critical']:
-                # No pending critical states left
-                return {
-                    "status": "no_pending_states",
-                    "blocked_critical_states": False
-                }
-            
-            state_info = self.pending_states_by_episode[episode_id][state_id]
-
-            if state_info['critical'] and (not state_info['prompt_ready'] or not state_info['sim_ready']):
-                # There are pending states but no ready states
-
-                return {
-                    "status": "no_ready_states",
-                    "blocked_critical_states": True,
-                }
-            
-            # Return the latest state for labeling
-            return state_info.copy()
+        '''Delegates to state_manager'''
+        return self.state_manager.get_latest_state()
 
     def record_response(self, response_data: dict):
-        '''
-        Record a response for a specific state. Handles all the side-effects.
-        '''
-
-        with self.state_lock:
-            state_id = response_data['state_id']
-            episode_id = response_data['episode_id']
-
-            if episode_id not in self.pending_states_by_episode or \
-            state_id not in self.pending_states_by_episode[episode_id]:
-                # State already fully labeled
-                return
-
-            state_info = self.pending_states_by_episode[episode_id][state_id]
-
-            required_responses = self.required_responses_per_critical_state if state_info['critical'] else self.required_responses_per_state
-            
-            joint_positions = response_data['joint_positions']
-            gripper_action = response_data['gripper']
-
-            state_info["responses_received"] += 1
-
-            goal_positions = []
-            for joint_name in JOINT_NAMES:
-                joint_value = joint_positions[joint_name]
-                goal_positions.append(float(joint_value[0]))
-
-            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
-            goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
-            state_info['actions'].append(goal_positions)
-
-            # Autofill
-            if state_info["critical"] and self.autofill_critical_states:
-                remaining = state_info["responses_received"]
-                clones_to_add = min(self.num_autofill_actions - 1, remaining)
-                for _ in range(clones_to_add):
-                    state_info["actions"].append(goal_positions.clone())
-                state_info['responses_received'] += clones_to_add
-                
-            # Handle completion
-            if state_info['responses_received'] >= required_responses:
-                if state_info['critical'] and state_id == self.next_state_id - 1:
-                    # Choose action to execute (a_execute) at random
-                    # Shift chosen action to the front of the array
-                    a_execute_index = random.randint(0, required_responses - 1)
-                    state_info["actions"][0], state_info["actions"][a_execute_index] = state_info["actions"][a_execute_index], state_info["actions"][0]
-                    self.latest_goal = state_info["actions"][:required_responses][0]
-
-                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
-
-                if required_responses < self.required_responses_per_critical_state:
-                    # Pad unimportant states's action tensor
-                    missing_responses = self.required_responses_per_critical_state - required_responses
-                    action_dim = len(JOINT_NAMES)
-                    padding_size = missing_responses * action_dim
-                    padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
-                    all_actions = torch.cat([all_actions, padding], dim=0)
-
-                state_info['action_to_save'] = all_actions
-
-                # Save to completed states buffer (for forming training set)
-                if episode_id not in self.completed_states_buffer_by_episode:
-                    self.completed_states_buffer_by_episode[episode_id] = {}
-                self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-
-                # Save to completed states (for monitoring)
-                if episode_id not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[episode_id] = {}
-                self.completed_states_by_episode[episode_id][state_id] = state_info
-
-                # Remove from pending
-                del self.pending_states_by_episode[episode_id][state_id]
-
-                # Handle episode completion
-                if not self.pending_states_by_episode[episode_id]:
-                    self._schedule_episode_finalize_after_grace(episode_id)
+        '''Delegates to state_manager'''
+        return self.state_manager.record_response(response_data)
     
     def get_pending_states_info(self) -> dict:
-        """Get episode-based state information for monitoring"""
-        with self.state_lock:
-            episodes_info = {}
-            total_pending = 0
-            
-            # Include episodes that have either pending states OR completed states (so completed states remain visible)
-            all_episode_ids = set(self.pending_states_by_episode.keys()) | set(self.completed_states_by_episode.keys())
-            
-            # Process each episode
-            for episode_id in sorted(all_episode_ids):
-                episode_states = {}
-                
-                # Add pending states from this episode
-                if episode_id in self.pending_states_by_episode:
-                    for state_id, info in self.pending_states_by_episode[episode_id].items():
-                        required_responses = (
-                            self.required_responses_per_critical_state
-                            if info.get('critical', False)
-                            else self.required_responses_per_state
-                        )
-                        _txt = info.get("text_prompt")  # Updated field name
-                        has_flex_text = bool(str(_txt or "").strip())
-                        _vid = info.get("video_prompt")  # Updated field name
-                        has_flex_video = (_vid is not None)
-
-                        episode_states[state_id] = {
-                            "responses_received": info["responses_received"],
-                            "responses_needed": required_responses - info["responses_received"],
-                            "critical": bool(info.get('critical', False)),
-                            "has_flex_text": has_flex_text,
-                            "has_flex_video": has_flex_video,
-                            # Legacy aliases to avoid breaking older monitor UI
-                            "has_vlm_text": has_flex_text,
-                            "has_video_id": has_flex_video,
-                        }
-                        total_pending += 1
-                
-                # Add completed states from this episode
-                if episode_id in self.completed_states_by_episode:
-                    for state_id, info in self.completed_states_by_episode[episode_id].items():
-                        _txt = info.get("text_prompt")  # Updated field name
-                        has_flex_text = bool(str(_txt or "").strip())
-                        _vid = info.get("video_prompt")  # Updated field name
-                        has_flex_video = (_vid is not None)
-
-                        episode_states[state_id] = {
-                            "responses_received": info["responses_received"],
-                            "responses_needed": 0,  # Completed
-                            "critical": bool(info.get('critical', False)),
-                            "has_flex_text": has_flex_text,
-                            "has_flex_video": has_flex_video,
-                            "has_vlm_text": has_flex_text,   # legacy
-                            "has_video_id": has_flex_video,  # legacy
-                        }
-                
-                episodes_info[episode_id] = {
-                    "states": episode_states,
-                    "pending_count": len(self.pending_states_by_episode.get(episode_id, {})),
-                    "completed_count": len(self.completed_states_by_episode.get(episode_id, {})),
-                    "is_current_serving": episode_id == self.current_serving_episode,
-                    "is_completed": episode_id in self.episodes_completed,
-                    "pending_save": episode_id in self._episodes_pending_save
-                }
-            
-            return {
-                "total_pending": total_pending,
-                "current_serving_episode": self.current_serving_episode,
-                "required_responses_per_state": self.required_responses_per_state,
-                "required_responses_per_critical_state": self.required_responses_per_critical_state,
-                "episodes": episodes_info
-            }
+        '''Delegates to state_manager'''
+        return self.state_manager.get_pending_states_info()
     
     # --- Goal Management ---
     def get_latest_goal(self) -> dict | None:
-        """Get and clear the latest goal (for robot loop to consume)"""
-        goal = self.latest_goal
-        self.latest_goal = None
-        return goal
+        '''Delegates to state_manager'''
+        return self.state_manager.get_latest_goal()
     
     # --- Reset State Management ---
     def start_reset(self, duration_s: float):
@@ -971,52 +587,12 @@ class CrowdInterface():
         return self.is_resetting and self.get_reset_countdown() > 0
 
     def set_active_episode(self, episode_id):
-        """Mark which episode the outer robot loop is currently in (or None)."""
-        with self.state_lock:
-            self._active_episode_id = episode_id
+        '''Delegates to state_manager'''
+        return self.state_manager.set_active_episode(episode_id)
 
     def set_prompt_ready(self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None) -> None:
-        """Set text/video prompt fields and mark as ready."""
-        state_info["text_prompt"] = text  # Updated field name
-        state_info["video_prompt"] = video_id  # Updated field name
-        state_info["prompt_ready"] = True
-        
-        # Check if this is a critical state with "end." text - auto-fill with current position
-        if text and text.strip().lower() == "end.":
-            self._auto_fill_end_state_locked(state_info, episode_id, state_id)
-
-    def _auto_fill_end_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
-        """
-        Auto-fill an critical state labeled as "end." with multiple copies of its current position.
-        MUST be called with self.state_lock already held.
-        """
-        # Direct access to joint positions and gripper in flattened structure
-        joint_positions = state_info.get('joint_positions', {})
-        gripper_action = state_info.get('gripper', 0)
-        
-        # Convert joint positions to action tensor (same as autolabel logic)
-        goal_positions = []
-        for joint_name in JOINT_NAMES:
-            v = joint_positions.get(joint_name, 0.0)
-            v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
-            goal_positions.append(v)
-        # Set gripper position based on gripper action
-        goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
-        
-        position_action = torch.tensor(goal_positions, dtype=torch.float32)
-        
-        state_info['actions'] = [position_action for _ in range(self.required_responses_per_critical_state)]
-        all_actions = torch.cat(state_info["actions"][:self.required_responses_per_critical_state], dim=0)
-
-        state_info['action_to_save'] = all_actions
-
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        del self.pending_states_by_episode[episode_id][state_id]
-
-        if not self.pending_states_by_episode[episode_id]:
-            self._schedule_episode_finalize_after_grace(episode_id)
+        '''Delegates to state_manager'''
+        return self.state_manager.set_prompt_ready(state_info, episode_id, state_id, text, video_id)
 
     # =========================
     # Prompting and Demo Media
