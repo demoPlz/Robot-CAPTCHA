@@ -1,25 +1,12 @@
 import os
-import cv2
 import tempfile
 import numpy as np
 import time
 import torch
 import base64
-import random
-import queue
-import json
-import subprocess
-import uuid
-
-import datasets
-import re
-import mimetypes
 from pathlib import Path
-from threading import Thread, Lock, Timer
+from threading import Lock
 from math import cos, sin
-
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
 from calibration_manager import CalibrationManager
 from demo_video_manager import DemoVideoManager
@@ -28,6 +15,7 @@ from pose_estimation_manager import PoseEstimationManager
 from observation_stream_manager import ObservationStreamManager
 from sim_manager import SimManager
 from state_manager import StateManager
+from dataset_manager import DatasetManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -155,9 +143,7 @@ class CrowdInterface():
         
         self.state_lock = Lock()  # Protects all episode-based state management
 
-        # Dataset
-        self.dataset = None
-        # Task used for UI fallback and dataset frames → always cfg.single_task (set in init_dataset)
+        # Task used for UI fallback and dataset frames -> always cfg.single_task (set in init_dataset)
         self.task_text = None
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
@@ -227,6 +213,12 @@ class CrowdInterface():
         # Manual save is only used for demo video recording workflow
         self._episodes_pending_save: set[str] = set()
 
+        # Dataset manager
+        self.dataset_manager = DatasetManager(
+            required_responses_per_critical_state=self.required_responses_per_critical_state,
+            obs_cache_root=self._obs_cache_root,
+        )
+
         # State manager (handles episode-based state lifecycle)
         self.state_manager = StateManager(
             required_responses_per_state=self.required_responses_per_state,
@@ -249,7 +241,7 @@ class CrowdInterface():
             persist_views_callback=self._persist_views_to_disk,
             persist_obs_callback=self._persist_obs_to_disk,
             snapshot_views_callback=self.snapshot_latest_views,
-            save_episode_callback=self.save_episode,
+            save_episode_callback=self.dataset_manager.save_episode,
         )
 
     ### ---Camera Management---
@@ -285,7 +277,7 @@ class CrowdInterface():
         out.pop("actions", None)
         
         # Remove internal/disk paths that shouldn't be exposed to client
-        obs_path = out.pop("obs_path", None)  # don't expose obs cache paths
+        out.pop("obs_path", None)  # don't expose obs cache paths
         
         # Prefer state-aligned snapshots if available
         views = {}
@@ -385,7 +377,7 @@ class CrowdInterface():
                     b64 = base64.b64encode(f.read()).decode("ascii")
                 out[cam] = f"data:image/jpeg;base64,{b64}"
             except Exception:
-                # Missing/removed file → skip this camera
+                # Missing/removed file -> skip this camera
                 pass
         return out
 
@@ -412,105 +404,16 @@ class CrowdInterface():
             print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
             return None
 
-    def load_obs_from_disk(self, path: str | None) -> dict:
-        if not path:
-            return {}
-        try:
-            return torch.load(path, map_location="cpu")
-        except Exception as e:
-            print(f"⚠️  failed to load obs from {path}: {e}")
-            return {}
-
-    def _delete_obs_from_disk(self, path: str | None):
-        if not path:
-            return
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-
     # =========================
     # Dataset Management
     # =========================
-    ### ---Dataset Management---
-    def save_episode(self, buffer):
-        for state_id in sorted(buffer.keys()):
-            state = buffer[state_id]
-            obs = self.load_obs_from_disk(state['obs_path'])
-            if 'depth' in obs:
-                del obs['depth'] # delete the depth tensor
-            frame = {**obs, "action": state["action_to_save"], "task": state["task_text"]}
-            self.dataset.add_frame(frame)
-            self._delete_obs_from_disk(state.get("obs_path"))
-
-        self.dataset.save_episode()
-
-    def init_dataset(self, 
-                     cfg,
-                     robot):
-        """Intialize dataset for data collection policy training"""
-        if cfg.resume:
-            self.dataset = LeRobotDataset(
-                cfg.data_collection_policy_repo_id,
-                root=cfg.root
-            )
-            self.dataset.start_image_writer(
-                num_processes=cfg.num_image_writer_processes,
-                num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
-            )
-            sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
-
-        else:
-            sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)
-            self.dataset = LeRobotDataset.create(
-                cfg.data_collection_policy_repo_id,
-                cfg.fps,
-                root=cfg.root,
-                robot=robot,
-                use_videos=cfg.video,
-                image_writer_processes=cfg.num_image_writer_processes,
-                image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
-            )
-
-        # For UI fallback and dataset writes, always use cfg.single_task
-        self.task_text = getattr(cfg, "single_task", None)
+    
+    def init_dataset(self, cfg, robot):
+        """Initialize dataset for data collection policy training. Delegates to DatasetManager."""
+        self.task_text = self.dataset_manager.init_dataset(cfg, robot)
         
         # Update state manager's task_text since it was None during initialization
         self.state_manager.task_text = self.task_text
-        
-        # Update dataset action shape to accommodate crowd responses
-        self._update_dataset_action_shape()
-    
-    def _update_dataset_action_shape(self):
-        """Update the dataset's action feature shape to include crowd responses dimension"""
-        if self.dataset is not None and "action" in self.dataset.features:
-            from datasets import Sequence, Value, Features
-            from lerobot.common.datasets.utils import get_hf_features_from_features
-            
-            original_action_dim = self.dataset.features["action"]["shape"][-1]  # Get the last dimension (joint count)
-            new_action_shape = (self.required_responses_per_critical_state * original_action_dim,)
-            
-            # Update both the dataset features and metadata
-            self.dataset.features["action"]["shape"] = new_action_shape
-            self.dataset.meta.features["action"]["shape"] = new_action_shape
-            
-            # Recreate the HF dataset with updated features
-            if self.dataset.hf_dataset is not None:
-                # Get new HF features from the updated self.features
-                new_hf_features = get_hf_features_from_features(self.dataset.features)
-                
-                # Create a new empty dataset with the correct features
-                ft_dict = {col: [] for col in new_hf_features}
-                new_hf_dataset = datasets.Dataset.from_dict(ft_dict, features=new_hf_features, split="train")
-                
-                # Apply the same transform
-                from lerobot.common.datasets.utils import hf_transform_to_torch
-                new_hf_dataset.set_transform(hf_transform_to_torch)
-                
-                # Replace the old dataset
-                self.dataset.hf_dataset = new_hf_dataset
-
-            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_critical_state}, joints={original_action_dim})")
 
     # =========================
     # State management
@@ -708,7 +611,7 @@ class CrowdInterface():
         """Set the events object for keyboard-like control functionality"""
         self.events = events
 
-    # ---------- Episode → video ----------
+    # ---------- Episode -> video ----------
     def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
         """
         Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing.
