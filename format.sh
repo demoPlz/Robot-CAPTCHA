@@ -23,4 +23,4 @@ docformatter --in-place --recursive "$BACKEND_DIR" \
     --wrap-descriptions 120 \
     --blank
 
-echo "✅ Formatting complete!"
+echo "Formatting complete!"

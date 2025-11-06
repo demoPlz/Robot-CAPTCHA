@@ -1,3 +1,5 @@
+"""Flask app to expose CrowdInterface to frontend."""
+
 import json
 import mimetypes
 import os
