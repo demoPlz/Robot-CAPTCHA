@@ -55,15 +55,63 @@ off_x = (page_w_px - board_w_px) // 2
 off_y = (page_h_px - board_h_px) // 2
 canvas[off_y:off_y+board_h_px, off_x:off_x+board_w_px] = img
 
+# Mark the board origin (top-left corner of board, at off_x, off_y)
+# OpenCV ChArUco origin is at the TOP-LEFT corner of the board
+# Draw a small circle and crosshair at the origin
+origin_x = off_x
+origin_y = off_y
+marker_size_px = int(round(5.0 / 25.4 * DPI))  # 5mm marker
+
+# Convert to RGB for colored marker
+canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+
+# Draw red circle at origin
+cv2.circle(canvas_rgb, (origin_x, origin_y), marker_size_px, (0, 0, 255), -1)
+# Draw white crosshair for visibility
+cv2.line(canvas_rgb, (origin_x - marker_size_px*2, origin_y), 
+         (origin_x + marker_size_px*2, origin_y), (255, 255, 255), 2)
+cv2.line(canvas_rgb, (origin_x, origin_y - marker_size_px*2), 
+         (origin_x, origin_y + marker_size_px*2), (255, 255, 255), 2)
+
+# Add text label
+font = cv2.FONT_HERSHEY_SIMPLEX
+font_scale = 0.8
+thickness = 2
+text_offset_x = origin_x + marker_size_px * 3
+text_offset_y = origin_y + marker_size_px
+cv2.putText(canvas_rgb, "ORIGIN (0,0,0)", (text_offset_x, text_offset_y), 
+            font, font_scale, (0, 0, 255), thickness, cv2.LINE_AA)
+
+# Add coordinate system arrows
+arrow_len_px = int(round(20.0 / 25.4 * DPI))  # 20mm arrows
+# +X arrow (right, red)
+cv2.arrowedLine(canvas_rgb, (origin_x, origin_y), 
+                (origin_x + arrow_len_px, origin_y), (0, 0, 255), 3, tipLength=0.3)
+cv2.putText(canvas_rgb, "+X", (origin_x + arrow_len_px + 10, origin_y), 
+            font, font_scale, (0, 0, 255), thickness, cv2.LINE_AA)
+# +Y arrow (down, green)
+cv2.arrowedLine(canvas_rgb, (origin_x, origin_y), 
+                (origin_x, origin_y + arrow_len_px), (0, 255, 0), 3, tipLength=0.3)
+cv2.putText(canvas_rgb, "+Y", (origin_x, origin_y + arrow_len_px + 25), 
+            font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+# +Z arrow (out of page, blue - just show label)
+cv2.putText(canvas_rgb, "+Z (out of page)", (origin_x + 10, origin_y - marker_size_px*2 - 10), 
+            font, font_scale*0.7, (255, 0, 0), thickness, cv2.LINE_AA)
+
 # Save as PDF at the correct physical size
 fig_w_in = PAGE_W_MM / 25.4
 fig_h_in = PAGE_H_MM / 25.4
 fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=DPI)
 ax = plt.axes([0,0,1,1])
-ax.imshow(canvas, cmap='gray', vmin=0, vmax=255)
+ax.imshow(canvas_rgb, vmin=0, vmax=255)
 ax.axis('off')
 plt.savefig("charuco_5x7_35mm_USletter.pdf", format="pdf", dpi=DPI)
 plt.close(fig)
 
 print("Wrote charuco_5x7_35mm_USletter.pdf")
 print(f"Physical board area: {board_w_mm:.1f} mm x {board_h_mm:.1f} mm")
+print("Origin marked with RED circle at top-left corner of board")
+print("  +X = right (red arrow)")
+print("  +Y = down (green arrow)")
+print("  +Z = out of page (OpenCV default)")
+

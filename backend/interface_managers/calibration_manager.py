@@ -283,6 +283,21 @@ class CalibrationManager:
             except Exception as e:
                 print(f"⚠️ Failed to load sim calibration for '{name}' from {sim_file}: {e}")
 
+        # Load RealSense D455 extrinsics (used for pose estimation even in sim mode)
+        realsense_extr = manual_dir / "extrinsics_realsense_d455.npz"
+        if realsense_extr.exists():
+            try:
+                data = np.load(realsense_extr, allow_pickle=True)
+                # Use T_base_cam for pose estimation (OpenCV convention, +Z forward)
+                # Pose workers output poses in OpenCV camera frame, NOT Three.js frame
+                M = data["T_base_cam"]
+                poses["realsense_pose"] = M.tolist()
+                print(f"✓ loaded RealSense D455 extrinsics from {realsense_extr.name} (for pose estimation)")
+            except Exception as e:
+                print(f"⚠️ Failed to load RealSense D455 extrinsics: {e}")
+        else:
+            print(f"⚠️ RealSense D455 extrinsics not found at {realsense_extr} (pose estimation will fail)")
+
         return poses
 
     def _load_real_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
@@ -381,6 +396,26 @@ class CalibrationManager:
                         print(f"✓ applied MANUAL intrinsics for '{name}' from {manual_path}")
             except Exception as e:
                 print(f"⚠️  failed to apply manual calibration for '{name}': {e}")
+
+        # ---- Load RealSense D455 extrinsics (for pose estimation coordinate transform) ----
+        realsense_extr = manual_dir / "extrinsics_realsense_d455.npz"
+        if realsense_extr.exists():
+            try:
+                data = np.load(realsense_extr, allow_pickle=True)
+                # Use T_base_cam directly (OpenCV convention, +Z forward)
+                # Pose workers output poses in OpenCV camera frame, so we need matching extrinsics
+                if "T_base_cam" in data:
+                    M = np.asarray(data["T_base_cam"], dtype=np.float64)
+                    poses["realsense_pose"] = M.tolist()
+                    print(f"✓ loaded RealSense D455 extrinsics from {realsense_extr}")
+                else:
+                    print(f"⚠️  T_base_cam not found in {realsense_extr}")
+            except Exception as e:
+                print(f"⚠️  failed to load RealSense D455 extrinsics ({realsense_extr}): {e}")
+        else:
+            print(f"⚠️  RealSense D455 extrinsics not found at {realsense_extr}")
+            print(f"    Pose estimation will fail to transform to world frame!")
+            print(f"    Save camera pose calibration to: {realsense_extr}")
 
         return poses
 

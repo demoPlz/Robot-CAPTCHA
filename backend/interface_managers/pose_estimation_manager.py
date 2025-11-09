@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Lock, Thread
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 
 class PoseEstimationManager:
@@ -42,6 +43,7 @@ class PoseEstimationManager:
         calibration_manager,
         state_lock: Lock,
         pending_states_by_episode: dict,
+        pose_camera_name: str = "realsense",  # RealSense D455 is used for pose estimation
     ):
         """Initialize pose estimation manager.
 
@@ -49,9 +51,12 @@ class PoseEstimationManager:
             obs_cache_root: Root directory for observation cache (parent of pose_jobs)
             object_mesh_paths: Dict of object name -> mesh file path
             objects: Dict of object name -> language prompt
-            calibration_manager: CalibrationManager instance for intrinsics access
+            calibration_manager: CalibrationManager instance for intrinsics and extrinsics access
             state_lock: Lock protecting pending_states_by_episode
             pending_states_by_episode: Reference to episode state dict for result integration
+            pose_camera_name: Name of camera used for pose estimation (default: "realsense" for D455)
+                             Used for transforming poses from camera frame to world frame.
+                             Requires extrinsics calibration file: data/calib/extrinsics_realsense_d455.npz
 
         """
         self.object_mesh_paths = object_mesh_paths
@@ -59,6 +64,7 @@ class PoseEstimationManager:
         self.calibration = calibration_manager
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
+        self.pose_camera_name = pose_camera_name  # Store camera name for coordinate transformation
 
         # Disk-backed job queue shared with any6d env workers
         self.pose_jobs_root = (obs_cache_root / "pose_jobs").resolve()
@@ -83,6 +89,60 @@ class PoseEstimationManager:
         # Start workers and results watcher
         self._start_pose_workers()
         self._start_pose_results_watcher()
+
+    # =========================
+    # Pose Transformation Utilities
+    # =========================
+
+    def _matrix_to_pos_quat(self, T: list[list[float]]) -> dict:
+        """Convert 4x4 transformation matrix to position and quaternion.
+
+        Args:
+            T: 4x4 transformation matrix (list of lists)
+
+        Returns:
+            Dict with "pos" (list of 3 floats [x, y, z]) and "rot" (list of 4 floats [x, y, z, w] quaternion)
+
+        """
+        T_np = np.array(T)
+        position = T_np[:3, 3].tolist()
+        rotation_matrix = T_np[:3, :3]
+        quat_xyzw = R.from_matrix(rotation_matrix).as_quat()  # Returns [x, y, z, w]
+        return {"pos": position, "rot": quat_xyzw.tolist()}
+
+    def _transform_camera_to_world(self, pose_cam_T_obj: list[list[float]], camera_name: str) -> dict:
+        """Transform object pose from camera frame to world frame and convert to pos+quat.
+
+        Args:
+            pose_cam_T_obj: 4x4 matrix representing object pose in camera frame
+            camera_name: Name of camera (e.g. "front", "left", "right", "top")
+
+        Returns:
+            Dict with "pos" and "rot" in world frame, or None if camera calibration not available
+
+        """
+        # Get camera pose in world frame from calibration manager
+        camera_poses = self.calibration.get_camera_poses()
+        camera_pose_key = f"{camera_name}_pose"
+
+        if camera_pose_key not in camera_poses:
+            print(f"⚠️  No calibration found for camera '{camera_name}', cannot transform to world frame")
+            print(f"   Available camera pose keys: {list(camera_poses.keys())}")
+            print(f"   Looking for key: '{camera_pose_key}'")
+            return None
+
+        world_T_cam = np.array(camera_poses[camera_pose_key])  # 4x4 matrix: world <- camera
+        cam_T_obj = np.array(pose_cam_T_obj)  # 4x4 matrix: camera <- object
+
+        # Compute world <- object = (world <- camera) @ (camera <- object)
+        world_T_obj = world_T_cam @ cam_T_obj
+
+        # Convert to position + quaternion
+        return self._matrix_to_pos_quat(world_T_obj.tolist())
+
+    # =========================
+    # Initialization and Cleanup
+    # =========================
 
     def _cleanup_job_queues(self):
         """Remove stale job files from inbox and outbox directories.
@@ -254,7 +314,35 @@ class PoseEstimationManager:
                         ep_id = result.get("episode_id")
                         st_id = result.get("state_id")
                         obj = result.get("object")
-                        pose = result.get("pose_cam_T_obj")  # may be None on failure
+                        pose_cam_T_obj = result.get("pose_cam_T_obj")  # 4x4 matrix in camera frame, may be None
+
+                        # Transform pose from camera frame to world frame and convert to pos+quat
+                        if pose_cam_T_obj is not None:
+                            try:
+                                # Extract camera frame position for debugging
+                                cam_T_obj = np.array(pose_cam_T_obj)
+                                pos_cam = cam_T_obj[:3, 3]
+                                
+                                pose_world = self._transform_camera_to_world(pose_cam_T_obj, self.pose_camera_name)
+                                if pose_world is None:
+                                    print(
+                                        f"⚠️  Could not transform pose to world frame for {obj} "
+                                        f"(camera={self.pose_camera_name}), skipping"
+                                    )
+                                    continue
+                                
+                                # Debug output: show before/after transformation
+                                print(f"🔄 [{obj}] Pose transform:")
+                                print(f"   Camera frame: X={pos_cam[0]:+.3f}, Y={pos_cam[1]:+.3f}, Z={pos_cam[2]:+.3f}")
+                                print(f"   World frame:  X={pose_world['pos'][0]:+.3f}, Y={pose_world['pos'][1]:+.3f}, Z={pose_world['pos'][2]:+.3f}")
+                            except Exception as e:
+                                print(f"⚠️  Failed to transform pose for {obj}: {e}")
+                                import traceback
+
+                                traceback.print_exc()
+                                continue
+                        else:
+                            pose_world = None
 
                         with self.state_lock:
                             ep = self.pending_states_by_episode.get(ep_id)
@@ -263,7 +351,7 @@ class PoseEstimationManager:
                             st = ep[st_id]
                             if "object_poses" not in st:
                                 st["object_poses"] = {}
-                            st["object_poses"][obj] = pose
+                            st["object_poses"][obj] = pose_world  # Store transformed pose (or None if failed)
                     except Exception as e:
                         print(f"⚠️  Failed to process pose result {p.name}: {e}")
                         try:

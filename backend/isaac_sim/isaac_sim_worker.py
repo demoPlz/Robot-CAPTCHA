@@ -581,30 +581,33 @@ class IsaacSimWorker:
 
                     if "Cube_Blue" in object_states:
                         state = object_states["Cube_Blue"]
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ Synced Cube_Blue to {pos} (physics cleared)")
+                        if state is not None:  # Skip if pose estimation failed
+                            pos = np.array(state["pos"])
+                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                            self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                            print(f"✅ Synced Cube_Blue to {pos} (physics cleared)")
 
                     if "Cube_Red" in object_states:
                         state = object_states["Cube_Red"]
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ Synced Cube_Red to {pos} (physics cleared)")
+                        if state is not None:  # Skip if pose estimation failed
+                            pos = np.array(state["pos"])
+                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                            self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                            print(f"✅ Synced Cube_Red to {pos} (physics cleared)")
 
                     if "Tennis" in object_states:
                         state = object_states["Tennis"]
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ Synced Tennis to {pos} (physics cleared)")
+                        if state is not None:  # Skip if pose estimation failed
+                            pos = np.array(state["pos"])
+                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                            self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                            print(f"✅ Synced Tennis to {pos} (physics cleared)")
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
@@ -628,6 +631,8 @@ class IsaacSimWorker:
                     for config_key, scene_name in object_mappings:
                         if config_key in object_states:
                             state = object_states[config_key]
+                            if state is None:  # Skip if pose estimation failed
+                                continue
 
                             # CRITICAL: Apply spatial offset to object position
                             original_pos = np.array(state["pos"])
@@ -1168,33 +1173,36 @@ class IsaacSimWorker:
 
                 if "Cube_Blue" in object_states and "Cube_Blue" in self.objects:
                     state = object_states["Cube_Blue"]
-                    pos = np.array(state["pos"])
-                    rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                    if self.objects["Cube_Blue"].is_valid():
-                        # Reset position AND clear physics state
-                        self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                    if state is not None:  # Skip if pose estimation failed
+                        pos = np.array(state["pos"])
+                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                        if self.objects["Cube_Blue"].is_valid():
+                            # Reset position AND clear physics state
+                            self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
                 if "Cube_Red" in object_states and "Cube_Red" in self.objects:
                     state = object_states["Cube_Red"]
-                    pos = np.array(state["pos"])
-                    rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                    if self.objects["Cube_Red"].is_valid():
-                        # Reset position AND clear physics state
-                        self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                    if state is not None:  # Skip if pose estimation failed
+                        pos = np.array(state["pos"])
+                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                        if self.objects["Cube_Red"].is_valid():
+                            # Reset position AND clear physics state
+                            self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
                 if "Tennis" in object_states and "tennis_ball" in self.objects:
                     state = object_states["Tennis"]
-                    pos = np.array(state["pos"])
-                    rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                    if self.objects["tennis_ball"].is_valid():
-                        # Reset position AND clear physics state - CRITICAL for sphere/ball objects
-                        self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
-                        self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                    if state is not None:  # Skip if pose estimation failed
+                        pos = np.array(state["pos"])
+                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                        if self.objects["tennis_ball"].is_valid():
+                            # Reset position AND clear physics state - CRITICAL for sphere/ball objects
+                            self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
+                            self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
@@ -1213,6 +1221,8 @@ class IsaacSimWorker:
                 for config_key, scene_name in object_mappings:
                     if config_key in object_states:
                         state = object_states[config_key]
+                        if state is None:  # Skip if pose estimation failed
+                            continue
 
                         # CRITICAL: Apply spatial offset to object position (same as sync)
                         original_pos = np.array(state["pos"])

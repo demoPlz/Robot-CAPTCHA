@@ -277,8 +277,23 @@ def main():
                 print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
                 print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
             else:
+                # Extract all available error information
                 result["error"] = out.extras.get("error", "pose failed")
-                print(f"[{args.object}] ❌ Pose estimation FAILED: {result['error']}", flush=True)
+                if "reason" in out.extras:
+                    result["reason"] = out.extras["reason"]
+                if "mask_area" in out.extras:
+                    result["mask_area"] = int(out.extras["mask_area"])
+                
+                # Print detailed error info
+                error_parts = [f"error={result['error']}"]
+                if "reason" in result:
+                    error_parts.append(f"reason={result['reason']}")
+                if "mask_area" in result:
+                    error_parts.append(f"mask_area={result['mask_area']}")
+                
+                error_msg = ", ".join(error_parts)
+                print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
+                print(f"[{args.object}]    extras: {out.extras}", flush=True)
         except Exception as e:
             result["error"] = f"pose exception: {e}"
             print(f"[{args.object}] ❌ Pose estimation EXCEPTION: {e}", flush=True)

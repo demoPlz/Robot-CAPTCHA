@@ -10,9 +10,20 @@ Inputs:
   - --min-corners : drop frames with too few Charuco corners
   - --out      : output .npz with T_base_cam and helpers
   - --preview  : show a few overlay previews
+  - --use-distorted / --use-undistorted : Choose processing mode
+
+Camera Model Modes:
+  --use-distorted (DEFAULT): Uses RAW distorted images with K and D.
+    - Matches runtime behavior of IntelRealSenseCamera.async_read()
+    - No undistortion applied
+    - Pose estimation uses K and D directly
+    
+  --use-undistorted: Undistorts images to pinhole model with Knew and D=0.
+    - Legacy behavior
+    - Images undistorted using (K,D)->Knew
+    - Pose estimation uses Knew with D=0
 
 Notes:
-  - We UNDISTORT each image to pinhole using (K,D)->Knew, then detect & pose with Knew and D=0.
   - Computes T_base_cam_i per-frame, rejects outliers by pixel RMS, averages rotations/translations.
   - Robust to OpenCV ArUco API differences (estimatePoseCharucoBoard signatures).
 """
@@ -213,12 +224,36 @@ def main():
     ap.add_argument("--tbb", help="File with T_base_board (4x4), JSON/NPZ; if omitted, identity.")
     ap.add_argument("--out", required=True, help="Output .npz with T_base_cam etc.")
     ap.add_argument("--preview", action="store_true")
+    ap.add_argument("--use-distorted", action="store_true", default=True,
+                    help="Use raw distorted images with K and D (default, matches runtime). "
+                         "If False, undistort images to Knew with D=0.")
+    ap.add_argument("--use-undistorted", dest="use_distorted", action="store_false",
+                    help="Undistort images before processing (old behavior)")
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(args.images))
+    # Handle both directory and glob patterns
+    images_arg = args.images
+    if os.path.isdir(images_arg):
+        # If it's a directory, glob for common image extensions
+        patterns = [
+            os.path.join(images_arg, "*.png"),
+            os.path.join(images_arg, "*.jpg"),
+            os.path.join(images_arg, "*.jpeg"),
+        ]
+        paths = []
+        for pattern in patterns:
+            paths.extend(glob.glob(pattern))
+        paths = sorted(set(paths))  # Remove duplicates and sort
+    else:
+        # Use as glob pattern directly
+        paths = sorted(glob.glob(images_arg))
+    
     if not paths:
-        print(f"No images match {args.images}")
+        print(f"No images found in {args.images}")
+        print(f"Tried: {images_arg if not os.path.isdir(images_arg) else 'directory with *.png, *.jpg, *.jpeg'}")
         sys.exit(1)
+
+    print(f"Found {len(paths)} images")
 
     intr = np.load(args.intr, allow_pickle=True)
     K    = intr["K"]
@@ -239,44 +274,81 @@ def main():
     except TypeError:
         board = cv2.aruco.CharucoBoard_create(args.cols, args.rows, args.square, args.marker, ar_dict)
 
+    # Detect if we have new or old OpenCV ArUco API
+    try:
+        detector = cv2.aruco.ArucoDetector(ar_dict)
+        charuco_detector = cv2.aruco.CharucoDetector(board)
+        use_new_api = True
+        print("Using OpenCV ArUco new API (4.7+)")
+    except (AttributeError, TypeError):
+        use_new_api = False
+        print("Using OpenCV ArUco old API (< 4.7)")
+
+
     T_list = []
     kept = 0
+
+    # Determine which camera model to use
+    if args.use_distorted:
+        print("Using RAW DISTORTED images with K and D (matches runtime behavior)")
+        cam_matrix = K
+        dist_coeffs = D
+    else:
+        print("Using UNDISTORTED images with Knew and D=0 (old behavior)")
+        cam_matrix = Knew
+        dist_coeffs = None
 
     for p in paths:
         img = cv2.imread(p, cv2.IMREAD_COLOR)
         if img is None:
             continue
 
-        # Undistort to pinhole
-        if map1 is not None and map2 is not None:
-            und = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR)
+        # Optionally undistort the image
+        if args.use_distorted:
+            # Use RAW distorted image (no undistortion)
+            processed = img
         else:
-            und = cv2.fisheye.undistortImage(img, K, D, Knew=Knew)
+            # Undistort to pinhole model
+            if map1 is not None and map2 is not None:
+                processed = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR)
+            else:
+                processed = cv2.fisheye.undistortImage(img, K, D, Knew=Knew)
 
-        gray = cv2.cvtColor(und, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
 
-        # Detect Charuco
-        corners, ids, _ = cv2.aruco.detectMarkers(gray, ar_dict)
-        if ids is None or len(ids) < 3:
-            continue
-        try:
-            cv2.aruco.refineDetectedMarkers(gray, board, corners, ids, rejectedCorners=None)
-        except Exception:
-            # not all builds have this signature; safe to skip
-            pass
-        ok, ch_c, ch_ids = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, board)
-        if not ok or ch_ids is None or ch_c is None:
-            continue
+        # Detect Charuco (handle both old and new OpenCV API)
+        if use_new_api:
+            # New API (OpenCV 4.7+)
+            corners, ids, _ = detector.detectMarkers(gray)
+            if ids is None or len(ids) < 3:
+                continue
+            ch_c, ch_ids, _, _ = charuco_detector.detectBoard(gray)
+            if ch_ids is None or ch_c is None or len(ch_ids) == 0:
+                continue
+        else:
+            # Old API (OpenCV < 4.7)
+            corners, ids, _ = cv2.aruco.detectMarkers(gray, ar_dict)
+            if ids is None or len(ids) < 3:
+                continue
+            try:
+                cv2.aruco.refineDetectedMarkers(gray, board, corners, ids, rejectedCorners=None)
+            except Exception:
+                # not all builds have this signature; safe to skip
+                pass
+            ok, ch_c, ch_ids = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, board)
+            if not ok or ch_ids is None or ch_c is None:
+                continue
+        
         if len(ch_ids) < args.min_corners:
             continue
 
-        # Pose of BOARD in CAMERA (pinhole model, D=0)
-        retval, rvec, tvec = estimate_pose_charuco_compat(ch_c, ch_ids, board, Knew, None)
+        # Pose of BOARD in CAMERA
+        retval, rvec, tvec = estimate_pose_charuco_compat(ch_c, ch_ids, board, cam_matrix, dist_coeffs)
         if not retval:
             continue
 
-        # Measure reprojection error on undistorted image
-        rms = proj_error_charuco(Knew, ch_c, ch_ids, board, rvec, tvec)
+        # Measure reprojection error
+        rms = proj_error_charuco(cam_matrix, ch_c, ch_ids, board, rvec, tvec)
 
         T_cam_board = pose_to_T(rvec, tvec)
         T_board_cam = invert_T(T_cam_board)
@@ -286,11 +358,11 @@ def main():
         kept += 1
 
         if args.preview and kept <= 3:
-            vis = und.copy()
+            vis = processed.copy()
             cv2.aruco.drawDetectedMarkers(vis, corners, ids)
             cv2.aruco.drawDetectedCornersCharuco(vis, ch_c, ch_ids, (0,255,0))
             try:
-                cv2.drawFrameAxes(vis, Knew, None, rvec, tvec, args.square * 2.0)
+                cv2.drawFrameAxes(vis, cam_matrix, dist_coeffs, rvec, tvec, args.square * 2.0)
             except Exception:
                 pass
             cv2.imshow("pose preview", vis)

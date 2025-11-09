@@ -84,11 +84,7 @@ class SimManager:
             initial_config = {
                 "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
                 "robot_joints": [0.0] * 7,
-                "object_poses": {
-                    "Cube_Blue": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_Red": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]},
-                },
+                "object_poses": {},  # Will be populated from pose estimation
             }
 
             print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
@@ -167,11 +163,7 @@ class SimManager:
                 "usd_path": f"public/assets/usd/{self.task_name}.usd",
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
-                "object_poses": {
-                    "Cube_Blue": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_Red": {"pos": [0.4, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.4, -0.2, 0.1], "rot": [0, 0, 0, 1]},
-                },
+                "object_poses": state_info.get("object_poses", {}),
             }
 
             # Use persistent worker for fast capture with animation sync

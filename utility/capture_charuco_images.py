@@ -32,7 +32,7 @@ def parse_args():
     ap.add_argument("--square", type=float, default=0.035, help="Square size (meters).")
     ap.add_argument("--marker", type=float, default=0.026, help="Marker size (meters).")
     ap.add_argument("--dict",   default="4X4_50", choices=DICT_MAP.keys(), help="ArUco dictionary.")
-    ap.add_argument("--outdir", default="calib", help="Base output directory.")
+    ap.add_argument("--outdir", default="data/calib", help="Base output directory.")
     ap.add_argument("--interval", type=float, default=1.5, help="Seconds between auto captures when 'n' toggled.")
     ap.add_argument("--no-overlay", action="store_true", help="Disable ChArUco overlay for max speed.")
     return ap.parse_args()
