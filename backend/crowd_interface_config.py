@@ -57,6 +57,10 @@ class CrowdInterfaceConfig:
             "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve()),
         }
 
+        # ========== Joint Tracking ==========
+        # Track prismatic joint positions of drawer for drawer task
+        self.joint_tracking: list = []
+
     @classmethod
     def from_cli_args(cls, argv=None):
         """Create a CrowdInterfaceConfig instance with CLI overrides.
