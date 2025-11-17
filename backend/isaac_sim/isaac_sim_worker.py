@@ -753,8 +753,6 @@ class IsaacSimWorker:
                             pos = np.array(state["pos"])
                             rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                             self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                             print(f"✅ Synced Tennis to {pos} (physics cleared)")
 
                 else:
@@ -1349,8 +1347,6 @@ class IsaacSimWorker:
                         if self.objects["tennis_ball"].is_valid():
                             # Reset position AND clear physics state - CRITICAL for sphere/ball objects
                             self.objects["tennis_ball"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["tennis_ball"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["tennis_ball"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
@@ -1384,6 +1380,8 @@ class IsaacSimWorker:
                             scene_obj.set_world_pose(position=offset_pos, orientation=rot)
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+
+                            #TODO this might not work for tennis ball
 
             for step in range(50):
                 self.world.step(render=True)

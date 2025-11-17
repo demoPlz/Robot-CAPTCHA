@@ -1971,8 +1971,9 @@ const CanvasRecording = (() => {
       const v = cell.view;
       if (!v || !v.container) continue;
 
-      // Gripper HUD (status pill + toggle)
-      if (v.hudGrip) drawGripHUD(ctx, v, cell.x, cell.y);
+      // Gripper HUD (status pill + toggle) - skip if disabled
+      const gripDisabled = taskCompletedSelected || !slidersAtDefault();
+      if (v.hudGrip && !gripDisabled) drawGripHUD(ctx, v, cell.x, cell.y);
 
       // Reset icon (24x24 viewBox)
       if (v.hudResetEl) drawIconButton(ctx, v, v.hudResetEl, cell.x, cell.y, RESET_SVG_PATH, 24);
@@ -4633,6 +4634,7 @@ loader.load(
     /* Enable/disable HUD with same gating rules as before */
     function updateGripHUDInteractivity(){
       const disabled = taskCompletedSelected || !slidersAtDefault();
+      console.log('[updateGripHUDInteractivity] disabled =', disabled, 'taskCompletedSelected =', taskCompletedSelected, 'slidersAtDefault() =', slidersAtDefault());
       const hoverMsg = disabled
         ? (taskCompletedSelected
             ? 'Disabled: “Task Already Completed” is selected.'
@@ -4641,6 +4643,15 @@ loader.load(
 
       gripHUDs.forEach(({ el, btn }) => {
         el.classList.toggle('disabled', disabled);
+        // Hide the HUD when robot is moved (same condition as button disable)
+        // Use !important to override the CSS rule
+        if (disabled) {
+          console.log('[updateGripHUDInteractivity] Setting display:none on', el);
+          el.style.setProperty('display', 'none', 'important');
+          console.log('[updateGripHUDInteractivity] After setting, el.style.display =', el.style.display);
+        } else {
+          el.style.removeProperty('display');
+        }
         btn.title = hoverMsg;
       });
     }
@@ -4755,11 +4766,16 @@ loader.load(
 
 
     function positionGripHUDs(){
+      const gripDisabled = taskCompletedSelected || !slidersAtDefault();
       gripHUDs.forEach(({ view, el }) => {
         const cam  = view.camera;
         const rect = view.renderer.domElement.getBoundingClientRect();
 
         if (hudHiddenForAnimation) {
+          el.style.setProperty('display', 'none', 'important');
+          return;
+        } else if (gripDisabled) {
+          // Don't show HUD when gripper is disabled (robot moved from default pose)
           el.style.setProperty('display', 'none', 'important');
           return;
         } else {
