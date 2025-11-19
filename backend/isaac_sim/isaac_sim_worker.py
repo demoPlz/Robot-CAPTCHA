@@ -217,7 +217,7 @@ class IsaacSimWorker:
 
         for path, key in [
             ("/World/tray_01", "tray_01"),
-            ("/World/tray_02", "tray_02"),
+            ("/World/Drawer/tray_02", "tray_02"),
             ("/World/tray_03", "tray_03"),
         ]:
             prim = stage.GetPrimAtPath(path)
@@ -321,7 +321,7 @@ class IsaacSimWorker:
             self.world.step(render=True)
 
     def set_drawer_joints(self):
-        """Set drawer tray position by moving /World/tray_02 based on joint position"""
+        """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position"""
         import omni.usd
         from pxr import Gf
 
@@ -345,10 +345,10 @@ class IsaacSimWorker:
         
         # Get the tray prim and modify its Y position
         stage = omni.usd.get_context().get_stage()
-        tray_prim = stage.GetPrimAtPath("/World/tray_02")
+        tray_prim = stage.GetPrimAtPath("/World/Drawer/tray_02")
         
         if not tray_prim or not tray_prim.IsValid():
-            print(f"⚠️ Could not find tray_02 at /World/tray_02")
+            print(f"⚠️ Could not find tray_02 at /World/Drawer/tray_02")
             # Try to list what's available
             world_prim = stage.GetPrimAtPath("/World")
             if world_prim and world_prim.IsValid():
@@ -356,7 +356,7 @@ class IsaacSimWorker:
                 print(f"Available children under /World: {children}")
             return
         
-        print(f"[Worker] ✓ Found tray_02 prim at /World/tray_02")
+        print(f"[Worker] ✓ Found tray_02 prim at /World/Drawer/tray_02")
         
         # Get current position and subtract joint position from Y
         try:
@@ -957,8 +957,8 @@ class IsaacSimWorker:
 
         if gripper_action is not None:
             if gripper_action in ("grasp", "close"):
-                goal_joints[-1] = 0.000
-                print(f"🤏 Gripper action: {gripper_action} -> setting left gripper to closed (0.0)")
+                goal_joints[-1] = -0.044  # TEST: Negative value to force tighter closure
+                print(f"🤏 Gripper action: {gripper_action} -> setting left gripper to closed (-0.005) [TESTING TIGHT CLOSURE]")
             elif gripper_action == "open":
                 goal_joints[-1] = 0.044
                 print(f"✋ Gripper action: {gripper_action} -> setting left gripper to open (0.044)")
@@ -1140,6 +1140,18 @@ class IsaacSimWorker:
                     state["q0_7"] = q0_7
                     state["qg_7"] = qg
                     state["T"] = state["total_frames"] / state["fps"]
+                    
+                    # Detect if this is a gripper-only action (arm joints unchanged, only gripper changes)
+                    arm_delta = np.abs(qg[:6] - q0_7[:6]).max()
+                    gripper_delta = np.abs(qg[6] - q0_7[6])
+                    state["is_gripper_only"] = arm_delta < 0.001 and gripper_delta > 0.001
+                    
+                    # For gripper-only actions, use very short duration (0.2 seconds = 6 frames at 30fps)
+                    if state["is_gripper_only"]:
+                        state["gripper_duration_frames"] = 6  # ~0.2 seconds for instant feel
+                        print(f"🤏 Detected gripper-only action, will complete in {state['gripper_duration_frames']} frames")
+                    else:
+                        state["gripper_duration_frames"] = state["total_frames"]  # Use full duration
 
                 q0_7 = state["q0_7"]
                 right0 = q0_7[self.GRIPPER_LEFT_IDX]
@@ -1149,15 +1161,45 @@ class IsaacSimWorker:
                     ArticulationAction(joint_positions=q0_8, joint_velocities=[0.0] * 8)  # freeze all 8 DOFs
                 )
 
-                # Min-jerk interpolation on 7 DOFs
+                # Min-jerk interpolation on 7 DOFs with separate timing for gripper vs arm
                 T = state["T"]
-                tau = 0.0 if T <= 0 else max(0.0, min((f / state["fps"]) / T, 1.0))
-                s = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
-                sdot = 0.0 if T <= 0 else (30 * tau**2 - 60 * tau**3 + 30 * tau**4) / T
+                
+                # For arm joints (0-5): use full duration
+                tau_arm = 0.0 if T <= 0 else max(0.0, min((f / state["fps"]) / T, 1.0))
+                s_arm = 10 * tau_arm**3 - 15 * tau_arm**4 + 6 * tau_arm**5
+                sdot_arm = 0.0 if T <= 0 else (30 * tau_arm**2 - 60 * tau_arm**3 + 30 * tau_arm**4) / T
+                
+                # For gripper (joint 6): use shorter duration if gripper-only action
+                if state.get("is_gripper_only", False):
+                    # Gripper completes in gripper_duration_frames, then holds at goal
+                    gripper_T = state["gripper_duration_frames"] / state["fps"]
+                    tau_gripper = 0.0 if gripper_T <= 0 else max(0.0, min((f / state["fps"]) / gripper_T, 1.0))
+                else:
+                    # Regular action: gripper uses same timing as arm
+                    tau_gripper = tau_arm
+                    
+                s_gripper = 10 * tau_gripper**3 - 15 * tau_gripper**4 + 6 * tau_gripper**5
+                gripper_T_actual = state.get("gripper_duration_frames", state["total_frames"]) / state["fps"]
+                sdot_gripper = 0.0 if gripper_T_actual <= 0 else (30 * tau_gripper**2 - 60 * tau_gripper**3 + 30 * tau_gripper**4) / gripper_T_actual
 
                 q0_7, qg_7 = state["q0_7"], state["qg_7"]
-                q_des_7 = q0_7 + s * (qg_7 - q0_7)
-                qd_des_7 = sdot * (qg_7 - q0_7)
+                
+                # Interpolate arm joints (0-5) with arm timing
+                q_des_arm = q0_7[:6] + s_arm * (qg_7[:6] - q0_7[:6])
+                qd_des_arm = sdot_arm * (qg_7[:6] - q0_7[:6])
+                
+                # Interpolate gripper joint (6) with gripper timing
+                # Once gripper reaches goal (tau >= 1.0), hold at goal position with zero velocity
+                if tau_gripper >= 1.0:
+                    q_des_gripper = qg_7[6]  # Hold at goal
+                    qd_des_gripper = 0.0
+                else:
+                    q_des_gripper = q0_7[6] + s_gripper * (qg_7[6] - q0_7[6])
+                    qd_des_gripper = sdot_gripper * (qg_7[6] - q0_7[6])
+                
+                # Combine into full 7-DOF command
+                q_des_7 = np.concatenate([q_des_arm, [q_des_gripper]])
+                qd_des_7 = np.concatenate([qd_des_arm, [qd_des_gripper]])
 
                 # Command ONLY 0..6; never the mimic DOF
                 right_pos = q_des_7[self.GRIPPER_LEFT_IDX]
@@ -1383,11 +1425,18 @@ class IsaacSimWorker:
 
                             #TODO this might not work for tennis ball
 
+            # STEP: Reset drawer position to synced state (before showing robot)
+            print(f"[Worker] 🗄️  Resetting drawer to synced state for user {user_id}")
+            self.set_drawer_joints()
+
+            # Let physics settle after object/drawer positioning
             for step in range(50):
                 self.world.step(render=True)
 
             # robot.initialize()
 
+            # STEP: Reset robot joints to synced state
+            print(f"[Worker] 🦾 Resetting robot joints to synced state for user {user_id}")
             self.set_robot_joints()
 
             # Let physics settle after all resets are complete (extended for gripper operations)

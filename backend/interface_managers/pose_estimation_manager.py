@@ -86,6 +86,10 @@ class PoseEstimationManager:
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
         self._pose_results_thread: Thread | None = None
 
+        # === Last known good poses for fallback on estimation failure ===
+        # Maps object_name -> {"pos": [x,y,z], "rot": [x,y,z,w]} or None
+        self.last_known_poses: dict[str, dict | None] = {}
+
         # Start workers and results watcher
         self._start_pose_workers()
         self._start_pose_results_watcher()
@@ -351,7 +355,22 @@ class PoseEstimationManager:
                             st = ep[st_id]
                             if "object_poses" not in st:
                                 st["object_poses"] = {}
-                            st["object_poses"][obj] = pose_world  # Store transformed pose (or None if failed)
+                            
+                            # FALLBACK LOGIC: If estimation failed (pose_world is None), use last known pose
+                            if pose_world is None:
+                                fallback_pose = self.last_known_poses.get(obj)
+                                if fallback_pose is not None:
+                                    print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
+                                    print(f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}")
+                                    st["object_poses"][obj] = fallback_pose
+                                else:
+                                    print(f"❌ Pose estimation failed for {obj} and no previous pose available")
+                                    st["object_poses"][obj] = None
+                            else:
+                                # SUCCESS: Store the new pose and update last known pose
+                                st["object_poses"][obj] = pose_world
+                                self.last_known_poses[obj] = pose_world
+                                print(f"✅ Updated last known pose for {obj}")
                     except Exception as e:
                         print(f"⚠️  Failed to process pose result {p.name}: {e}")
                         try:
