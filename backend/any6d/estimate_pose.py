@@ -392,14 +392,40 @@ def estimate_pose_from_tensors(
         # Fallback to init pose if refinement fails
         pose_np = np.asarray(pose_init_np, dtype=np.float32)
 
+    # ---- Extract confidence score from FoundationPose
+    # The scorer computes a quality metric (0-1 range) based on the refined pose
+    score = None
+    try:
+        # FoundationPose stores the last computed score in fpose.last_score
+        if hasattr(fpose, 'last_score') and fpose.last_score is not None:
+            score = float(fpose.last_score)
+    except Exception:
+        pass  # Score extraction is best-effort
+
+    # ---- Check confidence threshold (fail if score too low)
+    POSE_CONFIDENCE_THRESHOLD = 0.8  # Treat scores below this as failed estimates
+    if score is not None and score < POSE_CONFIDENCE_THRESHOLD:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=torch.from_numpy(ob_mask),
+            bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
+            to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
+            extras={"mask_area": area, "score": score, "reason": f"low confidence score: {score:.3f}"},
+        )
+
     # ---- Package results (torch outputs)
+    extras = {"mask_area": area}
+    if score is not None:
+        extras["score"] = score
+    
     return PoseOutput(
         success=True,
         pose_cam_T_obj=torch.from_numpy(pose_np),
         mask=torch.from_numpy(ob_mask),
         bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
         to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
-        extras={"mask_area": area},
+        extras=extras,
     )
 
 

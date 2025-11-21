@@ -278,7 +278,11 @@ def main():
                 result["success"] = True
                 result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
                 result["mask_area"] = int(out.extras.get("mask_area", 0))
+                if "score" in out.extras:
+                    result["score"] = float(out.extras["score"])
                 print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
+                if "score" in result:
+                    print(f"[{args.object}]    confidence score: {result['score']:.3f}", flush=True)
                 print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
             else:
                 # Extract all available error information
@@ -287,6 +291,8 @@ def main():
                     result["reason"] = out.extras["reason"]
                 if "mask_area" in out.extras:
                     result["mask_area"] = int(out.extras["mask_area"])
+                if "score" in out.extras:
+                    result["score"] = float(out.extras["score"])
                 
                 # Print detailed error info
                 error_parts = [f"error={result['error']}"]
@@ -294,6 +300,8 @@ def main():
                     error_parts.append(f"reason={result['reason']}")
                 if "mask_area" in result:
                     error_parts.append(f"mask_area={result['mask_area']}")
+                if "score" in result:
+                    error_parts.append(f"score={result['score']:.3f}")
                 
                 error_msg = ", ".join(error_parts)
                 print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
@@ -305,27 +313,39 @@ def main():
 
             traceback.print_exc()
 
-        # Optional visualization
+        # TEMPORARY: Always save visualization (both success and failure cases)
         try:
-            if result["success"] and (args.save_viz or bool(os.getenv("POSE_SAVE_VIZ", "0") == "1")):
-                viz = visualize_estimation(
-                    rgb_t=rgb_t,
-                    depth_t=depth_t,
-                    K=K,
-                    pose_out=out,
-                    axis_scale=0.05,
-                    depth_min=0.1,
-                    depth_max=1.0,
-                    overlay_mask=True,
-                )
-                png_path = outbox / f"viz_{job_id}.png"
-                import cv2  # local import to avoid import cycles
+            viz = visualize_estimation(
+                rgb_t=rgb_t,
+                depth_t=depth_t,
+                K=K,
+                pose_out=out,
+                axis_scale=0.05,
+                depth_min=0.1,
+                depth_max=1.0,
+                overlay_mask=True,
+            )
+            
+            # Save all visualizations to outbox with clear naming
+            status_str = "success" if result["success"] else "failed"
+            png_path = outbox / f"viz_{job_id}_{status_str}.png"
+            import cv2  # local import to avoid import cycles
 
-                cv2.imwrite(str(png_path), viz["rgb_with_pose_bgr"])
-                result["pose_viz_path"] = str(png_path)
-        except Exception:
-            # viz is best-effort
-            pass
+            cv2.imwrite(str(png_path), viz["rgb_with_pose_bgr"])
+            result["pose_viz_path"] = str(png_path)
+            
+            # Also save depth and mask visualizations
+            if "depth_viz_bgr" in viz:
+                depth_path = outbox / f"viz_{job_id}_{status_str}_depth.png"
+                cv2.imwrite(str(depth_path), viz["depth_viz_bgr"])
+            if "mask_gray" in viz:
+                mask_path = outbox / f"viz_{job_id}_{status_str}_mask.png"
+                cv2.imwrite(str(mask_path), viz["mask_gray"])
+            
+            print(f"[{args.object}] 💾 Saved visualization to {png_path}", flush=True)
+        except Exception as e:
+            # viz is best-effort, but log errors for debugging
+            print(f"[{args.object}] ⚠️ Visualization failed: {e}", flush=True)
 
         # Emit result JSON
         try:
