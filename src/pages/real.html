@@ -3082,7 +3082,7 @@ function hideServerNotStarted(){
 }
 
 // ================================ devMode ===================================
-const devMode = false;
+const devMode = true;
 // Apply dev-mode class to body if devMode is enabled
 if (devMode) {
   document.body.classList.add('dev-mode');
@@ -3237,26 +3237,17 @@ loader.load(
     }
 
     /**
-     * Turn ghosting on/off for everything NOT in MINIMAL_LINKS.
-     * Assumes the robot is already visible. Call after showAllRobotMeshes()
-     * when enabling, and before showMinimalRobotMeshes() when disabling.
+     * Turn ghosting on/off for ENTIRE robot including grippers and last link.
+     * When on=true, makes everything semi-transparent.
+     * When on=false, restores everything to opaque.
      */
     function setGhostMode(on) {
-      // Collect roots for the minimal (fully opaque) subtree(s)
-      const minimalRoots = new Set(
-        MINIMAL_LINKS.map(n => robot.getObjectByName(n)).filter(Boolean)
-      );
-
       robot.traverse(o => {
         if (!o.isMesh) return;
-        const keepOpaque = isUnderAny(o, minimalRoots);
         if (on) {
-          if (keepOpaque) {
-            restoreMeshMaterial(o);
-          } else {
-            applyGhostToMesh(o);
-            o.visible = true; // ensure non-minimal parts are actually shown
-          }
+          // Apply ghosting to EVERYTHING
+          applyGhostToMesh(o);
+          o.visible = true;
         } else {
           // Turn ghosting off everywhere
           restoreMeshMaterial(o);
@@ -3275,11 +3266,11 @@ loader.load(
       // Idempotent - call when the user actually adjusts the pose (drag/slider)
       if (!userHasAdjustedPose) userHasAdjustedPose = true;
       if (userHasAdjustedPose) {
-        // Show the full robot (body + gripper) and ensure it's opaque.
+        // Show the full robot (body + gripper) semi-transparent.
         robotVisible = true;
         robot.visible = true;
         showAllRobotMeshes();
-        setGhostMode(true);    // ← keep body ghosted like during animation
+        setGhostMode(true);    // ← render semi-transparent
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
       }
     }
@@ -3290,13 +3281,13 @@ loader.load(
     }
 
     function applyPostAnimationVisibility() {
-      // After animation stops, keep the full body visible (opaque) if the user
+      // After animation stops, keep the full body visible (semi-transparent) if the user
       // has interacted with the pose; otherwise keep it hidden.
       if (userHasAdjustedPose) {
         robotVisible = true;
         robot.visible = true;
         showAllRobotMeshes();    // full body on
-        setGhostMode(true);     // ← keep body ghosted when Animate is OFF
+        setGhostMode(true);     // ← render semi-transparent when Animate is OFF
       } else {
         hideRobotCompletely();
       }
@@ -4393,7 +4384,7 @@ loader.load(
         goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
         // Restore pose gizmos when animation is off
         setPoseGizmosVisible(true);
-        applyPostAnimationVisibility();  // this now leaves ghosting ON
+        applyPostAnimationVisibility();  // keeps robot semi-transparent
 
         animating = false;
         updateGripArrowVisibility();
@@ -5133,6 +5124,11 @@ loader.load(
       left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → drag XZ
       right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) },
       perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → drag XY
+      // Webcam views inherit specs from their corresponding base views
+      webcam_front:       { axes: ['y','z'], normal: new THREE.Vector3(1,0,0) }, // lock X → drag YZ
+      webcam_left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → drag XZ
+      webcam_right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) },
+      webcam_perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → drag XY
     };
     function specForView(name){ return DRAG_SPECS[name] || DRAG_SPECS.perspective; }
 
@@ -5346,11 +5342,12 @@ loader.load(
       views.clear();
       viewsGrid.innerHTML = '';
       
-      // Get available camera poses and textures
+      // Get available camera poses and textures (ONLY webcam_ views for real.html)
       const availableViews = [];
       Object.keys(camPoses).forEach(poseKey => {
         const viewName = poseKey.replace('_pose', '');
-        if (viewTextures[viewName] && cameraModels[viewName]) {
+        // Only show webcam views in real.html
+        if (viewName.startsWith('webcam_') && viewTextures[viewName] && cameraModels[viewName]) {
           availableViews.push({
             name: viewName,
             poseKey,
@@ -5362,7 +5359,7 @@ loader.load(
         }
       });
       
-      console.log(`[DEBUG] availableViews:`, availableViews.map(v => v.name));
+      console.log(`[DEBUG] availableViews (webcam only):`, availableViews.map(v => v.name));
       
       if (availableViews.length === 0) return;
       
@@ -5638,7 +5635,7 @@ loader.load(
 
       // Restore normal visuals
       setPoseGizmosVisible(true);
-      applyPostAnimationVisibility();  // leaves ghosting ON
+      applyPostAnimationVisibility();  // keeps robot semi-transparent
       setHUDHiddenForAnimation(false);
 
       if (reason) console.log('⏹️ Animate cancelled:', reason);

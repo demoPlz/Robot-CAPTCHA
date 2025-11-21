@@ -27,6 +27,8 @@ class SimManager:
         obs_cache_root: Path,
         state_lock: Lock,
         pending_states_by_episode: dict,
+        webcam_manager=None,
+        calibration_manager=None,
     ):
         """Initialize SimManager.
 
@@ -36,6 +38,8 @@ class SimManager:
             obs_cache_root: Root directory for observation cache
             state_lock: Lock for thread-safe state updates
             pending_states_by_episode: Reference to pending states dict for atomic updates
+            webcam_manager: WebcamManager instance for capturing real webcam views
+            calibration_manager: CalibrationManager instance for camera calibration data
 
         """
         self.use_sim = use_sim
@@ -43,6 +47,8 @@ class SimManager:
         self.obs_cache_root = obs_cache_root
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
+        self.webcam_manager = webcam_manager
+        self.calibration_manager = calibration_manager
 
         # Sim capture queue and worker thread
         self.sim_capture_queue = queue.Queue()
@@ -188,6 +194,12 @@ class SimManager:
                     if sim_name in sim_result:
                         view_paths[our_name] = sim_result[sim_name]
 
+                # Additionally capture webcam views for left and front cameras
+                if self.webcam_manager:
+                    webcam_views = self._capture_and_persist_webcam_views(episode_id, state_id)
+                    # Merge webcam views into view_paths with distinguishable names
+                    view_paths.update(webcam_views)
+
                 if view_paths:
                     state_info["view_paths"] = view_paths
                     state_info["sim_ready"] = True
@@ -329,3 +341,62 @@ class SimManager:
         except Exception as e:
             print(f"⚠️ Animation session release failed: {e}")
             return {"status": "error", "message": str(e)}
+
+    # =========================
+    # Webcam View Capture
+    # =========================
+
+    def _capture_and_persist_webcam_views(self, episode_id: str, state_id: int) -> dict[str, str]:
+        """Capture webcam views (left and front) and persist them to disk.
+        
+        Args:
+            episode_id: Episode identifier
+            state_id: State identifier
+            
+        Returns:
+            Dict mapping webcam view names to file paths (e.g., {"webcam_left": "/path/to/file.jpg"})
+        """
+        if not self.webcam_manager:
+            return {}
+            
+        view_paths = {}
+        try:
+            # Get latest webcam snapshots (base64 data URLs)
+            webcam_snapshots = self.webcam_manager.snapshot_latest_views()
+            
+            # Only capture left and front cameras
+            target_cams = ["left", "front"]
+            
+            # Create directory for webcam views
+            d = self.obs_cache_root / str(episode_id) / "webcam_views"
+            d.mkdir(parents=True, exist_ok=True)
+            
+            for cam_name in target_cams:
+                if cam_name in webcam_snapshots:
+                    data_url = webcam_snapshots[cam_name]
+                    
+                    # Extract base64 data from data URL
+                    if isinstance(data_url, str) and "base64," in data_url:
+                        idx = data_url.find("base64,")
+                        b64_data = data_url[idx + len("base64,"):]
+                        
+                        try:
+                            import base64
+                            raw_data = base64.b64decode(b64_data)
+                            
+                            # Save to disk with webcam_ prefix to distinguish from sim views
+                            file_path = d / f"{state_id}_webcam_{cam_name}.jpg"
+                            with open(file_path, "wb") as f:
+                                f.write(raw_data)
+                            
+                            # Use webcam_ prefix in the key to distinguish from sim views
+                            view_paths[f"webcam_{cam_name}"] = str(file_path)
+                            print(f"✓ Captured webcam view: {cam_name} -> {file_path}")
+                            
+                        except Exception as e:
+                            print(f"⚠️ Failed to decode/save webcam view {cam_name}: {e}")
+                            
+        except Exception as e:
+            print(f"⚠️ Failed to capture webcam views for ep={episode_id}, state={state_id}: {e}")
+            
+        return view_paths

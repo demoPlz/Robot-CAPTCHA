@@ -73,6 +73,105 @@
     flex-shrink: 0;
   }
 
+  /* MR mode: container for sim views + webcam column */
+  #viewport.mr-mode .content-container {
+    flex-direction: row;
+    gap: 20px;
+    align-items: flex-start;
+  }
+
+  /* Webcam column (right side in MR mode) */
+  #viewport .webcam-column {
+    display: none; /* hidden by default */
+    flex-direction: column;
+    gap: 0;
+  }
+
+  #viewport.mr-mode .webcam-column {
+    display: flex;
+  }
+
+  /* MR toggle button */
+  .mr-toggle-btn {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 8px 16px;
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-radius: 0 !important;
+  }
+
+  .mr-toggle-btn:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  }
+
+  .mr-toggle-btn:active {
+    transform: translateY(0);
+  }
+
+  .mr-toggle-btn.active {
+    background: #10b981;
+  }
+
+  /* MR mode: container for sim views + webcam column */
+  #viewport.mr-mode .content-container {
+    display: flex;
+    flex-direction: row;
+    gap: 20px;
+    align-items: flex-start;
+  }
+
+  /* Webcam column (right side in MR mode) */
+  #viewport .webcam-column {
+    display: none; /* hidden by default */
+    flex-direction: column;
+    gap: 0;
+  }
+
+  #viewport.mr-mode .webcam-column {
+    display: flex;
+  }
+
+  /* MR toggle button */
+  .mr-toggle-btn {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 8px 16px;
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-radius: 0 !important;
+  }
+
+  .mr-toggle-btn:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  }
+
+  .mr-toggle-btn:active {
+    transform: translateY(0);
+  }
+
+  .mr-toggle-btn.active {
+    background: #10b981;
+  }
+
   /* Container for sliders with CAPTCHA styling */
   #viewport .controls-container{
     background: rgba(255, 255, 255, 0.95);
@@ -1385,6 +1484,12 @@ async function refreshViews() {
           view.container.style.background = `center / cover no-repeat url("${base64Data}")`;
           console.log(`✓ Refreshed ${viewName} view with static image`);
         }
+        // Update webcam views if in MR mode
+        if (MR_MODE_ENABLED && webcamViews.has(viewName)) {
+          const view = webcamViews.get(viewName);
+          view.container.style.background = `center / cover no-repeat url("${base64Data}")`;
+          console.log(`✓ Refreshed ${viewName} webcam view with static image`);
+        }
       }
     }
   } catch (error) {
@@ -1641,8 +1746,14 @@ templateCamera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 
 // Render everything at a more compact size for captcha-style layout
 const VIEW_SCALE = 0.8;
 
+// ============================================================================
+// MR MODE CONFIGURATION - Set to true to enable Mixed Reality mode
+// ============================================================================
+const MR_MODE_ENABLED = true; // Set to true to show webcam views with robot overlay
+
 // Multi-view system
 const views = new Map(); // viewName -> {camera, renderer, container, name}
+const webcamViews = new Map(); // webcam viewName -> {camera, renderer, container, name}
 let currentViewName = null;
 
 // When true, pose sliders + scene dragging are locked (after gripper changed)
@@ -2675,6 +2786,11 @@ const viewsGrid = document.createElement('div');
 viewsGrid.className = 'views-grid';
 contentContainer.appendChild(viewsGrid);
 
+// Webcam column for MR mode (hidden by default)
+const webcamColumn = document.createElement('div');
+webcamColumn.className = 'webcam-column';
+contentContainer.appendChild(webcamColumn);
+
 // ADD: Example video dock (independent window to the right of the views)
 let exampleDock = null;
 let exampleVideo = null;
@@ -2901,7 +3017,19 @@ function updateViewSizes() {
   // Lock the overall card width to the grid width + the card's horizontal padding (20px + 20px).
   // Because we set #viewport { box-sizing: border-box }, this "total" width includes the padding.
   const cardHorizontalPadding = 40; // 20px left + 20px right
-  const fixedWidthPx = totalWidth + cardHorizontalPadding;
+  let fixedWidthPx = totalWidth + cardHorizontalPadding;
+  
+  // In MR mode, add width for webcam column
+  if (MR_MODE_ENABLED && webcamViews.size > 0) {
+    // Calculate webcam column width
+    let webcamColumnWidth = 0;
+    webcamViews.forEach(view => {
+      const w = parseInt(view.container.style.width) || 0;
+      webcamColumnWidth = Math.max(webcamColumnWidth, w);
+    });
+    // Add gap (20px) + webcam column width
+    fixedWidthPx += 20 + webcamColumnWidth;
+  }
 
   // Expose as a CSS variable (used by the CSS above) and hard-set width to be extra safe.
   mount.style.setProperty('--viewport-total-px', fixedWidthPx + 'px');
@@ -2938,6 +3066,11 @@ function updateViewSizes() {
     view.container.style.width = targetWidth + 'px';
     view.container.style.height = targetHeight + 'px';
   });
+  
+  // Update webcam view sizes to match sim view sizes (if function is defined)
+  if (typeof updateWebcamViewSizes === 'function') {
+    updateWebcamViewSizes();
+  }
   
   // Keep the example dock aligned/sized with the views grid
   updateExampleDockLayout();
@@ -5059,6 +5192,11 @@ loader.load(
       left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → drag XZ
       right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) },
       perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → drag XY
+      // Webcam views inherit specs from their corresponding base views
+      webcam_front:       { axes: ['y','z'], normal: new THREE.Vector3(1,0,0) }, // lock X → drag YZ
+      webcam_left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → drag XZ
+      webcam_right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) },
+      webcam_perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → drag XY
     };
     function specForView(name){ return DRAG_SPECS[name] || DRAG_SPECS.perspective; }
 
@@ -5259,6 +5397,129 @@ loader.load(
       }
     }
 
+    function initializeWebcamViews() {
+      // Clear existing webcam views
+      webcamViews.clear();
+      webcamColumn.innerHTML = '';
+      
+      // Create webcam views for left and front cameras
+      const webcamOrder = ['webcam_left', 'webcam_front'];
+      
+      webcamOrder.forEach(viewName => {
+        // Check if we have the webcam view data
+        if (!state.views?.[viewName]) {
+          console.log(`[MR] Skipping ${viewName} - no image data`);
+          return;
+        }
+        
+        // Check if we have calibration for this webcam view
+        // Webcam calibrations use the full viewName (webcam_left, webcam_front) as key
+        const poseKey = viewName + '_pose';  // webcam_left_pose, webcam_front_pose
+        
+        if (!camPoses[poseKey] || !cameraModels[viewName]) {
+          console.log(`[MR] Skipping ${viewName} - no calibration data`);
+          console.log(`[MR] Available poses:`, Object.keys(camPoses));
+          console.log(`[MR] Available models:`, Object.keys(cameraModels));
+          return;
+        }
+        
+        console.log(`[MR] Creating webcam view: ${viewName}`);
+        
+        const renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          alpha: true,
+          powerPreference: 'high-performance',
+          precision: 'highp',
+          preserveDrawingBuffer: false
+        });
+        
+        renderer.setPixelRatio(Math.max(window.devicePixelRatio || 1, 2));
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.NoToneMapping;
+        renderer.setClearColor(0x000000, 0);
+        
+        // Create perspective camera for webcam (real cameras are always perspective)
+        // Backend already undistorts images and provides rectified intrinsics (Knew)
+        const model = cameraModels[viewName];  // Use full viewName as key
+        const camera = templateCamera.clone();
+        
+        const container = document.createElement('div');
+        container.className = 'view-container';
+        container.dataset.viewName = viewName;
+        
+        // Set webcam image as background
+        const imageSrc = state.views[viewName];
+        if (imageSrc) {
+          container.style.background = `center / cover no-repeat url("${imageSrc}")`;
+        }
+        
+        container.appendChild(renderer.domElement);
+        webcamColumn.appendChild(container);
+        
+        const view = {
+          camera,
+          renderer,
+          container,
+          name: viewName,  // webcam_left or webcam_front
+          model: model,    // camera model with Knew for this webcam
+          pose: camPoses[poseKey]  // pose for this webcam
+        };
+        
+        webcamViews.set(viewName, view);
+        
+        // Set up camera pose and projection
+        updateViewCamera(view, view.pose);
+        applyProjectionFromK(view);
+      });
+      
+      // Note: Size will be set by updateWebcamViewSizes() after sim views are ready
+    }
+    
+    function updateWebcamViewSizes() {
+      if (!MR_MODE_ENABLED || webcamViews.size === 0) return;
+      
+      // Get the actual height from the first sim view container (instead of hardcoded values)
+      const firstSimView = views.values().next().value;
+      if (!firstSimView || !firstSimView.container) {
+        console.warn('[MR] No sim views found to match height');
+        console.warn('[MR] views.size:', views.size);
+        console.warn('[MR] Available views:', Array.from(views.keys()));
+        return;
+      }
+      
+      // Read the actual rendered height from the sim view container
+      const containerHeight = firstSimView.container.style.height;
+      const simViewHeight = parseInt(containerHeight) || 0;
+      
+      if (simViewHeight === 0) {
+        console.warn('[MR] Sim view height is 0, using default 282');
+        console.warn('[MR] Container style.height:', containerHeight);
+      }
+      
+      // Each webcam view should match one sim view height
+      const targetHeight = simViewHeight || 282; // fallback to default
+      
+      console.log('[MR] Setting webcam view height to:', targetHeight);
+      
+      webcamViews.forEach(view => {
+        const model = view.model;
+        if (!model) return;
+        
+        const W = model.width | 0;
+        const H = model.height | 0;
+        const imageAspect = W / H;
+        
+        // Calculate width based on aspect ratio
+        const targetWidth = Math.round(targetHeight * imageAspect);
+        
+        view.renderer.setSize(targetWidth, targetHeight);
+        view.container.style.width = targetWidth + 'px';
+        view.container.style.height = targetHeight + 'px';
+        
+        console.log(`[MR] ${view.name}: ${targetWidth}x${targetHeight}`);
+      });
+    }
+
     function initializeViews() {
       // Clear existing views
       views.clear();
@@ -5330,6 +5591,23 @@ loader.load(
       setTimeout(() => updateExampleDockLayout(), 100);
     }
 
+    // Declare variables needed by initializeViews
+    let taskCompletedSelected = false;
+    let taskCompletedBtn = null;
+    let verifyButtonUsed = false; // Track if Verify button has been clicked in this session
+
+    // Initialize the multi-view system FIRST
+    initializeViews();
+
+    // Initialize MR mode if enabled in configuration
+    if (MR_MODE_ENABLED) {
+      mount.classList.add('mr-mode');
+      initializeWebcamViews();
+      updateWebcamViewSizes(); // Size webcam views to match sim views
+      updateViewSizes(); // Recalculate layout with webcam column
+      console.log('[MR] MR Mode enabled via configuration');
+    }
+
     const btnBar   = document.createElement('div');
     btnBar.style.position = 'fixed';
     btnBar.style.top = '8px';
@@ -5339,20 +5617,15 @@ loader.load(
     btnBar.style.gap = '4px';
     document.body.appendChild( btnBar );
 
-    let taskCompletedSelected = false;
-    let taskCompletedBtn = null;
-    let verifyButtonUsed = false; // Track if Verify button has been clicked in this session
-
     /* ---------- confirm button (lower-right corner) ------------------- */
-
-    // Initialize the multi-view system
-    initializeViews();
 
     // Keep canvas sizes and per-view projection matrices in sync
     window.addEventListener('resize', () => {
       updateViewSizes();
+      updateWebcamViewSizes();
       // Recompute projection for each view after its canvas size changes
       views.forEach(v => applyProjectionFromK(v));
+      webcamViews.forEach(v => applyProjectionFromK(v));
     });
 
   /* ---------- confirm button (inside controls container) ------------------- */
@@ -6113,6 +6386,14 @@ loader.load(
         scene.background = null; // canvas stays transparent; camera is the CSS bg
         view.renderer.render(scene, view.camera);
       });
+
+      // ----- render webcam views (MR mode) -----
+      if (MR_MODE_ENABLED) {
+        webcamViews.forEach(view => {
+          scene.background = null;
+          view.renderer.render(scene, view.camera);
+        });
+      }
     }
 
 

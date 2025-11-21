@@ -212,8 +212,13 @@ class CalibrationManager:
         manual_dir = self._calib_dir()
 
         if self.use_sim:
-            # In sim mode: load sim calibrations directly for frontend
-            return self._load_sim_calibrations_for_frontend(poses, manual_dir)
+            # In sim mode: load sim calibrations for the 4 sim views
+            self._load_sim_calibrations_for_frontend(poses, manual_dir)
+            # ALSO load real calibrations for webcam undistortion (left, front cameras)
+            # This populates undistort_maps, camera_models, and camera_poses for real cameras
+            self._load_real_calibrations_for_webcams()
+            # Return self._camera_poses which includes both sim and webcam poses
+            return self._camera_poses
         else:
             # In real mode: load real calibrations + manual overrides for frontend
             return self._load_real_calibrations_for_frontend(poses, manual_dir)
@@ -252,6 +257,7 @@ class CalibrationManager:
                 # Load extrinsics
                 if "T_three" in extr_s and isinstance(extr_s["T_three"], list):
                     poses[f"{name}_pose"] = extr_s["T_three"]
+                    self._camera_poses[f"{name}_pose"] = extr_s["T_three"]
                     print(f"✓ loaded SIM extrinsics for '{name}' from {sim_file}")
 
                 # Load intrinsics
@@ -292,6 +298,7 @@ class CalibrationManager:
                 # Pose workers output poses in OpenCV camera frame, NOT Three.js frame
                 M = data["T_base_cam"]
                 poses["realsense_pose"] = M.tolist()
+                self._camera_poses["realsense_pose"] = M.tolist()
                 print(f"✓ loaded RealSense D455 extrinsics from {realsense_extr.name} (for pose estimation)")
             except Exception as e:
                 print(f"⚠️ Failed to load RealSense D455 extrinsics: {e}")
@@ -323,53 +330,59 @@ class CalibrationManager:
 
             # ---- Load extrinsics → camera pose ----
             extr = paths.get("extr")
-            if extr and os.path.exists(extr):
-                try:
-                    data = np.load(extr, allow_pickle=True)
-                    if "T_three" in data:
-                        M = np.asarray(data["T_three"], dtype=np.float64)
-                    elif "T_base_cam" in data:
-                        # Convert OpenCV cam (Z forward) to Three.js cam (looks -Z)
-                        T = np.asarray(data["T_base_cam"], dtype=np.float64)
-                        Rflip = np.diag([1.0, -1.0, -1.0])
-                        M = np.eye(4, dtype=np.float64)
-                        M[:3, :3] = T[:3, :3] @ Rflip
-                        M[:3, 3] = T[:3, 3]
-                    else:
-                        M = None
-                    if M is not None:
-                        poses[f"{name}_pose"] = M.tolist()
-                        print(f"✓ loaded extrinsics for '{name}' from {extr}")
-                except Exception as e:
-                    print(f"⚠️  failed to load extrinsics for '{name}' ({extr}): {e}")
+            if extr:
+                extr_path = (self.repo_root / extr).resolve() if not Path(extr).is_absolute() else Path(extr)
+                if extr_path.exists():
+                    try:
+                        data = np.load(extr_path, allow_pickle=True)
+                        if "T_three" in data:
+                            M = np.asarray(data["T_three"], dtype=np.float64)
+                        elif "T_base_cam" in data:
+                            # Convert OpenCV cam (Z forward) to Three.js cam (looks -Z)
+                            T = np.asarray(data["T_base_cam"], dtype=np.float64)
+                            Rflip = np.diag([1.0, -1.0, -1.0])
+                            M = np.eye(4, dtype=np.float64)
+                            M[:3, :3] = T[:3, :3] @ Rflip
+                            M[:3, 3] = T[:3, 3]
+                        else:
+                            M = None
+                        if M is not None:
+                            poses[f"{name}_pose"] = M.tolist()
+                            print(f"✓ loaded extrinsics for '{name}' from {extr_path}")
+                    except Exception as e:
+                        print(f"⚠️  failed to load extrinsics for '{name}' ({extr_path}): {e}")
 
             # ---- Load intrinsics → undistortion maps + Knew for projection ----
             intr = paths.get("intr")
-            if intr and os.path.exists(intr):
-                try:
-                    idata = np.load(intr, allow_pickle=True)
-                    W = int(idata["width"])
-                    H = int(idata["height"])
-                    # Prefer rectified Knew (matches undistorted frames)
-                    Knew = np.asarray(idata["Knew"], dtype=np.float64)
-                    # Optional: precomputed undistort maps
-                    if "map1" in idata.files and "map2" in idata.files:
-                        self._undistort_maps[name] = (idata["map1"], idata["map2"])
-                        rectified = True
-                        print(f"✓ loaded undistort maps for '{name}' from {intr}")
-                    else:
-                        rectified = False
-                    # Expose per-camera intrinsics to the frontend
-                    self._camera_models[name] = {
-                        "model": "pinhole",
-                        "rectified": rectified,
-                        "width": W,
-                        "height": H,
-                        "Knew": Knew.tolist(),
-                    }
-                    print(f"✓ loaded intrinsics (Knew {W}x{H}) for '{name}' from {intr}")
-                except Exception as e:
-                    print(f"⚠️  failed to load intrinsics for '{name}' ({intr}): {e}")
+            if intr:
+                intr_path = (self.repo_root / intr).resolve() if not Path(intr).is_absolute() else Path(intr)
+                if intr_path.exists():
+                    try:
+                        idata = np.load(intr_path, allow_pickle=True)
+                        W = int(idata["width"])
+                        H = int(idata["height"])
+                        # Prefer rectified Knew (matches undistorted frames)
+                        Knew = np.asarray(idata["Knew"], dtype=np.float64)
+                        # Optional: precomputed undistort maps
+                        if "map1" in idata.files and "map2" in idata.files:
+                            # Store undistort maps with base name (left, front) for WebcamManager
+                            self._undistort_maps[name] = (idata["map1"], idata["map2"])
+                            rectified = True
+                            print(f"✓ loaded undistort maps for webcam '{name}' from {intr_path}")
+                        else:
+                            rectified = False
+                            print(f"⚠️  no undistort maps found for webcam '{name}' in {intr_path}")
+                        # Expose per-camera intrinsics to the frontend with webcam_ prefix
+                        self._camera_models[f"webcam_{name}"] = {
+                            "model": "pinhole",
+                            "rectified": rectified,
+                            "width": W,
+                            "height": H,
+                            "Knew": Knew.tolist(),
+                        }
+                        print(f"✓ loaded intrinsics (Knew {W}x{H}) for webcam '{name}' from {intr_path}")
+                    except Exception as e:
+                        print(f"⚠️  failed to load intrinsics for webcam '{name}' ({intr_path}): {e}")
 
             # ---- Manual override (JSON) if present ----
             try:
@@ -418,6 +431,87 @@ class CalibrationManager:
             print(f"    Save camera pose calibration to: {realsense_extr}")
 
         return poses
+
+    def _load_real_calibrations_for_webcams(self):
+        """Load real camera calibrations for webcam views (left and front only).
+        
+        This method is called when use_sim=True to load undistortion maps and
+        camera models for the real webcam cameras, while sim calibrations are
+        used for the 4 sim views.
+        
+        IMPORTANT: Uses separate keys (webcam_left, webcam_front) to avoid
+        overwriting sim calibrations (left, front).
+        
+        Populates:
+        - self._undistort_maps: for cv2.remap() in WebcamManager (keys: "left", "front")
+        - self._camera_models: for frontend projection (keys: "webcam_left", "webcam_front")
+        - self._camera_poses: for frontend (keys: "webcam_left_pose", "webcam_front_pose")
+        """
+        # Only load left and front real cameras for webcam views
+        webcam_names = ["left", "front"]
+        manual_dir = self._calib_dir()
+        
+        for name in webcam_names:
+            # Try manual calibration file first (for intrinsics/extrinsics)
+            manual_path = manual_dir / f"manual_calibration_{name}.json"
+            if manual_path.exists():
+                try:
+                    with open(manual_path, "r", encoding="utf-8") as f:
+                        mcal = json.load(f)
+                    
+                    intr_m = mcal.get("intrinsics", {})
+                    extr_m = mcal.get("extrinsics", {})
+                    
+                    # Load intrinsics from manual calibration
+                    if all(k in intr_m for k in ("width", "height", "Knew")):
+                        # Store camera model with webcam_ prefix to distinguish from sim
+                        self._camera_models[f"webcam_{name}"] = {
+                            "model": "pinhole",
+                            "rectified": False,  # Will be updated if NPZ has undistort maps
+                            "width": int(intr_m["width"]),
+                            "height": int(intr_m["height"]),
+                            "Knew": intr_m["Knew"],
+                        }
+                        print(f"✓ loaded intrinsics for webcam '{name}' from manual calibration {manual_path}")
+                    
+                    # Load extrinsics from manual calibration
+                    if "T_three" in extr_m and isinstance(extr_m["T_three"], list):
+                        # Store pose with webcam_ prefix
+                        self._camera_poses[f"webcam_{name}_pose"] = extr_m["T_three"]
+                        print(f"✓ loaded extrinsics for webcam '{name}' from manual calibration {manual_path}")
+                    
+                    # DON'T continue - still need to load undistortion maps from NPZ
+                    
+                except Exception as e:
+                    print(f"⚠️  failed to load manual calibration for webcam '{name}': {e}")
+            
+            # Load undistortion maps from NPZ files (manual calibrations don't have these)
+            if name not in self.real_calib_paths:
+                continue
+            
+            paths = self.real_calib_paths[name]
+            if not paths:
+                continue
+            
+            # ---- Load undistortion maps from NPZ (if available) ----
+            intr = paths.get("intr")
+            if intr:
+                intr_path = (self.repo_root / intr).resolve() if not Path(intr).is_absolute() else Path(intr)
+                if intr_path.exists():
+                    try:
+                        idata = np.load(intr_path, allow_pickle=True)
+                        # Only load undistortion maps - intrinsics already loaded from manual calibration
+                        if "map1" in idata.files and "map2" in idata.files:
+                            # Store undistort maps with base name (left, front) for WebcamManager
+                            self._undistort_maps[name] = (idata["map1"], idata["map2"])
+                            # Update rectified flag in camera model
+                            if f"webcam_{name}" in self._camera_models:
+                                self._camera_models[f"webcam_{name}"]["rectified"] = True
+                            print(f"✓ loaded undistort maps for webcam '{name}' from {intr_path}")
+                        else:
+                            print(f"⚠️  no undistort maps found for webcam '{name}' in {intr_path}")
+                    except Exception as e:
+                        print(f"⚠️  failed to load undistort maps for webcam '{name}' ({intr_path}): {e}")
 
     def _load_gripper_tip_calibration(self) -> dict:
         """Load gripper tip calibration offsets from manual_gripper_tips.json.

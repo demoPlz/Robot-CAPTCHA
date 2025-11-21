@@ -172,6 +172,8 @@ class CrowdInterface:
             obs_cache_root=self._obs_cache_root,
             state_lock=self.state_lock,
             pending_states_by_episode=self.pending_states_by_episode,
+            webcam_manager=self.webcam_manager,
+            calibration_manager=self.calibration,
         )
 
         # Debounced episode finalization
