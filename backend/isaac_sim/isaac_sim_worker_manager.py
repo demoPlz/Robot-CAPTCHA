@@ -26,6 +26,7 @@ class PersistentWorkerManager:
         self.animation_users = {}  # user_id -> {'session_id': str, 'active': bool, 'start_time': float}
         self.available_slots = set(range(max_animation_users))  # Available animation environment slots
         self.session_to_user = {}  # session_id -> user_id mapping
+        self.cached_sessions = {}  # session_id -> user_id for replay-only sessions (no slot held)
 
         # Communication files
         self.command_file = f"{output_base_dir}/commands.json"
@@ -285,6 +286,13 @@ class PersistentWorkerManager:
             user_id = self.session_to_user[session_id]
             if user_id in self.animation_users and self.animation_users[user_id]["active"]:
                 return {"status": "error", "message": "Session already has active animation"}
+        
+        # Check if session is in cached replay (doesn't need new slot)
+        if session_id in self.cached_sessions:
+            user_id = self.cached_sessions[session_id]
+            result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action)
+            # Cached replay uses no slot, just return success
+            return result
 
         # Allocate a new slot
         if not self.available_slots:
@@ -295,10 +303,21 @@ class PersistentWorkerManager:
         # Start animation
         result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action)
 
-        if result.get("status") == "success":
+        # Extract inner result if wrapped
+        inner_result = result.get("result", result)
+        
+        # Check if animation started successfully (various status values indicate success)
+        if result.get("status") in ("animation_started", "animation_starting", "success"):
             # Track session -> user mapping
             self.session_to_user[session_id] = user_id
             self.animation_users[user_id] = {"session_id": session_id, "active": True, "start_time": time.time()}
+            
+            # If cached replay, release slot immediately - no simulation needed
+            if inner_result.get("mode") == "cached_replay":
+                self.cached_sessions[session_id] = user_id
+                del self.session_to_user[session_id]
+                del self.animation_users[user_id]
+                self.available_slots.add(user_id)
         else:
             # Return slot if animation failed
             self.available_slots.add(user_id)
@@ -307,6 +326,13 @@ class PersistentWorkerManager:
 
     def stop_user_animation_managed(self, session_id: str) -> Dict[str, Any]:
         """Stop animation for a session."""
+        # Check cached sessions first (replay-only, no slot held)
+        if session_id in self.cached_sessions:
+            user_id = self.cached_sessions[session_id]
+            result = self.stop_user_animation(user_id)
+            del self.cached_sessions[session_id]
+            return result
+        
         if session_id not in self.session_to_user:
             return {"status": "error", "message": "Session not found"}
 
@@ -324,7 +350,9 @@ class PersistentWorkerManager:
 
     def get_user_by_session(self, session_id: str) -> int | None:
         """Get user_id for a session."""
-        return self.session_to_user.get(session_id)
+        if session_id in self.session_to_user:
+            return self.session_to_user[session_id]
+        return self.cached_sessions.get(session_id)
 
     def capture_user_frame(self, user_id: int) -> Dict[str, Any]:
         """Capture frame for specific user."""

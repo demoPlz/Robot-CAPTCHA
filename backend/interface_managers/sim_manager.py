@@ -239,6 +239,7 @@ class SimManager:
                 duration=duration,
                 gripper_action=gripper_action,
             )
+            
             return result
 
         except Exception as e:
@@ -299,6 +300,15 @@ class SimManager:
                 return {"status": "error", "message": "No active animation for session"}
 
             result = self.isaac_manager.capture_user_frame(user_id)
+            
+            # Check if generation just completed - auto-release slot
+            if result.get("generation_complete") and session_id in self.isaac_manager.session_to_user:
+                user_id = self.isaac_manager.session_to_user[session_id]
+                self.isaac_manager.cached_sessions[session_id] = user_id
+                del self.isaac_manager.session_to_user[session_id]
+                if user_id in self.isaac_manager.animation_users:
+                    del self.isaac_manager.animation_users[user_id]
+                self.isaac_manager.available_slots.add(user_id)
 
             if result.get("status") == "success" and "result" in result:
                 # Convert file paths to base64 data URLs for frontend consumption

@@ -29,6 +29,7 @@ class AnimationFrameCache:
         self.generation_start_time = None
         self.replay_start_time = None
         self.current_replay_frame = 0
+        self.slot_released = False  # Track if slot has been released for this cache
 
         # Track which cameras we have
         self.camera_names = set()
@@ -65,7 +66,12 @@ class AnimationFrameCache:
 
     def get_current_replay_frame(self) -> dict | None:
         """Get the current frame for replay based on elapsed time."""
+        # During generation, serve the latest generated frame
         if not self.is_complete:
+            if self.frame_count > 0:
+                # Return the most recently generated frame
+                latest_frame_index = max(self.frames.keys())
+                return self.frames.get(latest_frame_index)
             return None
 
         if self.replay_start_time is None:
@@ -1724,8 +1730,16 @@ class IsaacSimWorker:
                         print(f"⚠️ Error accessing cached frame {cached_filepath}: {e}")
 
                 if captured_files:
+                    # Check if this is the first frame after generation completed
+                    generation_just_completed = cache.is_complete and not cache.slot_released
+                    
                     # Return cached frame data directly (no file copying)
-                    return captured_files
+                    result = captured_files
+                    if generation_just_completed:
+                        # Signal that generation is complete so slot can be released
+                        result["_generation_complete"] = True
+                        cache.slot_released = True  # Mark to prevent duplicate releases
+                    return result
                 else:
                     print(f"⚠️ Failed to serve cached frames for user {user_id}, falling back to live capture")
 

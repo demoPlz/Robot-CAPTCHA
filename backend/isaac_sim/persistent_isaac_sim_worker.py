@@ -216,7 +216,14 @@ class PersistentWorker:
                 if result is None:
                     return {"status": "error", "action": action, "message": f"User {user_id} environment not found"}
 
-                return {"status": "success", "action": action, "result": result}
+                # Check if generation complete flag is present
+                generation_complete = result.pop("_generation_complete", False) if isinstance(result, dict) else False
+                
+                response = {"status": "success", "action": action, "result": result}
+                if generation_complete:
+                    response["generation_complete"] = True
+                
+                return response
 
             elif action == "start_animation_loop":
                 # Start the main animation loop (blocking)
