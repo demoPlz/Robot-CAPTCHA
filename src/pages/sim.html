@@ -4414,7 +4414,7 @@ loader.load(
         // OPTIMIZATION: Immediately update UI for instant visual feedback
         // Don't wait for backend confirmation to make transition feel instant
         animateBtn.classList.remove('active', 'rendering');
-        animateBtn.textContent = 'Animate'; // Ensure text is reset
+        animateBtn.textContent = '▶ Play'; // Reset to Play
         animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
@@ -4465,7 +4465,7 @@ loader.load(
           
           if (success) {
             // Update UI for animation mode
-            animateBtn.textContent = 'Animate'; // Restore original text
+            animateBtn.textContent = '■ Stop'; // Change to Stop
             animateBtn.classList.remove('rendering');
             animateBtn.classList.add('active');
             animState.enabled = false; // Disable frontend animation - only use backend
@@ -4491,12 +4491,12 @@ loader.load(
             console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
           } else {
             // Reset button state on failure
-            animateBtn.textContent = 'Animate';
+            animateBtn.textContent = '▶ Play';
             animateBtn.classList.remove('rendering');
           }
         } catch (error) {
           // Reset button state on error
-          animateBtn.textContent = 'Animate';
+          animateBtn.textContent = '▶ Play';
           animateBtn.classList.remove('rendering');
           console.error('❌ Animation start error:', error);
         }
@@ -5241,8 +5241,19 @@ loader.load(
       function pickAll(evt) {
         setNDCFromPointerEvent(evt, renderer);
         raycaster.setFromCamera(ndc, camera);
+        
+        // Filter rotation pickables based on view
+        let viewSpecificPickables = [];
+        if (viewName === 'front' || viewName === 'webcam_front') {
+          if (rotationWheels.yaw) viewSpecificPickables = rotationWheels.yaw.segments;
+        } else if (viewName === 'top') {
+          if (rotationWheels.roll) viewSpecificPickables = rotationWheels.roll.segments;
+        } else if (viewName === 'left' || viewName === 'webcam_left' || viewName === 'right') {
+          if (rotationWheels.pitch) viewSpecificPickables = rotationWheels.pitch.segments;
+        }
+        
         const targets = [
-          ...rotationPickables,                            // wheel segments
+          ...viewSpecificPickables,                        // only view-appropriate wheel segments
           marker.getObjectByName('marker_pick_proxy'),     // drag proxy
           marker                                          // (fallback)
         ].filter(Boolean);
@@ -5708,7 +5719,7 @@ loader.load(
         updateGripArrowVisibility();
         if (animateBtn) {
           animateBtn.classList.remove('active', 'rendering');
-          animateBtn.textContent = 'Animate';
+          animateBtn.textContent = '▶ Play';
         }
         setPoseGizmosVisible(true);
         setGhostMode(false);
@@ -5816,7 +5827,7 @@ loader.load(
     // Animate toggle button (now sits to the LEFT of Confirm, same style but red)
     const animateBtn = document.createElement('button');
     animateBtn.className = 'animate-button';
-    animateBtn.textContent = 'Animate';
+    animateBtn.textContent = '▶ Play';
     animateBtn.onclick = toggleAnimation;
 
     // Animation status indicator - use external container
@@ -5905,7 +5916,7 @@ loader.load(
       // Turn OFF animation (same as clicking "Animate" again to stop)
       animState.enabled = false;
       animateBtn.classList.remove('active', 'rendering');
-      animateBtn.textContent = 'Animate'; // Reset text in case it was showing "Rendering..."
+      animateBtn.textContent = '▶ Play'; // Reset text in case it was showing "Rendering..."
 
       animating = false;
       updateGripArrowVisibility();
@@ -6258,7 +6269,7 @@ loader.load(
         animateBtn.disabled = tacOn;         // disable Animate when TAC is on
         if (tacOn) {
           animateBtn.classList.remove('active', 'rendering');
-          animateBtn.textContent = 'Animate';
+          animateBtn.textContent = '▶ Play';
         }
       }
       // Reset stays enabled
