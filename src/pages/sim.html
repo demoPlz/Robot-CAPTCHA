@@ -5934,27 +5934,6 @@ loader.load(
       if (reason) console.log('⏹️ Animate cancelled:', reason);
     };
 
-    // Stop animation if the user presses anywhere on the page
-    // (ignore clicks on the Animate button itself so it can toggle ON/OFF normally)
-    window.addEventListener('pointerdown', (e) => {
-      const t = e.target;
-      if (t === animateBtn || (animateBtn && animateBtn.contains && animateBtn.contains(t))) return;
-      
-      // Pause pulsing animation during interaction for performance
-      if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
-        exampleToggle.classList.add('paused');
-      }
-      
-      cancelAnimationIfRunning('pointerdown anywhere');
-    }, { capture: true });
-    
-    // Resume pulsing animation when interaction ends
-    window.addEventListener('pointerup', () => {
-      if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
-        exampleToggle.classList.remove('paused');
-      }
-    }, { capture: true });
-
     // Reset button (lower-left): standalone like Confirm, same style but gray,
     // and identical behavior to the in-view HUD reset button.
     const resetBtn = document.createElement('button');

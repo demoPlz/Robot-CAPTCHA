@@ -1,68 +1,7 @@
 <!-- wxai_min.html  –  minimal translate-only IK demo -->
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8" />
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    --show-demo-videos    --required-responses-per-critical-state=1 \    --control.play_sound=false \    --control.num_image_writer_processes=8 \    --control.push_to_hub=false \    --control.num_episodes=2 \    --control.warmup_time_s=5 \    --control.tags='["tutorial"]' \    --control.data_collection_policy_repo_id=$USER/debug_dcp \    --control.repo_id=$USER/debug \    --task-name=drawer \    --control.single_task="Put the objects on the desk into the middle drawer" \    --control.fps=30 \    --control.type=record \    --robot.max_relative_target=null \    --robot.type=trossen_ai_single_arm \python backend/collect_data.py \# Example - adjust the parameters as needed:# Start the backend (you can customize this command)echo ""echo "   (Accessible publicly via Tailscale Funnel)"echo "🤖 Starting Flask backend on port 9000..."fi    conda activate csui    eval "$(conda shell.bash hook)"    echo "🐍 Activating conda environment 'csui'..."if [ -n "$CONDA_DEFAULT_ENV" ] && [ "$CONDA_DEFAULT_ENV" != "csui" ]; then# Activate conda environment if neededecho ""tailscale funnel status | grep "https://" || echo "   https://$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"echo "📡 Your backend is now publicly accessible at:"echo "✅ Tailscale Funnel enabled!"echo ""# Show the public URLtailscale funnel --bg --https=443 9000echo "🌐 Enabling Tailscale Funnel on port 9000 (HTTPS port 443)..."# Enable Tailscale Funnel (makes backend publicly accessible)fi    exit 1    echo "   sudo tailscale up"    echo "❌ Tailscale is not running. Please start it with:"if ! tailscale status &> /dev/null; then# Check Tailscale statusfi    exit 1    echo "   curl -fsSL https://tailscale.com/install.sh | sh"    echo "❌ Tailscale is not installed. Please install it first:"if ! command -v tailscale &> /dev/null; then# Check if Tailscale is runningecho "🚀 Starting crowdsourcing-ui backend with Tailscale Funnel..."set -e  # Exit on error<title>WidowX AI - position IK only</title>
+<title>WidowX AI - position IK only</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#f5f5f5}
   /* Multi-view container wrapper – white card */
@@ -1479,18 +1418,18 @@ async function getCurrentCloudflaredUrl() {
       return 'http://127.0.0.1:9000';
     }
     
-    // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
-    console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-    return 'https://ppm-have-creates-retirement.trycloudflare.com';
+    // For production (Netlify), use Tailscale backend URL
+    console.log('[PROD] Using Tailscale backend');
+    return 'https://ztclab-1.tail503d36.ts.net';
   } catch (error) {
     console.error('Error getting backend URL:', error);
-    // Fallback to Cloudflare Tunnel URL
-    return 'https://ppm-have-creates-retirement.trycloudflare.com';
+    // Fallback to Tailscale URL
+    return 'https://ztclab-1.tail503d36.ts.net';
   }
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
-let API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
+let API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net'; // Default to Tailscale backend
 
 // Function to check if we're in async collection mode
 async function isAsyncCollectionMode() {
@@ -3176,9 +3115,9 @@ loader.load(
         API_BASE_URL = 'http://127.0.0.1:9000';
       }
     } else {
-      // Running on deployed Netlify - use Cloudflare Tunnel (publicly accessible)
-      API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com';
-      console.log('[DEBUG] Using Tailscale Funnel for production:', API_BASE_URL);
+      // Running on deployed Netlify - use Tailscale backend directly
+      API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
+      console.log('[DEBUG] Using Tailscale backend for production:', API_BASE_URL);
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
