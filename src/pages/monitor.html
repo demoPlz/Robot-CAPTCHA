@@ -409,16 +409,16 @@
                     console.log('[DEV] Using localhost backend');
                     return 'http://127.0.0.1:9000';
                 }
-                // For production (Netlify), use Tailscale backend URL
-                console.log('[PROD] Using Tailscale backend');
-                return 'https://ztclab-1.tail503d36.ts.net';
+                // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
+                console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
+                return 'https://ppm-have-creates-retirement.trycloudflare.com';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
-                // Fallback to Tailscale URL
-                return 'https://ztclab-1.tail503d36.ts.net';
+                // Fallback to Cloudflare Tunnel URL
+                return 'https://ppm-have-creates-retirement.trycloudflare.com';
             }
         }
-        let API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
+        let API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
@@ -428,8 +428,8 @@
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
-                console.log('[DEBUG] Monitor using Tailscale backend:', API_BASE_URL);
+                API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com';
+                console.log('[DEBUG] Monitor using Tailscale Funnel:', API_BASE_URL);
             }
         }
 

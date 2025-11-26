@@ -1458,18 +1458,18 @@ async function getCurrentCloudflaredUrl() {
       return 'http://127.0.0.1:9000';
     }
     
-    // For production (Netlify), use Tailscale backend URL
-    console.log('[PROD] Using Tailscale backend');
-    return 'https://ztclab-1.tail503d36.ts.net';
+    // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
+    console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
+    return 'https://ppm-have-creates-retirement.trycloudflare.com';
   } catch (error) {
     console.error('Error getting backend URL:', error);
-    // Fallback to Tailscale URL
-    return 'https://ztclab-1.tail503d36.ts.net';
+    // Fallback to Cloudflare Tunnel URL
+    return 'https://ppm-have-creates-retirement.trycloudflare.com';
   }
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
-let API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net'; // Default to Tailscale backend
+let API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
 
 async function refreshViews() {
   console.log('🔄 Refreshing views with latest static images...');
@@ -3123,9 +3123,9 @@ loader.load(
         API_BASE_URL = 'http://127.0.0.1:9000';
       }
     } else {
-      // Running on deployed Netlify - use Tailscale backend directly
-      API_BASE_URL = 'https://ztclab-1.tail503d36.ts.net';
-      console.log('[DEBUG] Using Tailscale backend for production:', API_BASE_URL);
+      // Running on deployed Netlify - use Cloudflare Tunnel (publicly accessible)
+      API_BASE_URL = 'https://ppm-have-creates-retirement.trycloudflare.com';
+      console.log('[DEBUG] Using Tailscale Funnel for production:', API_BASE_URL);
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
