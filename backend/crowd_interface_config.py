@@ -43,6 +43,7 @@ class CrowdInterfaceConfig:
 
         # ========== Simulation ==========
         self.use_sim: bool = True  # Use Isaac Sim for state simulaion
+        self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
@@ -112,6 +113,11 @@ class CrowdInterfaceConfig:
 
         # Simulation
         parser.add_argument("--use-sim", action="store_true", help="Enable Isaac Sim integration")
+        parser.add_argument(
+            "--max-animation-users",
+            type=int,
+            help="Maximum number of simultaneous users viewing animations (default: 2)",
+        )
 
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
@@ -141,6 +147,8 @@ class CrowdInterfaceConfig:
             config.clear_ui_demo_videos_dir = True
         if args.use_sim:
             config.use_sim = True
+        if args.max_animation_users is not None:
+            config.max_animation_users = args.max_animation_users
 
         return config
 
@@ -164,6 +172,7 @@ class CrowdInterfaceConfig:
             "show_demo_videos": self.show_demo_videos,
             # Simulation
             "use_sim": self.use_sim,
+            "max_animation_users": self.max_animation_users,
             # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths,

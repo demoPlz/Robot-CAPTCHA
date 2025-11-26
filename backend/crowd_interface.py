@@ -66,6 +66,7 @@ class CrowdInterface:
         show_videos_dir: str | None = None,
         # --- sim ---
         use_sim: bool = True,
+        max_animation_users: int = 2,
         # --- objects ---
         objects: dict[str, str] | None = None,
         object_mesh_paths: dict[str, str] | None = None,
@@ -76,6 +77,7 @@ class CrowdInterface:
 
         # --- Sim ---
         self.use_sim = use_sim
+        self.max_animation_users = max_animation_users
 
         # --- Objects ---
         self.objects = objects
@@ -174,6 +176,7 @@ class CrowdInterface:
             pending_states_by_episode=self.pending_states_by_episode,
             webcam_manager=self.webcam_manager,
             calibration_manager=self.calibration,
+            max_animation_users=self.max_animation_users,
         )
 
         # Debounced episode finalization

@@ -29,6 +29,7 @@ class SimManager:
         pending_states_by_episode: dict,
         webcam_manager=None,
         calibration_manager=None,
+        max_animation_users: int = 2,
     ):
         """Initialize SimManager.
 
@@ -40,6 +41,7 @@ class SimManager:
             pending_states_by_episode: Reference to pending states dict for atomic updates
             webcam_manager: WebcamManager instance for capturing real webcam views
             calibration_manager: CalibrationManager instance for camera calibration data
+            max_animation_users: Maximum number of simultaneous users viewing animations
 
         """
         self.use_sim = use_sim
@@ -49,6 +51,7 @@ class SimManager:
         self.pending_states_by_episode = pending_states_by_episode
         self.webcam_manager = webcam_manager
         self.calibration_manager = calibration_manager
+        self.max_animation_users = max_animation_users
 
         # Sim capture queue and worker thread
         self.sim_capture_queue = queue.Queue()
@@ -84,7 +87,7 @@ class SimManager:
             self.isaac_manager = PersistentWorkerManager(
                 isaac_sim_path=isaac_sim_path,
                 output_base_dir=str(self.obs_cache_root / "persistent_isaac"),
-                max_animation_users=1,  # Pre-clone 2 animation environments for development
+                max_animation_users=self.max_animation_users,
             )
 
             initial_config = {

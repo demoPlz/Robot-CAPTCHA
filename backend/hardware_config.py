@@ -7,10 +7,10 @@ configuration.
 
 # Camera device indices (change to match your system's USB camera enumeration)
 CAM_IDS = {
-    "front": 14,
-    "left": 12,
-    "right": 2,
-    "perspective": 1,
+    "front": 2,
+    "left": 0,
+    "right": 8,
+    "perspective": 10,
 }
 
 # Real hardware calibration file paths

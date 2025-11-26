@@ -3284,6 +3284,20 @@ loader.load(
     // Track which views should show the robot (for webcam views, hide until first interaction)
     const viewRobotVisibility = new Map(); // viewName -> boolean
 
+    function revealRobotInAllWebcamViews() {
+      // Reveal robot in all webcam views when any interaction occurs
+      webcamViews.forEach((view, viewName) => {
+        viewRobotVisibility.set(viewName, true);
+      });
+    }
+
+    function hideRobotInAllWebcamViews() {
+      // Hide robot in all webcam views (used when resetting)
+      webcamViews.forEach((view, viewName) => {
+        viewRobotVisibility.set(viewName, false);
+      });
+    }
+
     function revealMinimalRobotFromPose() {
       // Idempotent - call when the user actually adjusts the pose (drag/slider)
       if (!userHasAdjustedPose) userHasAdjustedPose = true;
@@ -3294,6 +3308,8 @@ loader.load(
         showAllRobotMeshes();
         setGhostMode(true);    // ← keep body ghosted like during animation
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+        // Reveal robot in all webcam views
+        revealRobotInAllWebcamViews();
       }
     }
 
@@ -5325,10 +5341,6 @@ loader.load(
           updateGoal(); // your function that copies params → marker/goal
           // Update sliders display and UI state
           revealMinimalRobotFromPose();
-          // Reveal robot in webcam view on first interaction
-          if (viewName.startsWith('webcam_')) {
-            viewRobotVisibility.set(viewName, true);
-          }
           updateGripHUDInteractivity();
           dragState.axes.forEach(axis => {
             if (sliderCtrls[axis]) sliderCtrls[axis].updateDisplay();
@@ -5344,10 +5356,6 @@ loader.load(
           updateGoal();
           // Update slider display and UI state
           revealMinimalRobotFromPose();
-          // Reveal robot in webcam view on first interaction
-          if (viewName.startsWith('webcam_')) {
-            viewRobotVisibility.set(viewName, true);
-          }
           updateGripHUDInteractivity();
           if (sliderCtrls[dragState.axis]) sliderCtrls[dragState.axis].updateDisplay();
         }
@@ -6001,6 +6009,8 @@ loader.load(
       // Treat this like "no pose changes yet" but keep robot visible
       userHasAdjustedPose = false;
       revealMinimalRobotFromPose();
+      // Hide robot in webcam views after reset
+      hideRobotInAllWebcamViews();
 
       // Refresh any UI/logic that depends on "at defaults"
       updateTaskCompletedAvailability();
