@@ -6412,8 +6412,34 @@ loader.load(
       positionPoseResetHUDs();
       positionHomeHUDs();
 
+      // ----- Helper to control wheel presence based on view -----
+      function setWheelVisibilityForView(viewName) {
+        // Remove all wheels from scene first
+        if (rotationWheels.roll && rotationWheels.roll.group.parent) {
+          scene.remove(rotationWheels.roll.group);
+        }
+        if (rotationWheels.pitch && rotationWheels.pitch.group.parent) {
+          scene.remove(rotationWheels.pitch.group);
+        }
+        if (rotationWheels.yaw && rotationWheels.yaw.group.parent) {
+          scene.remove(rotationWheels.yaw.group);
+        }
+
+        // Add back only the relevant wheel for each view
+        if (viewName === 'front' || viewName === 'webcam_front') {
+          if (rotationWheels.yaw) scene.add(rotationWheels.yaw.group); // Blue wheel
+        } else if (viewName === 'top') {
+          if (rotationWheels.roll) scene.add(rotationWheels.roll.group); // Red wheel
+        } else if (viewName === 'left' || viewName === 'webcam_left' || viewName === 'right') {
+          if (rotationWheels.pitch) scene.add(rotationWheels.pitch.group); // Green wheel
+        }
+      }
+
       // ----- render all views -----
       views.forEach(view => {
+        // Set which rotation wheels are visible for this view
+        setWheelVisibilityForView(view.name);
+
         // For top view, make entire robot semi-transparent (including grippers)
         if (view.name === 'top') {
           robot.traverse(o => {
@@ -6436,6 +6462,9 @@ loader.load(
       // ----- render webcam views (MR mode) -----
       if (MR_MODE_ENABLED) {
         webcamViews.forEach(view => {
+          // Set which rotation wheels are visible for this view
+          setWheelVisibilityForView(view.name);
+
           // Control robot visibility per webcam view
           const shouldShowRobot = viewRobotVisibility.get(view.name);
           const robotWasVisible = robot.visible;
