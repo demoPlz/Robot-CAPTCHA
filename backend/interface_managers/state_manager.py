@@ -137,6 +137,10 @@ class StateManager:
         # Active episode tracking
         self._active_episode_id = None
 
+        # Critical state approval tracking
+        self.pending_approval_state = None  # {episode_id, state_id, approved: None/True/False}
+        self.approval_lock = Lock()
+
         # Start auto-labeling worker
         self._start_auto_label_worker()
 
@@ -236,7 +240,48 @@ class StateManager:
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
 
+        # ---- Phase 1.5: Wait for administrator approval ----
+        # Set pending approval and wait for response
+        with self.approval_lock:
+            self.pending_approval_state = {
+                "episode_id": latest_episode_id,
+                "state_id": latest_state_id,
+                "approved": None  # None=pending, True=approved, False=rejected
+            }
+        
+        print(f"⏸️  Waiting for administrator approval for state {latest_state_id}...")
+        
+        # Poll for approval decision (blocking)
+        import time
+        while True:
+            time.sleep(0.1)
+            with self.approval_lock:
+                if self.pending_approval_state is None:
+                    # State was demoted, exit
+                    print(f"⚠️  State {latest_state_id} was demoted, canceling approval")
+                    return
+                if self.pending_approval_state["approved"] is not None:
+                    approved = self.pending_approval_state["approved"]
+                    self.pending_approval_state = None
+                    break
+        
+        if not approved:
+            # Administrator rejected - perform undo
+            print(f"❌ Administrator rejected state {latest_state_id}, performing undo")
+            self.undo_to_previous_critical_state()
+            return
+        
+        print(f"✅ Administrator approved state {latest_state_id}, proceeding...")
+
         # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
+        # Re-fetch info from state_lock after approval wait
+        with self.state_lock:
+            ep = self.pending_states_by_episode.get(latest_episode_id)
+            if not ep or latest_state_id not in ep:
+                print(f"⚠️  State {latest_state_id} was removed during approval")
+                return
+            info = ep[latest_state_id]
+        
         poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
             latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
         )
@@ -476,6 +521,71 @@ class StateManager:
         goal = self.latest_goal
         self.latest_goal = None
         return goal
+    
+    def get_pending_approval_state(self) -> dict | None:
+        """Get the state awaiting approval from administrator."""
+        with self.approval_lock:
+            if self.pending_approval_state is None or self.pending_approval_state["approved"] is not None:
+                return None
+            
+            episode_id = self.pending_approval_state["episode_id"]
+            state_id = self.pending_approval_state["state_id"]
+            
+            # Get state info
+            with self.state_lock:
+                if episode_id not in self.pending_states_by_episode:
+                    return None
+                if state_id not in self.pending_states_by_episode[episode_id]:
+                    return None
+                
+                current_state = self.pending_states_by_episode[episode_id][state_id]
+                
+                # Find previous critical state for comparison
+                previous_critical_obs_path = None
+                all_states = {
+                    **self.pending_states_by_episode.get(episode_id, {}),
+                    **self.completed_states_by_episode.get(episode_id, {})
+                }
+                
+                previous_critical_states = [
+                    (sid, sinfo) for sid, sinfo in sorted(all_states.items())
+                    if sid < state_id and sinfo.get("critical", False)
+                ]
+                
+                if previous_critical_states:
+                    _, prev_state = previous_critical_states[-1]
+                    previous_critical_obs_path = prev_state.get("obs_path")
+                
+                return {
+                    "episode_id": episode_id,
+                    "state_id": state_id,
+                    "obs_path": current_state.get("obs_path"),
+                    "previous_critical_obs_path": previous_critical_obs_path
+                }
+    
+    def approve_critical_state(self, episode_id: int, state_id: int) -> bool:
+        """Approve a pending critical state."""
+        with self.approval_lock:
+            if self.pending_approval_state is None:
+                return False
+            if (self.pending_approval_state["episode_id"] != episode_id or 
+                self.pending_approval_state["state_id"] != state_id):
+                return False
+            
+            self.pending_approval_state["approved"] = True
+            return True
+    
+    def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
+        """Reject a pending critical state."""
+        with self.approval_lock:
+            if self.pending_approval_state is None:
+                return False
+            if (self.pending_approval_state["episode_id"] != episode_id or 
+                self.pending_approval_state["state_id"] != state_id):
+                return False
+            
+            self.pending_approval_state["approved"] = False
+            return True
 
     def undo_to_previous_critical_state(self) -> dict | None:
         """Undo to the previous critical state by discarding all states since then.
@@ -627,6 +737,14 @@ class StateManager:
     def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
         """Demote critical states before state_id in episode with episode_id to non-critical."""
         for state_id in self.pending_states_by_episode[episode_id].keys():
+            # If demoting a state that's pending approval, clear the approval request
+            with self.approval_lock:
+                if (self.pending_approval_state and 
+                    self.pending_approval_state["episode_id"] == episode_id and
+                    self.pending_approval_state["state_id"] == state_id and
+                    state_id < current_state_id):
+                    print(f"🚫 Clearing approval request for demoted state {state_id}")
+                    self.pending_approval_state = None
             if (
                 state_id < current_state_id
                 and self.pending_states_by_episode[episode_id][state_id]["critical"]

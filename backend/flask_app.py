@@ -55,7 +55,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             payload["prompt"] = text.strip()
         else:
             payload["prompt"] = (
-                f"Task: {crowd_interface.task_text or 'crowdsourced_task'}. What should the arm go next?"
+                f"{crowd_interface.task_text or 'crowdsourced_task'}"
             )
 
         # Tell the frontend what to do with demo videos
@@ -419,29 +419,85 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
-    @app.route("/api/control/undo", methods=["POST"])
-    def undo_to_previous_critical():
-        """Undo to the previous critical state"""
+    @app.route("/api/control/pending-approval", methods=["GET"])
+    def get_pending_approval():
+        """Get the critical state awaiting approval"""
         try:
-            result = crowd_interface.undo_to_previous_critical_state()
+            pending = crowd_interface.state_manager.get_pending_approval_state()
+            if pending is None:
+                return jsonify({"status": "none"})
             
-            if result is None:
-                return jsonify({
-                    "status": "error",
-                    "message": "Cannot undo: need at least 2 critical states"
-                }), 400
+            # Load current state image
+            current_image_url = None
+            if pending["obs_path"]:
+                obs = crowd_interface.dataset_manager.load_obs_from_disk(pending["obs_path"])
+                img = crowd_interface.load_main_cam_from_obs(obs)
+                if img is not None:
+                    current_image_url = crowd_interface.encode_jpeg_base64(img)
             
-            # latest_goal is already set by undo_to_previous_critical_state()
+            # Load previous critical state image
+            previous_image_url = None
+            if pending.get("previous_critical_obs_path"):
+                obs = crowd_interface.dataset_manager.load_obs_from_disk(pending["previous_critical_obs_path"])
+                img = crowd_interface.load_main_cam_from_obs(obs)
+                if img is not None:
+                    previous_image_url = crowd_interface.encode_jpeg_base64(img)
             
             return jsonify({
-                "status": "success",
-                "message": f"Reverted to state {result['reverted_to_state_id']}",
-                "reverted_to_state_id": result["reverted_to_state_id"],
-                "episode_id": result["episode_id"]
+                "status": "pending",
+                "episode_id": pending["episode_id"],
+                "state_id": pending["state_id"],
+                "current_image_url": current_image_url,
+                "previous_image_url": previous_image_url
             })
-            
         except Exception as e:
-            print(f"❌ Error in undo endpoint: {e}")
+            print(f"❌ Error in pending-approval endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/approve-critical", methods=["POST"])
+    def approve_critical():
+        """Approve a pending critical state"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+            
+            success = crowd_interface.state_manager.approve_critical_state(episode_id, state_id)
+            
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending approval"}), 400
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in approve-critical endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/reject-critical", methods=["POST"])
+    def reject_critical():
+        """Reject a pending critical state (triggers undo)"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+            
+            success = crowd_interface.state_manager.reject_critical_state(episode_id, state_id)
+            
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending approval"}), 400
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in reject-critical endpoint: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500

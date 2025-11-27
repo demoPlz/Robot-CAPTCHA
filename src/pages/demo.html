@@ -1524,16 +1524,16 @@ async function getCurrentCloudflaredUrl() {
     
     // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
     console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-    return 'https://extension-highs-estimates-hook.trycloudflare.com';
+    return 'https://honolulu-behavior-rock-become.trycloudflare.com';
   } catch (error) {
     console.error('Error getting backend URL:', error);
     // Fallback to Cloudflare Tunnel URL
-    return 'https://extension-highs-estimates-hook.trycloudflare.com';
+    return 'https://honolulu-behavior-rock-become.trycloudflare.com';
   }
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
-let API_BASE_URL = 'https://extension-highs-estimates-hook.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
+let API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
 
 async function refreshViews() {
   console.log('🔄 Refreshing views with latest static images...');
@@ -3229,7 +3229,7 @@ loader.load(
       }
     } else {
       // Running on deployed Netlify - use Cloudflare Tunnel (publicly accessible)
-      API_BASE_URL = 'https://extension-highs-estimates-hook.trycloudflare.com';
+      API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
       console.log('[DEBUG] Using Tailscale Funnel for production:', API_BASE_URL);
     }
 

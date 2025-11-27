@@ -69,8 +69,6 @@
         .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
         .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
         .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
-        .undo-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
-        .undo-btn:hover { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
         .control-icon { font-size:20px; }
 
         /* Episode charts */
@@ -270,6 +268,118 @@
             color: #64748b;
             margin-left: 12px;
         }
+
+        /* === Approval Modal === */
+        .approval-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+        .approval-modal-overlay.show { display: flex; }
+        .approval-modal-card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 900px;
+            width: 90%;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .approval-modal-header {
+            padding: 20px 24px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .approval-modal-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .approval-modal-body {
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+        }
+        .approval-comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .approval-image-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .approval-image-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #475569;
+            text-align: center;
+        }
+        .approval-image-wrapper {
+            background: #0b1220;
+            border-radius: 12px;
+            padding: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 300px;
+        }
+        .approval-image {
+            max-width: 100%;
+            max-height: 400px;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        .approval-modal-footer {
+            padding: 16px 24px;
+            border-top: 2px solid #e2e8f0;
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            background: #f8fafc;
+        }
+        .approval-btn {
+            padding: 14px 32px;
+            border: none;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 140px;
+        }
+        .approval-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+        }
+        .approval-btn:active {
+            transform: translateY(0);
+        }
+        .approval-btn-proceed {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+        }
+        .approval-btn-proceed:hover {
+            background: linear-gradient(135deg, #059669, #047857);
+        }
+        .approval-btn-reject {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+        }
+        .approval-btn-reject:hover {
+            background: linear-gradient(135deg, #dc2626, #b91c1c);
+        }
     </style>
 </head>
 <body>
@@ -303,7 +413,6 @@
                 </div>
                 <div class="control-section">
                     <div class="control-buttons">
-                        <button class="control-button undo-btn" id="undo-btn"><span class="control-icon">↩️</span>Undo to Previous</button>
                         <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
                         <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
@@ -396,6 +505,39 @@
         </div>
     </div>
 
+    <!-- Approval Modal -->
+    <div class="approval-modal-overlay" id="approval-modal">
+        <div class="approval-modal-card">
+            <div class="approval-modal-header">
+                <h2 class="approval-modal-title">Approve New Critical State?</h2>
+            </div>
+            <div class="approval-modal-body">
+                <div class="approval-comparison">
+                    <div class="approval-image-container">
+                        <div class="approval-image-label">Previous Critical State</div>
+                        <div class="approval-image-wrapper">
+                            <img id="approval-prev-image" class="approval-image" alt="Previous state">
+                        </div>
+                    </div>
+                    <div class="approval-image-container">
+                        <div class="approval-image-label">New Critical State</div>
+                        <div class="approval-image-wrapper">
+                            <img id="approval-new-image" class="approval-image" alt="New state">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="approval-modal-footer">
+                <button class="approval-btn approval-btn-reject" id="approval-reject-btn">
+                    <span class="control-icon">❌</span> Reject & Undo
+                </button>
+                <button class="approval-btn approval-btn-proceed" id="approval-proceed-btn">
+                    <span class="control-icon">✅</span> Proceed
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast" id="app-toast"></div>
 
@@ -410,14 +552,14 @@
                 }
                 // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
                 console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-                return 'https://extension-highs-estimates-hook.trycloudflare.com';
+                return 'https://honolulu-behavior-rock-become.trycloudflare.com';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
                 // Fallback to Cloudflare Tunnel URL
-                return 'https://extension-highs-estimates-hook.trycloudflare.com';
+                return 'https://honolulu-behavior-rock-become.trycloudflare.com';
             }
         }
-        let API_BASE_URL = 'https://extension-highs-estimates-hook.trycloudflare.com';
+        let API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
@@ -427,7 +569,7 @@
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                API_BASE_URL = 'https://extension-highs-estimates-hook.trycloudflare.com';
+                API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
                 console.log('[DEBUG] Monitor using Tailscale Funnel:', API_BASE_URL);
             }
         }
@@ -453,7 +595,13 @@
         const fastForwardBtn = document.getElementById('fast-forward-btn');
         const rerecordBtn    = document.getElementById('rerecord-btn');
         const stopBtn        = document.getElementById('stop-btn');
-        const undoBtn        = document.getElementById('undo-btn');
+
+        // Approval modal elements
+        const approvalModal = document.getElementById('approval-modal');
+        const approvalPrevImage = document.getElementById('approval-prev-image');
+        const approvalNewImage = document.getElementById('approval-new-image');
+        const approvalProceedBtn = document.getElementById('approval-proceed-btn');
+        const approvalRejectBtn = document.getElementById('approval-reject-btn');
 
         const cameraViews = {
             front: document.getElementById('camera-front'),
@@ -1001,6 +1149,130 @@
             }
         }
 
+        // --- Approval modal ---
+        let currentApprovalState = null;
+
+        async function fetchPendingApproval() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/control/pending-approval`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                
+                if (data.status === 'pending') {
+                    // New approval needed or state changed
+                    if (!currentApprovalState || 
+                        currentApprovalState.episode_id !== data.episode_id ||
+                        currentApprovalState.state_id !== data.state_id) {
+                        
+                        currentApprovalState = data;
+                        await showApprovalModal(data);
+                    }
+                } else {
+                    // No pending approval
+                    if (currentApprovalState) {
+                        currentApprovalState = null;
+                        hideApprovalModal();
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching pending approval:', e);
+            }
+        }
+
+        async function showApprovalModal(data) {
+            // Load images from data URLs
+            if (data.current_image_url) {
+                approvalNewImage.src = data.current_image_url;
+            } else {
+                approvalNewImage.src = '';
+                approvalNewImage.alt = 'Image not available';
+            }
+            
+            if (data.previous_image_url) {
+                approvalPrevImage.src = data.previous_image_url;
+                approvalPrevImage.style.opacity = '1';
+            } else {
+                approvalPrevImage.src = '';
+                approvalPrevImage.style.opacity = '0.3';
+                approvalPrevImage.alt = 'No previous critical state';
+            }
+            
+            approvalModal.classList.add('show');
+        }
+
+        function hideApprovalModal() {
+            approvalModal.classList.remove('show');
+        }
+
+        async function handleApprovalProceed() {
+            if (!currentApprovalState) return;
+            
+            try {
+                approvalProceedBtn.disabled = true;
+                approvalRejectBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentApprovalState.episode_id,
+                        state_id: currentApprovalState.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('✅ Critical state approved');
+                    currentApprovalState = null;
+                    hideApprovalModal();
+                } else {
+                    showToast('❌ Failed to approve state', 2000);
+                }
+            } catch (e) {
+                console.error('Error approving state:', e);
+                showToast('❌ Error approving state', 2000);
+            } finally {
+                approvalProceedBtn.disabled = false;
+                approvalRejectBtn.disabled = false;
+            }
+        }
+
+        async function handleApprovalReject() {
+            if (!currentApprovalState) return;
+            
+            try {
+                approvalProceedBtn.disabled = true;
+                approvalRejectBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/reject-critical`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentApprovalState.episode_id,
+                        state_id: currentApprovalState.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('❌ Critical state rejected, undoing...');
+                    currentApprovalState = null;
+                    hideApprovalModal();
+                } else {
+                    showToast('❌ Failed to reject state', 2000);
+                }
+            } catch (e) {
+                console.error('Error rejecting state:', e);
+                showToast('❌ Error rejecting state', 2000);
+            } finally {
+                approvalProceedBtn.disabled = false;
+                approvalRejectBtn.disabled = false;
+            }
+        }
+
+        // Bind approval modal events
+        approvalProceedBtn.addEventListener('click', handleApprovalProceed);
+        approvalRejectBtn.addEventListener('click', handleApprovalReject);
+
         // --- Description bank helpers ---
         function extractThusText(s) {
             if (!s) return '';
@@ -1374,28 +1646,9 @@
             } catch (e) { console.error(e); }
             finally { b.classList.remove('loading'); b.disabled = false; }
         }
-        async function handleUndo() {
-            const b = undoBtn; b.classList.add('loading'); b.disabled = true;
-            try {
-                const r = await fetch(`${API_BASE_URL}/api/control/undo`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
-                const j = await r.json();
-                if (j.status === 'success') {
-                    showToast(`Undone to state ${j.reverted_to_state_id}`, 2000);
-                    // Refresh state info to show updated bars
-                    setTimeout(() => fetchPendingStatesInfo(), 300);
-                } else {
-                    showToast(j.message || 'Undo failed', 2000);
-                }
-            } catch (e) { 
-                console.error(e);
-                showToast('Undo error: ' + e.message, 2000);
-            }
-            finally { b.classList.remove('loading'); b.disabled = false; }
-        }
         fastForwardBtn.addEventListener('click', handleFastForward);
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
-        undoBtn.addEventListener('click', handleUndo);
 
         // === NEW: Critical-only toggle logic ===
         let criticalOnlyMode = true; // Default to Critical only
@@ -1457,7 +1710,10 @@
                     if (!pendingInfoInFlight) {
                         pendingInfoInFlight = true; fetchPendingStatesInfo().finally(()=>pendingInfoInFlight=false);
                     }
-                }, INFO_POLL_MS)
+                }, INFO_POLL_MS),
+                approval: setInterval(() => {
+                    fetchPendingApproval();
+                }, 500)  // Poll approval more frequently (500ms)
             };
         }
         function stopAutoRefresh() {
