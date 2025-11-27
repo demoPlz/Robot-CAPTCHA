@@ -539,6 +539,25 @@
     overflow:hidden;
   }
   .view-container.selected{border:2px solid #60a5fa;box-shadow:0 0 15px rgba(96,165,250,.6)}
+  
+  /* View labels in top-left corner */
+  .view-label {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 10;
+    font-family: system-ui, -apple-system, sans-serif;
+    letter-spacing: 0.02em;
+    backdrop-filter: blur(4px);
+  }
+  
   canvas{display:block;object-fit:cover;width:100%;height:100%}
   /* (no width/height forcing on canvas; renderer controls it) */
  /* --- nice full-screen status overlay + spinner --- */
@@ -2815,7 +2834,7 @@ hintsPanel.className = 'hints-panel';
 hintsPanel.innerHTML = `
   <h3>Hints</h3>
   <ol>
-    <li>Use the UI to suggest the next goal pose for the robot to travel to! Use the "Play" button to check if your suggestion has unwanted collisions before submitting.</li>
+    <li>Use the UI to suggest the next goal pose for the robot to travel to! Use the "Play" button to check if your suggestion entails unwanted collisions before submitting.</li>
     <li>If the state in the simulated view does not match that in the real-life views, the real-life views represent the true state.</li>
   </ol>
 `;
@@ -3037,7 +3056,22 @@ function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
     container.style.background = `center / cover no-repeat url("${imageSrc}")`;
   }
   
-
+  // Add view label in top-left corner
+  const label = document.createElement('div');
+  label.className = 'view-label';
+  // Map internal names to display names (right and left are switched)
+  const labelMap = {
+    'front': 'Simulated: Front-view',
+    'right': 'Simulated: Left-view',
+    'top': 'Simulated: Top-view',
+    'left': 'Simulated: Right-view',
+    'webcam_right': 'Real-Life: Left-view',
+    'webcam_left': 'Real-Life: Right-view',
+    'webcam_front': 'Real-Life: Front-view',
+    'webcam_top': 'Real-Life: Top-view'
+  };
+  label.textContent = labelMap[viewName] || viewName;
+  container.appendChild(label);
   
   container.appendChild(renderer.domElement);
   viewsGrid.appendChild(container);
@@ -5581,6 +5615,23 @@ loader.load(
         if (imageSrc) {
           container.style.background = `center / cover no-repeat url("${imageSrc}")`;
         }
+        
+        // Add view label in top-left corner
+        const label = document.createElement('div');
+        label.className = 'view-label';
+        // Map internal names to display names (right and left are switched)
+        const labelMap = {
+          'front': 'Simulated: Front-view',
+          'right': 'Simulated: Left-view',
+          'top': 'Simulated: Top-view',
+          'left': 'Simulated: Right-view',
+          'webcam_right': 'Real-Life: Left-view',
+          'webcam_left': 'Real-Life: Right-view',
+          'webcam_front': 'Real-Life: Front-view',
+          'webcam_top': 'Real-Life: Top-view'
+        };
+        label.textContent = labelMap[viewName] || viewName;
+        container.appendChild(label);
         
         container.appendChild(renderer.domElement);
         webcamColumn.appendChild(container);
