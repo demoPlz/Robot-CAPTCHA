@@ -17,10 +17,20 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     app = Flask(__name__)
     CORS(
         app,
-        origins=["*"],
+        resources={r"/api/*": {"origins": "*"}},
         allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID"],
         methods=["GET", "POST", "OPTIONS"],
+        supports_credentials=False,
+        expose_headers=["Content-Type"],
     )
+
+    @app.after_request
+    def add_cors_headers(response):
+        """Ensure CORS headers are always present for Cloudflare Tunnel compatibility."""
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning, X-Session-ID"
+        return response
 
     @app.route("/api/get-state")
     def get_state():
@@ -104,6 +114,36 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": f"Missing required field: {e}"}), 400
         except Exception as e:
             print(f"❌ Error in submit_goal endpoint: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/undo", methods=["POST"])
+    def undo():
+        """Undo to the previous critical state.
+        
+        Returns the robot position to revert to, or an error if undo is not possible.
+        The robot control loop should consume this response and execute the movement.
+        """
+        try:
+            result = crowd_interface.undo_to_previous_critical_state()
+            
+            if result is None:
+                return jsonify({
+                    "status": "error",
+                    "message": "Cannot undo: need at least 2 critical states"
+                }), 400
+            
+            return jsonify({
+                "status": "ok",
+                "joint_positions": result["joint_positions"],
+                "gripper": result["gripper"],
+                "episode_id": result["episode_id"],
+                "reverted_to_state_id": result["reverted_to_state_id"],
+                "message": f"Reverted to state {result['reverted_to_state_id']}"
+            })
+            
+        except Exception as e:
+            print(f"❌ Error in undo endpoint: {e}")
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -195,7 +235,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Load maincam image (if possible)
             maincam_url = None
             if obs_path:
-                obs = crowd_interface.load_obs_from_disk(obs_path)
+                obs = crowd_interface.dataset_manager.load_obs_from_disk(obs_path)
                 img = crowd_interface.load_main_cam_from_obs(obs)
                 if img is not None:
                     maincam_url = crowd_interface.encode_jpeg_base64(img)
@@ -289,7 +329,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """
         try:
             with crowd_interface.state_lock:
-                current_episode = crowd_interface.current_serving_episode
+                current_episode = crowd_interface.state_manager.current_serving_episode
 
                 total_pending = 0
                 newest_state_id = None
@@ -377,6 +417,33 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             else:
                 return jsonify({"status": "error", "message": "Events not initialized"}), 400
         except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/undo", methods=["POST"])
+    def undo_to_previous_critical():
+        """Undo to the previous critical state"""
+        try:
+            result = crowd_interface.undo_to_previous_critical_state()
+            
+            if result is None:
+                return jsonify({
+                    "status": "error",
+                    "message": "Cannot undo: need at least 2 critical states"
+                }), 400
+            
+            # latest_goal is already set by undo_to_previous_critical_state()
+            
+            return jsonify({
+                "status": "success",
+                "message": f"Reverted to state {result['reverted_to_state_id']}",
+                "reverted_to_state_id": result["reverted_to_state_id"],
+                "episode_id": result["episode_id"]
+            })
+            
+        except Exception as e:
+            print(f"❌ Error in undo endpoint: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/stop", methods=["POST"])

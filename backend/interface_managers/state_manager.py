@@ -477,6 +477,132 @@ class StateManager:
         self.latest_goal = None
         return goal
 
+    def undo_to_previous_critical_state(self) -> dict | None:
+        """Undo to the previous critical state by discarding all states since then.
+        
+        Returns the joint positions and gripper state of the previous critical state,
+        or None if there is no previous critical state to undo to.
+        
+        This function:
+        1. Finds the current latest critical state
+        2. Finds the previous critical state (if any)
+        3. Deletes all states after the previous critical state
+        4. Returns the robot position to execute (previous critical state's position)
+        """
+        with self.state_lock:
+            if not self.pending_states_by_episode and not self.completed_states_by_episode:
+                print("⚠️  No states to undo")
+                return None
+            
+            # Get the latest episode
+            all_episode_ids = set(self.pending_states_by_episode.keys()) | set(
+                self.completed_states_by_episode.keys()
+            )
+            if not all_episode_ids:
+                print("⚠️  No episodes found")
+                return None
+            
+            latest_episode_id = max(all_episode_ids)
+            
+            # Combine pending and completed states for this episode
+            episode_states = {
+                **self.pending_states_by_episode.get(latest_episode_id, {}),
+                **self.completed_states_by_episode.get(latest_episode_id, {}),
+            }
+            
+            if not episode_states:
+                print("⚠️  No states in latest episode")
+                return None
+            
+            # Find all critical states in chronological order
+            critical_states = [
+                (state_id, state_info)
+                for state_id, state_info in sorted(episode_states.items())
+                if state_info.get("critical", False)
+            ]
+            
+            if len(critical_states) < 2:
+                print("⚠️  Need at least 2 critical states to undo (found {})".format(len(critical_states)))
+                return None
+            
+            # Get the second-to-last critical state (the one to revert to)
+            previous_critical_state_id, previous_critical_state_info = critical_states[-2]
+            current_critical_state_id = critical_states[-1][0]
+            
+            print(f"🔙 Undoing: reverting from state {current_critical_state_id} to state {previous_critical_state_id}")
+            
+            # Delete all states after the previous critical state
+            states_to_delete = [
+                state_id for state_id in episode_states.keys()
+                if state_id > previous_critical_state_id
+            ]
+            
+            deleted_count = 0
+            for state_id in states_to_delete:
+                # Remove from pending states
+                if latest_episode_id in self.pending_states_by_episode:
+                    if state_id in self.pending_states_by_episode[latest_episode_id]:
+                        state_info = self.pending_states_by_episode[latest_episode_id][state_id]
+                        # Clean up observation cache
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.pending_states_by_episode[latest_episode_id][state_id]
+                        deleted_count += 1
+                
+                # Remove from completed states
+                if latest_episode_id in self.completed_states_by_episode:
+                    if state_id in self.completed_states_by_episode[latest_episode_id]:
+                        state_info = self.completed_states_by_episode[latest_episode_id][state_id]
+                        # Clean up observation cache
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.completed_states_by_episode[latest_episode_id][state_id]
+                        deleted_count += 1
+                
+                # Remove from completed buffer (used for dataset writes)
+                if latest_episode_id in self.completed_states_buffer_by_episode:
+                    if state_id in self.completed_states_buffer_by_episode[latest_episode_id]:
+                        del self.completed_states_buffer_by_episode[latest_episode_id][state_id]
+            
+            print(f"🗑️  Deleted {deleted_count} states after state {previous_critical_state_id}")
+            
+            # Adjust next_state_id to continue from where we are
+            self.next_state_id = previous_critical_state_id + 1
+            
+            # Return the robot position to execute (revert to previous critical state)
+            joint_positions = previous_critical_state_info["joint_positions"]
+            gripper_action = previous_critical_state_info.get("gripper", 0)
+            
+            print(f"↩️  Returning to state {previous_critical_state_id}: joints={joint_positions}, gripper={gripper_action}")
+            
+            # Convert joint_positions dict to tensor in correct order (matching normal action format)
+            goal_positions = []
+            for joint_name in JOINT_NAMES:
+                joint_value = joint_positions[joint_name]
+                goal_positions.append(float(joint_value))
+            
+            # Set gripper position based on gripper action
+            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+            goal_tensor = torch.tensor(goal_positions, dtype=torch.float32)
+            
+            # Set as latest_goal for robot to consume
+            self.latest_goal = goal_tensor
+            
+            return {
+                "episode_id": latest_episode_id,
+                "reverted_to_state_id": previous_critical_state_id,
+            }
+    
+    def _delete_obs_from_disk(self, obs_path: str | None):
+        """Delete observation file from disk cache."""
+        if not obs_path:
+            return
+        try:
+            import os
+            if os.path.exists(obs_path):
+                os.remove(obs_path)
+                print(f"🗑️  Deleted obs cache: {obs_path}")
+        except Exception as e:
+            print(f"⚠️  Failed to delete obs cache {obs_path}: {e}")
+
     def set_active_episode(self, episode_id):
         """Mark which episode the outer robot loop is currently in (or None)."""
         with self.state_lock:

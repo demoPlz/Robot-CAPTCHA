@@ -405,6 +405,21 @@ class CrowdInterface:
         """
         return self.state_manager.get_latest_goal()
 
+    def undo_to_previous_critical_state(self) -> dict | None:
+        """Undo to the previous critical state.
+
+        Removes all states after the previous critical state and returns
+        the robot position to revert to.
+
+        Delegates to StateManager.
+
+        Returns:
+            dict with 'joint_positions', 'gripper', 'episode_id', 'reverted_to_state_id'
+            or None if undo is not possible
+
+        """
+        return self.state_manager.undo_to_previous_critical_state()
+
     # =========================
     # Reset State Management
     # =========================
