@@ -307,7 +307,7 @@ def main():
 
     # Start Isaac Sim
     global simulation_app
-    simulation_app = SimulationApp({"headless": False})
+    simulation_app = SimulationApp({"headless": True})
 
     try:
         # Create and start persistent worker
