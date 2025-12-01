@@ -57,7 +57,7 @@
                 "--control.num_image_writer_processes=8",
                 "--control.play_sound=false",
                 // "--autofill-critical-states",
-                "--required-responses-per-critical-state=1",
+                // "--required-responses-per-critical-state=1", // set in config file
                 // "--num-autofill-actions=10",
 
                 // "--use-manual-prompt",

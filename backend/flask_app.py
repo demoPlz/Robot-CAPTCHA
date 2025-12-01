@@ -502,6 +502,90 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/pending-undo-classification", methods=["GET"])
+    def get_pending_undo_classification():
+        """Get the state awaiting undo classification (new state vs old state)"""
+        try:
+            pending = crowd_interface.state_manager.get_pending_undo_classification()
+            if pending is None:
+                return jsonify({"status": "none"})
+            
+            # Load previous state image (target before undo)
+            previous_image_url = None
+            if pending.get("previous_obs_path"):
+                obs = crowd_interface.dataset_manager.load_obs_from_disk(pending["previous_obs_path"])
+                img = crowd_interface.load_main_cam_from_obs(obs)
+                if img is not None:
+                    previous_image_url = crowd_interface.encode_jpeg_base64(img)
+            
+            # Load arrived state image (after undo motion)
+            arrived_image_url = None
+            if pending.get("arrived_obs_path"):
+                obs = crowd_interface.dataset_manager.load_obs_from_disk(pending["arrived_obs_path"])
+                img = crowd_interface.load_main_cam_from_obs(obs)
+                if img is not None:
+                    arrived_image_url = crowd_interface.encode_jpeg_base64(img)
+            
+            return jsonify({
+                "status": "pending",
+                "episode_id": pending["episode_id"],
+                "state_id": pending["state_id"],
+                "previous_image_url": previous_image_url,
+                "arrived_image_url": arrived_image_url,
+                "num_remaining_actions": pending.get("num_remaining_actions", 0)
+            })
+        except Exception as e:
+            print(f"❌ Error in pending-undo-classification endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/classify-undo-new-state", methods=["POST"])
+    def classify_undo_new_state():
+        """Classify post-undo arrival as a new state (requires new action submissions)"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+            
+            success = crowd_interface.state_manager.classify_undo_as_new_state(episode_id, state_id)
+            
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending classification"}), 400
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in classify-undo-new-state endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/classify-undo-old-state", methods=["POST"])
+    def classify_undo_old_state():
+        """Classify post-undo arrival as old state (resample from existing actions)"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+            
+            success = crowd_interface.state_manager.classify_undo_as_old_state(episode_id, state_id)
+            
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending classification"}), 400
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in classify-undo-old-state endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/control/stop", methods=["POST"])
     def stop_recording():
         """Trigger stop recording (equivalent to 'x' keyboard input)"""

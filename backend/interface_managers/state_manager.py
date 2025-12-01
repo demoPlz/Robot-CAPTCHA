@@ -143,6 +143,11 @@ class StateManager:
         # Critical state approval tracking
         self.pending_approval_state = None  # {episode_id, state_id, approved: None/True/False}
         self.approval_lock = Lock()
+        
+        # Undo state tracking
+        self.pending_undo_classification = None  # {episode_id, state_id, is_new_state: None/True/False, already_executed_actions: []}
+        self.undo_lock = Lock()
+        self.undo_motion_start_state_id = None  # Track when undo motion begins to delete intermediate states
 
         # Start auto-labeling worker
         self._start_auto_label_worker()
@@ -177,6 +182,18 @@ class StateManager:
         # Push obs to monitoring frontend
         self.obs_stream.push_obs_view("obs_main", obs_dict.get("observation.images.cam_main"))
         self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+        
+        # Check if we just arrived at an undo target state
+        # If so, trigger classification modal (this must happen AFTER we capture the observation)
+        should_trigger_undo_classification = False
+        with self.undo_lock:
+            if (self.pending_undo_classification is not None and 
+                self.pending_undo_classification.get("awaiting_robot_arrival", False)):
+                should_trigger_undo_classification = True
+        
+        if should_trigger_undo_classification:
+            # Robot has arrived at undo target, trigger classification (outside of lock)
+            self.trigger_undo_classification_after_arrival(obs_path)
 
         state_info = {
             # Identity
@@ -431,8 +448,11 @@ class StateManager:
                     
                     print(f"🎯 Selected action using {selection_metadata['selector_used']} selector")
                     print(f"   Propensity: {propensity:.4f} | Mode: {selection_metadata['mode']}")
-
-                    #TODO this part is wrong.
+                    
+                    # Track this action as executed for potential resampling after undo
+                    if "executed_actions" not in state_info:
+                        state_info["executed_actions"] = []
+                    state_info["executed_actions"].append(selected_action)
 
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
@@ -541,6 +561,54 @@ class StateManager:
         goal = self.latest_goal
         self.latest_goal = None
         return goal
+    
+    def get_pending_undo_classification(self) -> dict | None:
+        """Get the state awaiting undo classification from administrator."""
+        with self.undo_lock:
+            if self.pending_undo_classification is None or self.pending_undo_classification["is_new_state"] is not None:
+                return None
+            
+            # Don't show modal until robot has arrived
+            if self.pending_undo_classification.get("awaiting_robot_arrival", True):
+                return None
+            
+            episode_id = self.pending_undo_classification["episode_id"]
+            state_id = self.pending_undo_classification["state_id"]
+            previous_obs_path = self.pending_undo_classification.get("previous_obs_path")
+            arrived_obs_path = self.pending_undo_classification.get("arrived_obs_path")
+            already_executed = self.pending_undo_classification.get("already_executed_actions", [])
+            
+            return {
+                "episode_id": episode_id,
+                "state_id": state_id,
+                "previous_obs_path": previous_obs_path,  # Previous critical state (target)
+                "arrived_obs_path": arrived_obs_path,     # State after undo motion
+                "num_remaining_actions": len(already_executed),
+            }
+    
+    def classify_undo_as_new_state(self, episode_id: int, state_id: int) -> bool:
+        """Classify post-undo state as a new state (requires new action submissions)."""
+        with self.undo_lock:
+            if self.pending_undo_classification is None:
+                return False
+            if (self.pending_undo_classification["episode_id"] != episode_id or 
+                self.pending_undo_classification["state_id"] != state_id):
+                return False
+            
+            self.pending_undo_classification["is_new_state"] = True
+            return True
+    
+    def classify_undo_as_old_state(self, episode_id: int, state_id: int) -> bool:
+        """Classify post-undo state as old state (resample from existing actions)."""
+        with self.undo_lock:
+            if self.pending_undo_classification is None:
+                return False
+            if (self.pending_undo_classification["episode_id"] != episode_id or 
+                self.pending_undo_classification["state_id"] != state_id):
+                return False
+            
+            self.pending_undo_classification["is_new_state"] = False
+            return True
     
     def get_pending_approval_state(self) -> dict | None:
         """Get the state awaiting approval from administrator."""
@@ -697,6 +765,9 @@ class StateManager:
             # Adjust next_state_id to continue from where we are
             self.next_state_id = previous_critical_state_id + 1
             
+            # Mark that undo motion is starting - we'll delete states created during this motion
+            self.undo_motion_start_state_id = previous_critical_state_id + 1
+            
             # Return the robot position to execute (revert to previous critical state)
             joint_positions = previous_critical_state_info["joint_positions"]
             gripper_action = previous_critical_state_info.get("gripper", 0)
@@ -716,10 +787,261 @@ class StateManager:
             # Set as latest_goal for robot to consume
             self.latest_goal = goal_tensor
             
-            return {
+        # ---- Set up pending undo classification (will be triggered after robot arrives) ----
+        # Store the previous critical state info for later classification
+        with self.undo_lock:
+            self.pending_undo_classification = {
                 "episode_id": latest_episode_id,
-                "reverted_to_state_id": previous_critical_state_id,
+                "state_id": previous_critical_state_id,
+                "is_new_state": None,  # None=pending, True=new state, False=old state
+                "already_executed_actions": previous_critical_state_info.get("executed_actions", []).copy(),
+                "previous_obs_path": previous_critical_state_info.get("obs_path"),  # For side-by-side comparison
+                "awaiting_robot_arrival": True,  # Flag to indicate robot hasn't arrived yet
             }
+        
+        print(f"↩️  Robot will move to previous state {previous_critical_state_id}...")
+        print(f"⏸️  Administrator must classify after arrival: new state or old state?")
+        
+        return {
+            "episode_id": latest_episode_id,
+            "reverted_to_state_id": previous_critical_state_id,
+            "awaiting_classification": True,
+        }
+
+    
+    def trigger_undo_classification_after_arrival(self, arrived_obs_path: str):
+        """Called after robot arrives at the undo target state.
+        
+        This triggers the classification modal with side-by-side comparison.
+        Blocks until administrator makes a decision.
+        """
+        with self.undo_lock:
+            if self.pending_undo_classification is None:
+                print("⚠️  No pending undo classification")
+                return
+            
+            if not self.pending_undo_classification.get("awaiting_robot_arrival"):
+                print("⚠️  Undo classification not awaiting arrival")
+                return
+            
+            # Update with arrived observation for side-by-side comparison
+            self.pending_undo_classification["arrived_obs_path"] = arrived_obs_path
+            self.pending_undo_classification["awaiting_robot_arrival"] = False
+            
+            latest_episode_id = self.pending_undo_classification["episode_id"]
+            previous_critical_state_id = self.pending_undo_classification["state_id"]
+        
+        print(f"📸 Robot arrived at previous state {previous_critical_state_id}")
+        print(f"⏸️  Waiting for administrator classification: new state or old state?")
+        
+        # Poll for administrator decision (blocking)
+        import time
+        while True:
+            time.sleep(0.1)
+            with self.undo_lock:
+                if self.pending_undo_classification is None:
+                    print(f"⚠️  Undo classification was cancelled")
+                    return None
+                if self.pending_undo_classification["is_new_state"] is not None:
+                    is_new_state = self.pending_undo_classification["is_new_state"]
+                    already_executed = self.pending_undo_classification["already_executed_actions"]
+                    self.pending_undo_classification = None
+                    break
+        
+        if is_new_state:
+            # Treat as new state - the previous critical state remains completed
+            # and we'll create a new state when add_state is called
+            print(f"✅ Administrator classified as NEW STATE - will collect new actions")
+            
+            # Delete intermediate states created during undo motion
+            self._delete_undo_motion_states(latest_episode_id)
+            
+            return {
+                "classified_as_new_state": True,
+            }
+        else:
+            # Treat as old state - resample from existing actions
+            print(f"✅ Administrator classified as OLD STATE - will resample from existing actions")
+            
+            # Delete intermediate states created during undo motion
+            self._delete_undo_motion_states(latest_episode_id)
+            
+            with self.state_lock:
+                # Re-fetch the previous critical state
+                ep = self.completed_states_by_episode.get(latest_episode_id)
+                if not ep or previous_critical_state_id not in ep:
+                    print(f"⚠️  Previous critical state no longer exists")
+                    return None
+                
+                state_info = ep[previous_critical_state_id]
+                
+                # Get all submitted actions for this state
+                all_actions = state_info.get("actions", [])
+                required_responses = self.required_responses_per_critical_state
+                available_actions = all_actions[:required_responses]
+                
+                if not available_actions:
+                    print(f"⚠️  No actions available to resample from")
+                    return None
+                
+                # Filter out already executed actions
+                remaining_actions = [
+                    action for action in available_actions
+                    if not any(torch.equal(action, executed) for executed in already_executed)
+                ]
+                
+                if not remaining_actions:
+                    print(f"⚠️  All actions have been executed, cannot resample")
+                    print(f"    Consider classifying as new state instead")
+                    return None
+                
+                print(f"🎲 Resampling from {len(remaining_actions)} remaining actions (out of {len(available_actions)} total)")
+                
+                # Use action selector to pick from remaining actions
+                # Need to compute propensity accounting for the filtering
+                selected_action, base_propensity, selection_metadata = self.action_selector.select_action(
+                    remaining_actions, state_info
+                )
+                
+                # Adjust propensity to account for filtering out already-executed actions
+                # P(a|s, not executed before) = P(a|s) / P(not executed before | s)
+                # where P(not executed before | s) = sum over remaining actions of P(a|s)
+                
+                # For proper importance weighting, we need to compute the conditional propensity
+                # This requires getting propensities for all remaining actions
+                remaining_propensities = self._get_propensities_for_actions(
+                    remaining_actions, state_info
+                )
+                
+                # The conditional propensity given we're sampling from remaining actions
+                total_remaining_propensity = sum(remaining_propensities)
+                
+                # Find the propensity of the selected action among remaining actions
+                selected_idx = None
+                for idx, action in enumerate(remaining_actions):
+                    if torch.equal(action, selected_action):
+                        selected_idx = idx
+                        break
+                
+                if selected_idx is None:
+                    print(f"⚠️  Selected action not found in remaining actions")
+                    return None
+                
+                conditional_propensity = remaining_propensities[selected_idx] / total_remaining_propensity
+                
+                # Update state info with new selection
+                # Move selected action to front
+                for idx, action in enumerate(state_info["actions"][:required_responses]):
+                    if torch.equal(action, selected_action):
+                        state_info["actions"][0], state_info["actions"][idx] = (
+                            state_info["actions"][idx],
+                            state_info["actions"][0],
+                        )
+                        break
+                
+                # Set as latest goal
+                self.latest_goal = state_info["actions"][0]
+                
+                # Update metadata for this resampled selection
+                state_info["action_selection_metadata"] = {
+                    **selection_metadata,
+                    "resampled": True,
+                    "num_remaining_actions": len(remaining_actions),
+                    "num_already_executed": len(already_executed),
+                    "conditional_propensity": conditional_propensity,
+                }
+                state_info["action_propensity"] = conditional_propensity
+                
+                # Track this as executed
+                if "executed_actions" not in state_info:
+                    state_info["executed_actions"] = []
+                state_info["executed_actions"].append(selected_action)
+                
+                print(f"🎯 Resampled action using {selection_metadata['selector_used']} selector")
+                print(f"   Conditional propensity: {conditional_propensity:.4f}")
+                print(f"   (Base propensity: {base_propensity:.4f}, Remaining mass: {total_remaining_propensity:.4f})")
+                
+            return {
+                "classified_as_new_state": False,
+                "resampled": True,
+            }
+    
+    def _get_propensities_for_actions(self, actions: list, state_info: dict) -> list[float]:
+        """Compute propensities for a list of actions without sampling.
+        
+        This is used for computing conditional propensities when resampling.
+        """
+        if self.action_selector.mode == "random":
+            # For random selector, all actions have equal propensity
+            n = len(actions)
+            return [1.0 / n] * n
+        
+        elif self.action_selector.mode == "learned":
+            # For learned selector, compute softmax probabilities
+            import torch.nn.functional as F
+            with torch.no_grad():
+                state_features = torch.zeros(1).to(self.action_selector.device)
+                action_tensor = torch.stack(actions).to(self.action_selector.device)
+                logits = self.action_selector.learned_selector.model(state_features, action_tensor)
+                probs = F.softmax(logits, dim=0)
+                return probs.cpu().tolist()
+        
+        elif self.action_selector.mode == "epsilon_greedy":
+            # For epsilon-greedy, combine random and learned propensities
+            import torch.nn.functional as F
+            epsilon = self.action_selector.epsilon
+            n = len(actions)
+            
+            with torch.no_grad():
+                state_features = torch.zeros(1).to(self.action_selector.device)
+                action_tensor = torch.stack(actions).to(self.action_selector.device)
+                logits = self.action_selector.learned_selector.model(state_features, action_tensor)
+                learned_probs = F.softmax(logits, dim=0)
+            
+            # Combine: epsilon * (1/n) + (1-epsilon) * learned_prob
+            combined_probs = [
+                epsilon * (1.0 / n) + (1 - epsilon) * learned_prob
+                for learned_prob in learned_probs.cpu().tolist()
+            ]
+            return combined_probs
+        
+        else:
+            # Fallback to uniform
+            n = len(actions)
+            return [1.0 / n] * n
+    
+    def _delete_undo_motion_states(self, episode_id: int):
+        """Delete intermediate states created during undo motion.
+        
+        When undoing, the robot creates uncritical states while traveling from the rejected
+        critical state back to the previous critical state. These should be deleted regardless
+        of whether the administrator classifies the arrival as new or old state.
+        """
+        if self.undo_motion_start_state_id is None:
+            return
+        
+        with self.state_lock:
+            states_to_delete = []
+            
+            # Find all states created during undo motion (>= undo_motion_start_state_id)
+            if episode_id in self.pending_states_by_episode:
+                for state_id in self.pending_states_by_episode[episode_id].keys():
+                    if state_id >= self.undo_motion_start_state_id:
+                        states_to_delete.append(state_id)
+            
+            deleted_count = 0
+            for state_id in states_to_delete:
+                state_info = self.pending_states_by_episode[episode_id][state_id]
+                # Clean up observation cache
+                self._delete_obs_from_disk(state_info.get("obs_path"))
+                del self.pending_states_by_episode[episode_id][state_id]
+                deleted_count += 1
+            
+            if deleted_count > 0:
+                print(f"🗑️  Deleted {deleted_count} intermediate states created during undo motion")
+            
+            # Reset the marker
+            self.undo_motion_start_state_id = None
     
     def _delete_obs_from_disk(self, obs_path: str | None):
         """Delete observation file from disk cache."""

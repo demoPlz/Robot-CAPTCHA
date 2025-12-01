@@ -538,6 +538,45 @@
         </div>
     </div>
 
+    <!-- Undo Classification Modal -->
+    <div class="approval-modal-overlay" id="undo-classification-modal">
+        <div class="approval-modal-card">
+            <div class="approval-modal-header">
+                <h2 class="approval-modal-title">Classify Post-Undo State</h2>
+                <p style="margin-top: 10px; font-size: 14px; color: #666;">
+                    Robot has returned to previous position. Is this a clean undo?
+                </p>
+            </div>
+            <div class="approval-modal-body">
+                <div class="approval-comparison">
+                    <div class="approval-image-container">
+                        <div class="approval-image-label">Target State (Before Undo)</div>
+                        <div class="approval-image-wrapper">
+                            <img id="undo-previous-image" class="approval-image" alt="Previous state">
+                        </div>
+                    </div>
+                    <div class="approval-image-container">
+                        <div class="approval-image-label">Arrived State (After Undo)</div>
+                        <div class="approval-image-wrapper">
+                            <img id="undo-arrived-image" class="approval-image" alt="Arrived state">
+                        </div>
+                    </div>
+                </div>
+                <div id="undo-remaining-actions" style="margin-top: 15px; text-align: center; font-size: 13px; color: #555;"></div>
+            </div>
+            <div class="approval-modal-footer">
+                <button class="approval-btn approval-btn-reject" id="undo-new-state-btn">
+                    <span class="control-icon">🆕</span> New State
+                    <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Collect new actions</div>
+                </button>
+                <button class="approval-btn approval-btn-proceed" id="undo-old-state-btn">
+                    <span class="control-icon">♻️</span> Old State
+                    <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Resample existing actions</div>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast" id="app-toast"></div>
 
@@ -602,6 +641,14 @@
         const approvalNewImage = document.getElementById('approval-new-image');
         const approvalProceedBtn = document.getElementById('approval-proceed-btn');
         const approvalRejectBtn = document.getElementById('approval-reject-btn');
+
+        // Undo classification modal elements
+        const undoClassificationModal = document.getElementById('undo-classification-modal');
+        const undoPreviousImage = document.getElementById('undo-previous-image');
+        const undoArrivedImage = document.getElementById('undo-arrived-image');
+        const undoRemainingActions = document.getElementById('undo-remaining-actions');
+        const undoNewStateBtn = document.getElementById('undo-new-state-btn');
+        const undoOldStateBtn = document.getElementById('undo-old-state-btn');
 
         const cameraViews = {
             front: document.getElementById('camera-front'),
@@ -1273,6 +1320,140 @@
         approvalProceedBtn.addEventListener('click', handleApprovalProceed);
         approvalRejectBtn.addEventListener('click', handleApprovalReject);
 
+        // --- Undo Classification Modal ---
+        let currentUndoClassification = null;
+
+        async function fetchPendingUndoClassification() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/control/pending-undo-classification`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                
+                if (data.status === 'pending') {
+                    // New classification needed or state changed
+                    if (!currentUndoClassification || 
+                        currentUndoClassification.episode_id !== data.episode_id ||
+                        currentUndoClassification.state_id !== data.state_id) {
+                        
+                        currentUndoClassification = data;
+                        await showUndoClassificationModal(data);
+                    }
+                } else {
+                    // No pending classification
+                    if (currentUndoClassification) {
+                        currentUndoClassification = null;
+                        hideUndoClassificationModal();
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching pending undo classification:', e);
+            }
+        }
+
+        async function showUndoClassificationModal(data) {
+            // Load previous state image (target)
+            if (data.previous_image_url) {
+                undoPreviousImage.src = data.previous_image_url;
+            } else {
+                undoPreviousImage.src = '';
+                undoPreviousImage.alt = 'Image not available';
+            }
+            
+            // Load arrived state image (after undo motion)
+            if (data.arrived_image_url) {
+                undoArrivedImage.src = data.arrived_image_url;
+            } else {
+                undoArrivedImage.src = '';
+                undoArrivedImage.alt = 'Image not available';
+            }
+            
+            // Show remaining actions info
+            const numRemaining = data.num_remaining_actions || 0;
+            if (numRemaining > 0) {
+                undoRemainingActions.textContent = `${numRemaining} action(s) already executed, resampling available`;
+                undoRemainingActions.style.color = '#28a745';
+            } else {
+                undoRemainingActions.textContent = 'No actions executed yet (both options available)';
+                undoRemainingActions.style.color = '#555';
+            }
+            
+            undoClassificationModal.classList.add('show');
+        }
+
+        function hideUndoClassificationModal() {
+            undoClassificationModal.classList.remove('show');
+            undoOldStateBtn.disabled = false;
+        }
+
+        async function handleUndoClassifyNewState() {
+            if (!currentUndoClassification) return;
+            
+            try {
+                undoNewStateBtn.disabled = true;
+                undoOldStateBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/classify-undo-new-state`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentUndoClassification.episode_id,
+                        state_id: currentUndoClassification.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('🆕 Classified as NEW STATE - will collect new actions');
+                    currentUndoClassification = null;
+                    hideUndoClassificationModal();
+                } else {
+                    showToast('❌ Failed to classify state', 2000);
+                }
+            } catch (e) {
+                console.error('Error classifying as new state:', e);
+                showToast('❌ Error classifying state', 2000);
+            } finally {
+                undoNewStateBtn.disabled = false;
+                undoOldStateBtn.disabled = false;
+            }
+        }
+
+        async function handleUndoClassifyOldState() {
+            if (!currentUndoClassification) return;
+            
+            try {
+                undoNewStateBtn.disabled = true;
+                undoOldStateBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/classify-undo-old-state`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentUndoClassification.episode_id,
+                        state_id: currentUndoClassification.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('♻️ Classified as OLD STATE - resampling actions');
+                    currentUndoClassification = null;
+                    hideUndoClassificationModal();
+                } else {
+                    showToast('❌ Failed to classify state', 2000);
+                }
+            } catch (e) {
+                console.error('Error classifying as old state:', e);
+                showToast('❌ Error classifying state', 2000);
+            } finally {
+                undoNewStateBtn.disabled = false;
+                undoOldStateBtn.disabled = false;
+            }
+        }
+
+        // Bind undo classification modal events
+        undoNewStateBtn.addEventListener('click', handleUndoClassifyNewState);
+        undoOldStateBtn.addEventListener('click', handleUndoClassifyOldState);
+
         // --- Description bank helpers ---
         function extractThusText(s) {
             if (!s) return '';
@@ -1713,13 +1894,18 @@
                 }, INFO_POLL_MS),
                 approval: setInterval(() => {
                     fetchPendingApproval();
-                }, 500)  // Poll approval more frequently (500ms)
+                }, 500),  // Poll approval more frequently (500ms)
+                undoClassification: setInterval(() => {
+                    fetchPendingUndoClassification();
+                }, 500)  // Poll undo classification at same rate
             };
         }
         function stopAutoRefresh() {
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval.cameras);
                 clearInterval(autoRefreshInterval.info);
+                clearInterval(autoRefreshInterval.approval);
+                clearInterval(autoRefreshInterval.undoClassification);
                 autoRefreshInterval = null;
             }
         }
