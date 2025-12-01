@@ -57,6 +57,7 @@ class StateManager:
         pose_estimation_manager,
         drawer_position_manager,
         sim_manager,
+        action_selector_manager,
         # Callbacks for external operations
         persist_views_callback,
         persist_obs_callback,
@@ -84,6 +85,7 @@ class StateManager:
             pose_estimation_manager: PoseEstimationManager instance
             drawer_position_manager: DrawerPositionManager instance
             sim_manager: SimManager instance
+            action_selector_manager: ActionSelectorManager instance for action selection
             persist_views_callback: Callback to persist views to disk
             persist_obs_callback: Callback to persist observations to disk
             snapshot_views_callback: Callback to snapshot current views
@@ -124,6 +126,7 @@ class StateManager:
         self.pose_estimator = pose_estimation_manager
         self.drawer_position = drawer_position_manager
         self.sim_manager = sim_manager
+        self.action_selector = action_selector_manager
 
         # Callbacks for external operations
         self._persist_views_callback = persist_views_callback
@@ -405,14 +408,31 @@ class StateManager:
             # Handle completion
             if state_info["responses_received"] >= required_responses:
                 if state_info["critical"] and state_id == self.next_state_id - 1:
-                    # Choose action to execute (a_execute) at random
-                    # Shift chosen action to the front of the array
-                    a_execute_index = random.randint(0, required_responses - 1)
-                    state_info["actions"][0], state_info["actions"][a_execute_index] = (
-                        state_info["actions"][a_execute_index],
-                        state_info["actions"][0],
+                    # Use action selector to choose action and get propensity
+                    selected_action, propensity, selection_metadata = self.action_selector.select_action(
+                        state_info["actions"][:required_responses], state_info
                     )
-                    self.latest_goal = state_info["actions"][:required_responses][0]
+                    
+                    # Find index of selected action and move it to front
+                    for idx, action in enumerate(state_info["actions"][:required_responses]):
+                        if torch.equal(action, selected_action):
+                            # Swap selected action to front
+                            state_info["actions"][0], state_info["actions"][idx] = (
+                                state_info["actions"][idx],
+                                state_info["actions"][0],
+                            )
+                            break
+                    
+                    self.latest_goal = state_info["actions"][0]
+                    
+                    # Store selection metadata and propensity for logging/training
+                    state_info["action_selection_metadata"] = selection_metadata
+                    state_info["action_propensity"] = propensity
+                    
+                    print(f"🎯 Selected action using {selection_metadata['selector_used']} selector")
+                    print(f"   Propensity: {propensity:.4f} | Mode: {selection_metadata['mode']}")
+
+                    #TODO this part is wrong.
 
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 

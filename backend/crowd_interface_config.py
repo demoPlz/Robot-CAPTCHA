@@ -62,6 +62,12 @@ class CrowdInterfaceConfig:
         # Track prismatic joint positions of drawer for drawer task
         self.joint_tracking: list = ["Drawer_Joint"]
 
+        # ========== Action Selection ==========
+        # Strategy for selecting which crowdsourced action to execute
+        self.action_selector_mode: str = "random"  # "random", "epsilon_greedy", or "learned"
+        self.action_selector_epsilon: float = 0.1  # Exploration rate for epsilon_greedy mode
+        self.action_selector_model_path: str | None = None  # Path to learned selector model
+
     @classmethod
     def from_cli_args(cls, argv=None):
         """Create a CrowdInterfaceConfig instance with CLI overrides.
@@ -119,6 +125,24 @@ class CrowdInterfaceConfig:
             help="Maximum number of simultaneous users viewing animations (default: 2)",
         )
 
+        # Action selection
+        parser.add_argument(
+            "--action-selector-mode",
+            type=str,
+            choices=["random", "epsilon_greedy", "learned"],
+            help="Action selection strategy: random, epsilon_greedy, or learned (default: random)",
+        )
+        parser.add_argument(
+            "--action-selector-epsilon",
+            type=float,
+            help="Exploration rate for epsilon-greedy mode (default: 0.1)",
+        )
+        parser.add_argument(
+            "--action-selector-model-path",
+            type=str,
+            help="Path to learned selector model weights",
+        )
+
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
         # Remove crowd-specific args from sys.argv for downstream parsers
@@ -149,6 +173,12 @@ class CrowdInterfaceConfig:
             config.use_sim = True
         if args.max_animation_users is not None:
             config.max_animation_users = args.max_animation_users
+        if args.action_selector_mode is not None:
+            config.action_selector_mode = args.action_selector_mode
+        if args.action_selector_epsilon is not None:
+            config.action_selector_epsilon = args.action_selector_epsilon
+        if args.action_selector_model_path is not None:
+            config.action_selector_model_path = args.action_selector_model_path
 
         return config
 
@@ -176,6 +206,10 @@ class CrowdInterfaceConfig:
             # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths,
+            # Action selection
+            "action_selector_mode": self.action_selector_mode,
+            "action_selector_epsilon": self.action_selector_epsilon,
+            "action_selector_model_path": self.action_selector_model_path,
         }
 
         # Optional: demo video recording (only include if enabled)

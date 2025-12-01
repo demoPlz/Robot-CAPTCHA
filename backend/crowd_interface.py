@@ -23,6 +23,7 @@ from interface_managers.pose_estimation_manager import PoseEstimationManager
 from interface_managers.sim_manager import SimManager
 from interface_managers.state_manager import StateManager
 from interface_managers.webcam_manager import WebcamManager
+from interface_managers.action_selector_manager import ActionSelectorManager
 
 
 class CrowdInterface:
@@ -70,6 +71,10 @@ class CrowdInterface:
         # --- objects ---
         objects: dict[str, str] | None = None,
         object_mesh_paths: dict[str, str] | None = None,
+        # --- action selection ---
+        action_selector_mode: str = "random",
+        action_selector_epsilon: float = 0.1,
+        action_selector_model_path: str | None = None,
     ):
 
         # --- UI prompt mode (simple vs MANUAL) ---
@@ -213,6 +218,14 @@ class CrowdInterface:
             obs_cache_root=self._obs_cache_root,
         )
 
+        # Action selector manager
+        self.action_selector = ActionSelectorManager(
+            mode=action_selector_mode,
+            epsilon=action_selector_epsilon,
+            learned_model_path=action_selector_model_path,
+            device="cpu",  # Can be made configurable if GPU is needed
+        )
+
         # State manager (handles episode-based state lifecycle)
         self.state_manager = StateManager(
             required_responses_per_state=self.required_responses_per_state,
@@ -233,6 +246,7 @@ class CrowdInterface:
             pose_estimation_manager=self.pose_estimator,
             drawer_position_manager=self.drawer_position,
             sim_manager=self.sim_manager,
+            action_selector_manager=self.action_selector,
             persist_views_callback=self._persist_views_to_disk,
             persist_obs_callback=self._persist_obs_to_disk,
             snapshot_views_callback=self.snapshot_latest_views,
