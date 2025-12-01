@@ -397,7 +397,7 @@ def estimate_pose_from_tensors(
     score = None
     try:
         # FoundationPose stores the last computed score in fpose.last_score
-        if hasattr(fpose, 'last_score') and fpose.last_score is not None:
+        if hasattr(fpose, "last_score") and fpose.last_score is not None:
             score = float(fpose.last_score)
     except Exception:
         pass  # Score extraction is best-effort
@@ -418,7 +418,7 @@ def estimate_pose_from_tensors(
     extras = {"mask_area": area}
     if score is not None:
         extras["score"] = score
-    
+
     return PoseOutput(
         success=True,
         pose_cam_T_obj=torch.from_numpy(pose_np),

@@ -434,23 +434,24 @@ class CalibrationManager:
 
     def _load_real_calibrations_for_webcams(self):
         """Load real camera calibrations for webcam views (left and front only).
-        
+
         This method is called when use_sim=True to load undistortion maps and
         camera models for the real webcam cameras, while sim calibrations are
         used for the 4 sim views.
-        
+
         IMPORTANT: Uses separate keys (webcam_left, webcam_front) to avoid
         overwriting sim calibrations (left, front).
-        
+
         Populates:
         - self._undistort_maps: for cv2.remap() in WebcamManager (keys: "left", "front")
         - self._camera_models: for frontend projection (keys: "webcam_left", "webcam_front")
         - self._camera_poses: for frontend (keys: "webcam_left_pose", "webcam_front_pose")
+
         """
         # Only load left and front real cameras for webcam views
         webcam_names = ["left", "front"]
         manual_dir = self._calib_dir()
-        
+
         for name in webcam_names:
             # Try manual calibration file first (for intrinsics/extrinsics)
             manual_path = manual_dir / f"manual_calibration_{name}.json"
@@ -458,10 +459,10 @@ class CalibrationManager:
                 try:
                     with open(manual_path, "r", encoding="utf-8") as f:
                         mcal = json.load(f)
-                    
+
                     intr_m = mcal.get("intrinsics", {})
                     extr_m = mcal.get("extrinsics", {})
-                    
+
                     # Load intrinsics from manual calibration
                     if all(k in intr_m for k in ("width", "height", "Knew")):
                         # Store camera model with webcam_ prefix to distinguish from sim
@@ -473,26 +474,26 @@ class CalibrationManager:
                             "Knew": intr_m["Knew"],
                         }
                         print(f"✓ loaded intrinsics for webcam '{name}' from manual calibration {manual_path}")
-                    
+
                     # Load extrinsics from manual calibration
                     if "T_three" in extr_m and isinstance(extr_m["T_three"], list):
                         # Store pose with webcam_ prefix
                         self._camera_poses[f"webcam_{name}_pose"] = extr_m["T_three"]
                         print(f"✓ loaded extrinsics for webcam '{name}' from manual calibration {manual_path}")
-                    
+
                     # DON'T continue - still need to load undistortion maps from NPZ
-                    
+
                 except Exception as e:
                     print(f"⚠️  failed to load manual calibration for webcam '{name}': {e}")
-            
+
             # Load undistortion maps from NPZ files (manual calibrations don't have these)
             if name not in self.real_calib_paths:
                 continue
-            
+
             paths = self.real_calib_paths[name]
             if not paths:
                 continue
-            
+
             # ---- Load undistortion maps from NPZ (if available) ----
             intr = paths.get("intr")
             if intr:

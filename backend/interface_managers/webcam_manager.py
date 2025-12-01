@@ -80,7 +80,7 @@ class WebcamManager:
         self.cam_ids = cam_ids
         self._undistort_maps = undistort_maps or {}
         self._jpeg_quality = int(jpeg_quality or os.getenv("JPEG_QUALITY", "80"))
-        
+
         # Debug: log what undistort maps were provided
         if self._undistort_maps:
             print(f"[WebcamManager] Initialized with undistort maps for cameras: {list(self._undistort_maps.keys())}")
@@ -168,13 +168,15 @@ class WebcamManager:
                 if maps is not None:
                     map1, map2 = maps
                     rgb = cv2.remap(rgb, map1, map2, cv2.INTER_LINEAR)
-                    if not hasattr(self, '_undistort_logged'):
+                    if not hasattr(self, "_undistort_logged"):
                         self._undistort_logged = set()
                     if name not in self._undistort_logged:
-                        print(f"✓ Applying undistortion to webcam '{name}' (map1 shape: {map1.shape}, map2 shape: {map2.shape})")
+                        print(
+                            f"✓ Applying undistortion to webcam '{name}' (map1 shape: {map1.shape}, map2 shape: {map2.shape})"
+                        )
                         self._undistort_logged.add(name)
                 else:
-                    if not hasattr(self, '_no_undistort_logged'):
+                    if not hasattr(self, "_no_undistort_logged"):
                         self._no_undistort_logged = set()
                     if name not in self._no_undistort_logged:
                         print(f"⚠️  No undistortion maps available for webcam '{name}'")

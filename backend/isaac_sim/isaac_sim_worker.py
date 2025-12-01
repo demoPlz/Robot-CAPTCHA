@@ -162,7 +162,7 @@ class IsaacSimWorker:
         from omni.isaac.core import World
         from omni.isaac.core.articulations import Articulation
         from omni.isaac.core.prims import RigidPrim, XFormPrim
-        from pxr import UsdPhysics, PhysxSchema
+        from pxr import PhysxSchema, UsdPhysics
 
         # Configuration
         USD_PATH = config["usd_path"]
@@ -192,7 +192,7 @@ class IsaacSimWorker:
         print("Stage loaded and World object created.")
 
         # --- Enable GPU dynamics on the known physics scene (/physicsScene) ---
-        
+
         stage = omni.usd.get_context().get_stage()
         phys_scene = stage.GetPrimAtPath("/physicsScene")
         if not phys_scene or not phys_scene.IsValid():
@@ -206,7 +206,6 @@ class IsaacSimWorker:
         print("✓ Enabled GPU dynamics on /physicsScene")
         # ----------------------------------------------------------------------
 
-
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
@@ -216,7 +215,7 @@ class IsaacSimWorker:
         # Store drawer reference for joint manipulation (don't load as Articulation if not properly set up)
         self.drawer_prim_path = "/World/drawer_shell"
         self.drawer_tray_base_pos = None  # Store base position of tray_02 for drawer control
-        
+
         import omni.usd
         from omni.isaac.core.prims import XFormPrim
 
@@ -236,7 +235,7 @@ class IsaacSimWorker:
             # Important: XFormPrim wrapper only. We do NOT set any pose here.
             self.objects[key] = self.world.scene.add(XFormPrim(prim_path=path, name=key))
             print(f"✓ Registered as-authored: {path} → objects['{key}']")
-            
+
             # Store base position of tray_02 for drawer control
             if key == "tray_02":
                 # CRITICAL: Store the WORLD position when drawer is closed (initialization state)
@@ -244,7 +243,7 @@ class IsaacSimWorker:
                 world_pos, world_rot = self.objects[key].get_world_pose()
                 self.drawer_tray_base_pos = world_pos
                 print(f"✓ Stored tray_02 base WORLD position: {self.drawer_tray_base_pos}")
-                break        # Get cameras (only once)
+                break  # Get cameras (only once)
         stage = omni.usd.get_context().get_stage()
         all_cameras = get_all_camera_objects(root_prim="/")
         self.cameras = {all_cameras[i].name: all_cameras[i] for i in range(len(all_cameras))}
@@ -309,7 +308,7 @@ class IsaacSimWorker:
             # Create target position with original (closed) gripper values
             target_q = robot_joints.copy()  # This has the original closed gripper positions
 
-            target_q[6] = -0.044 # to close the fingers completely
+            target_q[6] = -0.044  # to close the fingers completely
 
             # Apply smooth closing action over several steps for stable grasp
             for close_step in range(15):  # ~0.5 seconds at 30Hz
@@ -335,66 +334,69 @@ class IsaacSimWorker:
 
     def _disable_gravity_globally(self):
         """Disable gravity for the entire physics scene (doesn't touch object properties).
-        
+
         This approach is SAFE because:
         - Doesn't modify any object properties (ArticulationView stays valid)
         - Objects won't fall while we position robot/objects
         - Robot can still physically interact with objects (collision still works)
         - Objects are kinematic in zero-gravity until we re-enable
+
         """
         import omni.usd
         from pxr import UsdPhysics
-        
+
         stage = omni.usd.get_context().get_stage()
-        
+
         scene_path = "/physicsScene"
         scene = UsdPhysics.Scene.Get(stage, scene_path)
         if not scene:
             print(f"⚠️ UsdPhysics.Scene not found at {scene_path}")
             return
-        
+
         # Set gravity magnitude to 0 → no gravity
         mag_attr = scene.GetGravityMagnitudeAttr()
         if not mag_attr:
             mag_attr = scene.CreateGravityMagnitudeAttr()
         mag_attr.Set(0.0)
-        
+
         print(f"[Worker] 🌍 Disabled gravity globally (magnitude = 0)")
-    
+
     def _enable_gravity_globally(self):
         """Re-enable gravity for the entire physics scene.
-        
+
         Restores normal gravity so objects respond to physics properly.
+
         """
         import omni.usd
-        from pxr import UsdPhysics, Gf
-        
+        from pxr import Gf, UsdPhysics
+
         stage = omni.usd.get_context().get_stage()
-        
+
         scene_path = "/physicsScene"
         scene = UsdPhysics.Scene.Get(stage, scene_path)
         if not scene:
             print(f"⚠️ UsdPhysics.Scene not found at {scene_path}")
             return
-        
+
         # Set gravity direction + magnitude
         dir_attr = scene.GetGravityDirectionAttr()
         if not dir_attr:
             dir_attr = scene.CreateGravityDirectionAttr()
         dir_attr.Set(Gf.Vec3f(0.0, 0.0, -1.0))  # Z-down
-        
+
         mag_attr = scene.GetGravityMagnitudeAttr()
         if not mag_attr:
             mag_attr = scene.CreateGravityMagnitudeAttr()
         mag_attr.Set(9.81)  # cm/s^2 (Isaac Sim uses cm, not meters)
-        
+
         print(f"[Worker] 🌍 Enabled gravity globally (direction=(0,0,-1), magnitude=981 cm/s^2)")
 
     def set_drawer_joints(self, user_id=0):
-        """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position
-        
+        """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position.
+
         Args:
             user_id: User ID to determine which environment's drawer to update (default=0 for /World)
+
         """
         import numpy as np
         import omni.usd
@@ -402,34 +404,36 @@ class IsaacSimWorker:
 
         # Get drawer joint positions from config
         drawer_joint_positions = self.last_sync_config.get("drawer_joint_positions", {})
-        
+
         if not drawer_joint_positions:
             # No drawer positions specified, keep at default (closed)
             print(f"[Worker] 🗄️  No drawer joint positions in config, keeping at closed position")
             return
-        
+
         # Get the joint position for Drawer_Joint
         drawer_joint_pos = drawer_joint_positions.get("Drawer_Joint", 0.0)
-        
-        print(f"[Worker] 🗄️  Setting drawer via tray position: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})")
-        
+
+        print(
+            f"[Worker] 🗄️  Setting drawer via tray position: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})"
+        )
+
         # Determine the correct world path based on user_id
         if user_id == 0:
             world_path = "/World"
         else:
             world_path = f"/Env_{user_id}"
-        
+
         # Get the tray prim and modify its Y position
         stage = omni.usd.get_context().get_stage()
-        
+
         # DEBUG: Print what we're actually trying to access
         print(f"[Worker] 🔍 DEBUG: Attempting to access prim at: {world_path}/Drawer/tray_02/node_")
         print(f"[Worker] 🔍 DEBUG: self.objects['tray_02'] = {self.objects.get('tray_02')}")
         if self.objects.get("tray_02") is not None:
             print(f"[Worker] 🔍 DEBUG: tray_02 prim_path = {self.objects['tray_02'].prim_path}")
-        
+
         tray_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02/node_")
-        
+
         if not tray_prim or not tray_prim.IsValid():
             print(f"⚠️ Could not find drawer_movable at {world_path}/Drawer/tray_02/node_")
             # Try to list what's available
@@ -443,59 +447,70 @@ class IsaacSimWorker:
                     tray_02_children = [child.GetName() for child in tray_02_prim.GetChildren()]
                     print(f"Available children under {world_path}/Drawer/tray_02: {tray_02_children}")
             return
-        
+
         print(f"[Worker] ✓ Found drawer_movable prim at {world_path}/Drawer/tray_02/node_")
-        
+
         # Use the registered XFormPrim object to set position (updates both USD and physics)
         try:
             # Get the tray object from scene registry
             if user_id == 0 and self.objects.get("tray_02") is not None:
                 tray_obj = self.objects["tray_02"]
-                
+
                 # Get current rotation (keep it unchanged)
                 _, current_rot = tray_obj.get_world_pose()
-                
+
                 # Verify base world position was stored during initialization
                 if self.drawer_tray_base_pos is None:
-                    raise RuntimeError("[Worker] ❌ ERROR: drawer_tray_base_pos not initialized! Check initialization code.")
-                
+                    raise RuntimeError(
+                        "[Worker] ❌ ERROR: drawer_tray_base_pos not initialized! Check initialization code."
+                    )
+
                 print(f"[Worker] Base WORLD position (closed drawer): {self.drawer_tray_base_pos}")
-                
+
                 # Calculate new WORLD position: base world position + joint offset along Y axis
                 # The drawer slides along Y, so we only modify the Y component
                 new_world_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
-                new_world_pos = np.array([
-                    self.drawer_tray_base_pos[0],  # X stays same
-                    new_world_y,                    # Y = base + offset
-                    self.drawer_tray_base_pos[2]   # Z stays same
-                ])
-                
-                print(f"[Worker] Setting WORLD position: X={new_world_pos[0]:.4f}, Y={new_world_pos[1]:.4f}, Z={new_world_pos[2]:.4f}")
-                print(f"[Worker]   (base_Y={self.drawer_tray_base_pos[1]:.4f} + joint_offset={drawer_joint_pos:.4f} = {new_world_y:.4f})")
-                
+                new_world_pos = np.array(
+                    [
+                        self.drawer_tray_base_pos[0],  # X stays same
+                        new_world_y,  # Y = base + offset
+                        self.drawer_tray_base_pos[2],  # Z stays same
+                    ]
+                )
+
+                print(
+                    f"[Worker] Setting WORLD position: X={new_world_pos[0]:.4f}, Y={new_world_pos[1]:.4f}, Z={new_world_pos[2]:.4f}"
+                )
+                print(
+                    f"[Worker]   (base_Y={self.drawer_tray_base_pos[1]:.4f} + joint_offset={drawer_joint_pos:.4f} = {new_world_y:.4f})"
+                )
+
                 # CRITICAL: Use set_world_pose to update BOTH USD and physics state
                 tray_obj.set_world_pose(position=new_world_pos, orientation=current_rot)
-                
+
                 # CRITICAL: Set velocities to zero to ensure drawer is completely at rest
                 # This prevents any residual physics motion from interfering with the position
-                if hasattr(tray_obj, 'set_linear_velocity'):
+                if hasattr(tray_obj, "set_linear_velocity"):
                     tray_obj.set_linear_velocity(np.zeros(3))
-                if hasattr(tray_obj, 'set_angular_velocity'):
+                if hasattr(tray_obj, "set_angular_velocity"):
                     tray_obj.set_angular_velocity(np.zeros(3))
                 print(f"[Worker] ✓ Set drawer velocities to zero (ensuring at rest)")
-                
+
                 # Force a physics step to ensure the change propagates
                 if self.world:
                     self.world.step(render=False)
-                
+
                 # Verify the position was actually set
                 readback_pos, _ = tray_obj.get_world_pose()
-                print(f"[Worker] ✓ Set tray_02 position: base Y {self.drawer_tray_base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_world_y:.4f}")
+                print(
+                    f"[Worker] ✓ Set tray_02 position: base Y {self.drawer_tray_base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_world_y:.4f}"
+                )
                 print(f"[Worker] ✓ Readback verification: Y = {readback_pos[1]:.4f} (expected: {new_world_y:.4f})")
             else:
                 print(f"[Worker] ⚠️ tray_02 object not found in scene registry (user_id={user_id})")
                 # Fallback to USD-only method (won't update physics immediately)
                 from pxr import UsdGeom
+
                 xformable = UsdGeom.Xformable(tray_prim)
                 current_translate_op = None
                 for op in xformable.GetOrderedXformOps():
@@ -510,15 +525,16 @@ class IsaacSimWorker:
                     new_pos = Gf.Vec3d(self.drawer_tray_base_pos[0], new_y, self.drawer_tray_base_pos[2])
                     current_translate_op.Set(new_pos)
                     print(f"[Worker] ⚠️ Using USD-only update (physics may not update immediately)")
-                
+
         except Exception as e:
             import traceback
+
             print(f"[Worker] ⚠️ Failed to set tray position: {e}")
             traceback.print_exc()
 
     def update_state(self, config):
         """Update robot joints and object poses without recreating simulation.
-        
+
         CRITICAL SEQUENCE with GLOBAL GRAVITY CONTROL:
         0. Disable gravity GLOBALLY (safe - doesn't invalidate ArticulationView)
         1. Hide robot visually (physics stays enabled - NEVER disable robot physics!)
@@ -530,12 +546,13 @@ class IsaacSimWorker:
         7. Close gripper physically (if grasping) - secure the grasp BEFORE enabling gravity
         8. Re-enable gravity GLOBALLY (object is now secured, won't fall)
         9. Let physics settle (gravity ON, object is secure)
-        
+
         Why GLOBAL gravity control is safe:
         - Doesn't modify ANY object properties (ArticulationView stays valid)
         - Objects won't fall during positioning (gravity = 0)
         - Robot can still grasp objects (collision detection still works)
         - Clean state transitions without touching USD physics properties
+
         """
         import numpy as np
 
@@ -545,20 +562,20 @@ class IsaacSimWorker:
         # Store the config
         self.last_sync_config = config.copy()
         self.last_sync_config["robot_joints"] = np.array(self.last_sync_config["robot_joints"])
-        
+
         # Detect grasp to determine gripper state
         robot_joints = self.last_sync_config["robot_joints"]
         gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
         grasped = abs(gripper_external_force) > 30  # GRASPED_THRESHOLD
-        
+
         # STEP 0: Disable gravity globally (objects won't fall during positioning)
         print(f"[Worker] 🌍 Disabling gravity globally (objects won't fall)")
         self._disable_gravity_globally()
-        
+
         # STEP 1: Hide robot visually (physics stays enabled!)
         print(f"[Worker] 👻 Hiding robot (visually only, physics active)")
         self.hide_robot_funcs["hide"]()
-        
+
         # STEP 2: Position robot with gripper OPEN (if grasping) - ready to support object
         print(f"[Worker] 🦾 Positioning robot (gripper {'OPEN' if grasped else 'as-is'})")
         if grasped:
@@ -567,11 +584,11 @@ class IsaacSimWorker:
             robot_joints_8dof = np.append(robot_joints_temp, robot_joints_temp[-1])
         else:
             robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
-        
+
         # Position robot (physics enabled, just hidden visually)
         self.robot.set_joint_positions(robot_joints_8dof)
         print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
-        
+
         # STEP 3: Update object poses (no gravity = won't fall)
         object_states = config.get(
             "object_poses",
@@ -581,7 +598,7 @@ class IsaacSimWorker:
                 "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]},
             },
         )
-        
+
         print(f"[Worker] 📦 Positioning objects (gravity OFF, won't fall):")
         for obj_name, pose in object_states.items():
             if pose:
@@ -611,7 +628,7 @@ class IsaacSimWorker:
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
         self.set_drawer_joints()
-        
+
         # STEP 5: Let physics settle in zero-G
         print(f"[Worker] ⏱️  Settling physics (zero-G)...")
         for step in range(10):
@@ -620,48 +637,48 @@ class IsaacSimWorker:
         # STEP 6: Show robot
         print(f"[Worker] 👁️  Showing robot")
         self.hide_robot_funcs["show"]()
-        
+
         # STEP 7: Close gripper with physics if object was grasped (BEFORE re-enabling gravity!)
         if grasped:
             print(f"[Worker] 🤏 Closing gripper to secure grasp (gravity still OFF)...")
             from omni.isaac.core.utils.types import ArticulationAction
-            
+
             target_q = robot_joints.copy()
             target_q[6] = -0.044  # Close gripper
-            
+
             # Apply smooth closing action for stable grasp
             for close_step in range(15):  # ~0.5 seconds at 30Hz
                 current_q = self.robot.get_joint_positions()
                 alpha = (close_step + 1) / 15.0
-                
+
                 # Interpolate ONLY the left finger (index 6)
                 new_left = current_q[6] + alpha * (target_q[6] - current_q[6])
-                
+
                 self.robot.apply_action(
                     ArticulationAction(
                         joint_positions=[new_left, new_left],
                         joint_indices=[self.GRIPPER_LEFT_IDX, self.GRIPPER_RIGHT_IDX],
                     )
                 )
-                
+
                 # Step physics
                 self.world.step(render=True)
-            
+
             print(f"[Worker] ✓ Gripper closed securely (gravity still OFF)")
-        
+
         # STEP 8: Re-enable gravity (object is now secured in gripper)
         print(f"[Worker] 🌍 Re-enabling gravity (object secured in gripper)")
         self._enable_gravity_globally()
-        
+
         # STEP 9: Let physics settle with gravity ON (object is secure)
         print(f"[Worker] ⏱️  Settling physics (gravity ON, object secured)...")
         for step in range(20):
             self.world.step(render=True)
-        
+
         # Final physics settling
         for step in range(10):
             self.world.step(render=True)
-        
+
         print(f"[Worker] ✅ State update complete")
 
     def capture_current_state_images(self, output_dir):
@@ -1311,16 +1328,18 @@ class IsaacSimWorker:
                     state["q0_7"] = q0_7
                     state["qg_7"] = qg
                     state["T"] = state["total_frames"] / state["fps"]
-                    
+
                     # Detect if this is a gripper-only action (arm joints unchanged, only gripper changes)
                     arm_delta = np.abs(qg[:6] - q0_7[:6]).max()
                     gripper_delta = np.abs(qg[6] - q0_7[6])
                     state["is_gripper_only"] = arm_delta < 0.001 and gripper_delta > 0.001
-                    
+
                     # For gripper-only actions, use very short duration (0.2 seconds = 6 frames at 30fps)
                     if state["is_gripper_only"]:
                         state["gripper_duration_frames"] = 6  # ~0.2 seconds for instant feel
-                        print(f"🤏 Detected gripper-only action, will complete in {state['gripper_duration_frames']} frames")
+                        print(
+                            f"🤏 Detected gripper-only action, will complete in {state['gripper_duration_frames']} frames"
+                        )
                     else:
                         state["gripper_duration_frames"] = state["total_frames"]  # Use full duration
 
@@ -1334,12 +1353,12 @@ class IsaacSimWorker:
 
                 # Min-jerk interpolation on 7 DOFs with separate timing for gripper vs arm
                 T = state["T"]
-                
+
                 # For arm joints (0-5): use full duration
                 tau_arm = 0.0 if T <= 0 else max(0.0, min((f / state["fps"]) / T, 1.0))
                 s_arm = 10 * tau_arm**3 - 15 * tau_arm**4 + 6 * tau_arm**5
                 sdot_arm = 0.0 if T <= 0 else (30 * tau_arm**2 - 60 * tau_arm**3 + 30 * tau_arm**4) / T
-                
+
                 # For gripper (joint 6): use shorter duration if gripper-only action
                 if state.get("is_gripper_only", False):
                     # Gripper completes in gripper_duration_frames, then holds at goal
@@ -1348,17 +1367,21 @@ class IsaacSimWorker:
                 else:
                     # Regular action: gripper uses same timing as arm
                     tau_gripper = tau_arm
-                    
+
                 s_gripper = 10 * tau_gripper**3 - 15 * tau_gripper**4 + 6 * tau_gripper**5
                 gripper_T_actual = state.get("gripper_duration_frames", state["total_frames"]) / state["fps"]
-                sdot_gripper = 0.0 if gripper_T_actual <= 0 else (30 * tau_gripper**2 - 60 * tau_gripper**3 + 30 * tau_gripper**4) / gripper_T_actual
+                sdot_gripper = (
+                    0.0
+                    if gripper_T_actual <= 0
+                    else (30 * tau_gripper**2 - 60 * tau_gripper**3 + 30 * tau_gripper**4) / gripper_T_actual
+                )
 
                 q0_7, qg_7 = state["q0_7"], state["qg_7"]
-                
+
                 # Interpolate arm joints (0-5) with arm timing
                 q_des_arm = q0_7[:6] + s_arm * (qg_7[:6] - q0_7[:6])
                 qd_des_arm = sdot_arm * (qg_7[:6] - q0_7[:6])
-                
+
                 # Interpolate gripper joint (6) with gripper timing
                 # Once gripper reaches goal (tau >= 1.0), hold at goal position with zero velocity
                 if tau_gripper >= 1.0:
@@ -1367,7 +1390,7 @@ class IsaacSimWorker:
                 else:
                     q_des_gripper = q0_7[6] + s_gripper * (qg_7[6] - q0_7[6])
                     qd_des_gripper = sdot_gripper * (qg_7[6] - q0_7[6])
-                
+
                 # Combine into full 7-DOF command
                 q_des_7 = np.concatenate([q_des_arm, [q_des_gripper]])
                 qd_des_7 = np.concatenate([qd_des_arm, [qd_des_gripper]])
@@ -1512,25 +1535,25 @@ class IsaacSimWorker:
 
         try:
             # CRITICAL: Follow the same sequence as update_state with GLOBAL gravity control
-            
+
             env_data = self.user_environments[user_id]
             robot = env_data["robot"]
-            
+
             # Detect grasp to determine gripper state
             initial_joints = self.last_sync_config["robot_joints"]
             gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
             grasped = abs(gripper_external_force) > 30
             robot_joints = initial_joints.copy()
-            
+
             # STEP 0: Disable gravity globally
             print(f"[Worker] 🌍 Disabling gravity globally for reset (user {user_id})")
             self._disable_gravity_globally()
-            
+
             # STEP 1: Hide robot visually (physics stays enabled!)
             print(f"[Worker] 👻 Hiding robot during reset for user {user_id} (visually only)")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["hide"]()
-            
+
             # STEP 2: Position robot with gripper OPEN (if grasping)
             print(f"[Worker] 🦾 Positioning robot (gripper {'OPEN' if grasped else 'as-is'})")
             if grasped:
@@ -1538,10 +1561,10 @@ class IsaacSimWorker:
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
             else:
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
-            
+
             robot.set_joint_positions(robot_joints_8dof)
             print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
-            
+
             # STEP 3: Reset objects
             object_states = self.last_sync_config.get(
                 "object_poses",
@@ -1619,7 +1642,7 @@ class IsaacSimWorker:
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
-                            #TODO this might not work for tennis ball
+                            # TODO this might not work for tennis ball
 
             # STEP 4: Reset drawer position
             print(f"[Worker] 🗄️  Resetting drawer to synced state for user {user_id}")
@@ -1634,20 +1657,20 @@ class IsaacSimWorker:
             print(f"[Worker] 👁️  Showing robot")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["show"]()
-            
+
             # STEP 7: Close gripper with physics if object was grasped (BEFORE re-enabling gravity!)
             if grasped:
                 print(f"[Worker] 🤏 Closing gripper to secure grasp (gravity still OFF)...")
                 from omni.isaac.core.utils.types import ArticulationAction
-                
+
                 target_q = robot_joints.copy()
                 target_q[6] = -0.044  # Close gripper
-                
+
                 for close_step in range(15):
                     current_q = robot.get_joint_positions()
                     alpha = (close_step + 1) / 15.0
                     new_left = current_q[6] + alpha * (target_q[6] - current_q[6])
-                    
+
                     robot.apply_action(
                         ArticulationAction(
                             joint_positions=[new_left, new_left],
@@ -1655,13 +1678,13 @@ class IsaacSimWorker:
                         )
                     )
                     self.world.step(render=True)
-                
+
                 print(f"[Worker] ✓ Gripper closed securely (gravity still OFF)")
-            
+
             # STEP 8: Re-enable gravity (object is now secured in gripper)
             print(f"[Worker] 🌍 Re-enabling gravity (object secured in gripper)")
             self._enable_gravity_globally()
-            
+
             # STEP 9: Let physics settle with gravity ON (object is secure)
             print(f"[Worker] ⏱️  Settling physics (gravity ON, object secured)...")
             for step in range(20):
@@ -1670,7 +1693,7 @@ class IsaacSimWorker:
             # Final physics settling
             for step in range(10):
                 self.world.step(render=True)
-            
+
             print(f"[Worker] ✅ Reset complete for user {user_id}")
 
         except Exception as e:
@@ -1732,7 +1755,7 @@ class IsaacSimWorker:
                 if captured_files:
                     # Check if this is the first frame after generation completed
                     generation_just_completed = cache.is_complete and not cache.slot_released
-                    
+
                     # Return cached frame data directly (no file copying)
                     result = captured_files
                     if generation_just_completed:

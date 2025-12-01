@@ -246,7 +246,10 @@ def main():
             obs = _load_obs(obs_path)
             print(f"[{args.object}] 🖼️  Extracting RGB and depth...", flush=True)
             rgb_t, depth_t = _extract_rgb_depth(obs)
-            print(f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})", flush=True)
+            print(
+                f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})",
+                flush=True,
+            )
         except Exception as e:
             print(f"[{args.object}] ❌ Failed to load observation: {e}", flush=True)
             result["error"] = f"obs load/extract failed: {e}"
@@ -293,7 +296,7 @@ def main():
                     result["mask_area"] = int(out.extras["mask_area"])
                 if "score" in out.extras:
                     result["score"] = float(out.extras["score"])
-                
+
                 # Print detailed error info
                 error_parts = [f"error={result['error']}"]
                 if "reason" in result:
@@ -302,7 +305,7 @@ def main():
                     error_parts.append(f"mask_area={result['mask_area']}")
                 if "score" in result:
                     error_parts.append(f"score={result['score']:.3f}")
-                
+
                 error_msg = ", ".join(error_parts)
                 print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
                 print(f"[{args.object}]    extras: {out.extras}", flush=True)
@@ -325,7 +328,7 @@ def main():
                 depth_max=1.0,
                 overlay_mask=True,
             )
-            
+
             # Save all visualizations to outbox with clear naming
             status_str = "success" if result["success"] else "failed"
             png_path = outbox / f"viz_{job_id}_{status_str}.png"
@@ -333,7 +336,7 @@ def main():
 
             cv2.imwrite(str(png_path), viz["rgb_with_pose_bgr"])
             result["pose_viz_path"] = str(png_path)
-            
+
             # Also save depth and mask visualizations
             if "depth_viz_bgr" in viz:
                 depth_path = outbox / f"viz_{job_id}_{status_str}_depth.png"
@@ -341,7 +344,7 @@ def main():
             if "mask_gray" in viz:
                 mask_path = outbox / f"viz_{job_id}_{status_str}_mask.png"
                 cv2.imwrite(str(mask_path), viz["mask_gray"])
-            
+
             print(f"[{args.object}] 💾 Saved visualization to {png_path}", flush=True)
         except Exception as e:
             # viz is best-effort, but log errors for debugging

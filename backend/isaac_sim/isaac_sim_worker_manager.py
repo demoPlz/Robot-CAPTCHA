@@ -23,7 +23,9 @@ class PersistentWorkerManager:
         self.animation_initialized = False
 
         # Animation user management
-        self.animation_users = {}  # user_id -> {'session_id': str, 'active': bool, 'start_time': float, 'last_activity': float}
+        self.animation_users = (
+            {}
+        )  # user_id -> {'session_id': str, 'active': bool, 'start_time': float, 'last_activity': float}
         self.available_slots = set(range(max_animation_users))  # Available animation environment slots
         self.session_to_user = {}  # session_id -> user_id mapping
         self.cached_sessions = {}  # session_id -> user_id for replay-only sessions (no slot held)
@@ -131,7 +133,7 @@ class PersistentWorkerManager:
 
         threading.Thread(target=monitor_stdout, daemon=True).start()
         threading.Thread(target=monitor_stderr, daemon=True).start()
-        
+
         # Start animation cleanup thread
         threading.Thread(target=self._cleanup_expired_animations, daemon=True).start()
 
@@ -140,35 +142,35 @@ class PersistentWorkerManager:
         ANIMATION_TIMEOUT = 10.0  # 10 seconds max duration
         ACTIVITY_TIMEOUT = 10.0  # 5 seconds of no frame captures = stale session
         CHECK_INTERVAL = 10.0  # Check every 2 seconds
-        
+
         while True:
             time.sleep(CHECK_INTERVAL)
-            
+
             current_time = time.time()
             expired_sessions = []
-            
+
             # Find expired or stale animations
             for user_id, user_info in list(self.animation_users.items()):
                 if not user_info.get("active"):
                     continue
-                    
+
                 session_id = user_info.get("session_id")
                 if not session_id:
                     continue
-                
+
                 # Check if animation has been running too long
                 if "start_time" in user_info:
                     elapsed = current_time - user_info["start_time"]
                     if elapsed > ANIMATION_TIMEOUT:
                         expired_sessions.append((session_id, user_id, f"timeout after {elapsed:.1f}s"))
                         continue
-                
+
                 # Check if session is stale (no frame captures recently)
                 if "last_activity" in user_info:
                     idle_time = current_time - user_info["last_activity"]
                     if idle_time > ACTIVITY_TIMEOUT:
                         expired_sessions.append((session_id, user_id, f"no activity for {idle_time:.1f}s"))
-            
+
             # Stop expired/stale animations
             for session_id, user_id, reason in expired_sessions:
                 print(f"⏱️ Auto-stopping animation for session {session_id} (user {user_id}): {reason}")
@@ -194,7 +196,7 @@ class PersistentWorkerManager:
         """Explicitly verify that worker's internal simulation state is ready."""
         # Give worker a moment to fully initialize before first check
         time.sleep(0.2)
-        
+
         for attempt in range(timeout):
             try:
                 # Query worker's actual internal state
@@ -331,7 +333,7 @@ class PersistentWorkerManager:
             user_id = self.session_to_user[session_id]
             if user_id in self.animation_users and self.animation_users[user_id]["active"]:
                 return {"status": "error", "message": "Session already has active animation"}
-        
+
         # Check if session is in cached replay (doesn't need new slot)
         if session_id in self.cached_sessions:
             user_id = self.cached_sessions[session_id]
@@ -350,19 +352,19 @@ class PersistentWorkerManager:
 
         # Extract inner result if wrapped
         inner_result = result.get("result", result)
-        
+
         # Check if animation started successfully (various status values indicate success)
         if result.get("status") in ("animation_started", "animation_starting", "success"):
             # Track session -> user mapping
             current_time = time.time()
             self.session_to_user[session_id] = user_id
             self.animation_users[user_id] = {
-                "session_id": session_id, 
-                "active": True, 
+                "session_id": session_id,
+                "active": True,
                 "start_time": current_time,
-                "last_activity": current_time
+                "last_activity": current_time,
             }
-            
+
             # If cached replay, release slot immediately - no simulation needed
             if inner_result.get("mode") == "cached_replay":
                 self.cached_sessions[session_id] = user_id
@@ -383,7 +385,7 @@ class PersistentWorkerManager:
             result = self.stop_user_animation(user_id)
             del self.cached_sessions[session_id]
             return result
-        
+
         if session_id not in self.session_to_user:
             return {"status": "error", "message": "Session not found"}
 

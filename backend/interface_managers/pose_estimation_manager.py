@@ -326,7 +326,7 @@ class PoseEstimationManager:
                                 # Extract camera frame position for debugging
                                 cam_T_obj = np.array(pose_cam_T_obj)
                                 pos_cam = cam_T_obj[:3, 3]
-                                
+
                                 pose_world = self._transform_camera_to_world(pose_cam_T_obj, self.pose_camera_name)
                                 if pose_world is None:
                                     print(
@@ -334,11 +334,13 @@ class PoseEstimationManager:
                                         f"(camera={self.pose_camera_name}), skipping"
                                     )
                                     continue
-                                
+
                                 # Debug output: show before/after transformation
                                 print(f"🔄 [{obj}] Pose transform:")
                                 print(f"   Camera frame: X={pos_cam[0]:+.3f}, Y={pos_cam[1]:+.3f}, Z={pos_cam[2]:+.3f}")
-                                print(f"   World frame:  X={pose_world['pos'][0]:+.3f}, Y={pose_world['pos'][1]:+.3f}, Z={pose_world['pos'][2]:+.3f}")
+                                print(
+                                    f"   World frame:  X={pose_world['pos'][0]:+.3f}, Y={pose_world['pos'][1]:+.3f}, Z={pose_world['pos'][2]:+.3f}"
+                                )
                             except Exception as e:
                                 print(f"⚠️  Failed to transform pose for {obj}: {e}")
                                 import traceback
@@ -355,13 +357,15 @@ class PoseEstimationManager:
                             st = ep[st_id]
                             if "object_poses" not in st:
                                 st["object_poses"] = {}
-                            
+
                             # FALLBACK LOGIC: If estimation failed (pose_world is None), use last known pose
                             if pose_world is None:
                                 fallback_pose = self.last_known_poses.get(obj)
                                 if fallback_pose is not None:
                                     print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
-                                    print(f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}")
+                                    print(
+                                        f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}"
+                                    )
                                     st["object_poses"][obj] = fallback_pose
                                 else:
                                     print(f"❌ Pose estimation failed for {obj} and no previous pose available")

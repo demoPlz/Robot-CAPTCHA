@@ -528,11 +528,16 @@
                 </div>
             </div>
             <div class="approval-modal-footer">
-                <button class="approval-btn approval-btn-reject" id="approval-reject-btn">
-                    <span class="control-icon">❌</span> Reject & Undo
-                </button>
-                <button class="approval-btn approval-btn-proceed" id="approval-proceed-btn">
-                    <span class="control-icon">✅</span> Proceed
+                <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
+                    <button class="approval-btn approval-btn-reject" id="approval-reject-btn">
+                        <span class="control-icon">❌</span> Reject & Undo
+                    </button>
+                    <button class="approval-btn approval-btn-proceed" id="approval-proceed-btn">
+                        <span class="control-icon">✅</span> Proceed
+                    </button>
+                </div>
+                <button class="approval-btn" id="approval-mark-end-btn" style="background: linear-gradient(135deg, #8b5cf6, #6d28d9); font-size: 13px; padding: 10px 20px; min-width: auto;">
+                    <span class="control-icon">🏁</span> Mark as End
                 </button>
             </div>
         </div>
@@ -565,13 +570,18 @@
                 <div id="undo-remaining-actions" style="margin-top: 15px; text-align: center; font-size: 13px; color: #555;"></div>
             </div>
             <div class="approval-modal-footer">
-                <button class="approval-btn approval-btn-reject" id="undo-new-state-btn">
-                    <span class="control-icon">🆕</span> New State
-                    <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Collect new actions</div>
-                </button>
-                <button class="approval-btn approval-btn-proceed" id="undo-old-state-btn">
-                    <span class="control-icon">♻️</span> Old State
-                    <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Resample existing actions</div>
+                <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
+                    <button class="approval-btn approval-btn-reject" id="undo-new-state-btn">
+                        <span class="control-icon">🆕</span> New State
+                        <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Collect new actions</div>
+                    </button>
+                    <button class="approval-btn approval-btn-proceed" id="undo-old-state-btn">
+                        <span class="control-icon">♻️</span> Old State
+                        <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">Resample existing actions</div>
+                    </button>
+                </div>
+                <button class="approval-btn" id="undo-mark-end-btn" style="background: linear-gradient(135deg, #8b5cf6, #6d28d9); font-size: 13px; padding: 10px 20px; min-width: auto;">
+                    <span class="control-icon">🏁</span> Mark as End
                 </button>
             </div>
         </div>
@@ -641,6 +651,7 @@
         const approvalNewImage = document.getElementById('approval-new-image');
         const approvalProceedBtn = document.getElementById('approval-proceed-btn');
         const approvalRejectBtn = document.getElementById('approval-reject-btn');
+        const approvalMarkEndBtn = document.getElementById('approval-mark-end-btn');
 
         // Undo classification modal elements
         const undoClassificationModal = document.getElementById('undo-classification-modal');
@@ -649,6 +660,7 @@
         const undoRemainingActions = document.getElementById('undo-remaining-actions');
         const undoNewStateBtn = document.getElementById('undo-new-state-btn');
         const undoOldStateBtn = document.getElementById('undo-old-state-btn');
+        const undoMarkEndBtn = document.getElementById('undo-mark-end-btn');
 
         const cameraViews = {
             front: document.getElementById('camera-front'),
@@ -1258,6 +1270,7 @@
             try {
                 approvalProceedBtn.disabled = true;
                 approvalRejectBtn.disabled = true;
+                approvalMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
                     method: 'POST',
@@ -1281,6 +1294,7 @@
             } finally {
                 approvalProceedBtn.disabled = false;
                 approvalRejectBtn.disabled = false;
+                approvalMarkEndBtn.disabled = false;
             }
         }
 
@@ -1290,6 +1304,7 @@
             try {
                 approvalProceedBtn.disabled = true;
                 approvalRejectBtn.disabled = true;
+                approvalMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/reject-critical`, {
                     method: 'POST',
@@ -1313,12 +1328,48 @@
             } finally {
                 approvalProceedBtn.disabled = false;
                 approvalRejectBtn.disabled = false;
+                approvalMarkEndBtn.disabled = false;
+            }
+        }
+
+        async function handleApprovalMarkEnd() {
+            if (!currentApprovalState) return;
+            
+            try {
+                approvalProceedBtn.disabled = true;
+                approvalRejectBtn.disabled = true;
+                approvalMarkEndBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/mark-state-as-end`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentApprovalState.episode_id,
+                        state_id: currentApprovalState.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('🏁 State marked as end (episode will finish)');
+                    currentApprovalState = null;
+                    hideApprovalModal();
+                } else {
+                    showToast('❌ Failed to mark as end', 2000);
+                }
+            } catch (e) {
+                console.error('Error marking as end:', e);
+                showToast('❌ Error marking as end', 2000);
+            } finally {
+                approvalProceedBtn.disabled = false;
+                approvalRejectBtn.disabled = false;
+                approvalMarkEndBtn.disabled = false;
             }
         }
 
         // Bind approval modal events
         approvalProceedBtn.addEventListener('click', handleApprovalProceed);
         approvalRejectBtn.addEventListener('click', handleApprovalReject);
+        approvalMarkEndBtn.addEventListener('click', handleApprovalMarkEnd);
 
         // --- Undo Classification Modal ---
         let currentUndoClassification = null;
@@ -1392,6 +1443,7 @@
             try {
                 undoNewStateBtn.disabled = true;
                 undoOldStateBtn.disabled = true;
+                undoMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/classify-undo-new-state`, {
                     method: 'POST',
@@ -1415,6 +1467,7 @@
             } finally {
                 undoNewStateBtn.disabled = false;
                 undoOldStateBtn.disabled = false;
+                undoMarkEndBtn.disabled = false;
             }
         }
 
@@ -1424,6 +1477,7 @@
             try {
                 undoNewStateBtn.disabled = true;
                 undoOldStateBtn.disabled = true;
+                undoMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/classify-undo-old-state`, {
                     method: 'POST',
@@ -1447,12 +1501,48 @@
             } finally {
                 undoNewStateBtn.disabled = false;
                 undoOldStateBtn.disabled = false;
+                undoMarkEndBtn.disabled = false;
+            }
+        }
+
+        async function handleUndoMarkEnd() {
+            if (!currentUndoClassification) return;
+            
+            try {
+                undoNewStateBtn.disabled = true;
+                undoOldStateBtn.disabled = true;
+                undoMarkEndBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/mark-state-as-end`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentUndoClassification.episode_id,
+                        state_id: currentUndoClassification.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('🏁 State marked as end (episode will finish)');
+                    currentUndoClassification = null;
+                    hideUndoClassificationModal();
+                } else {
+                    showToast('❌ Failed to mark as end', 2000);
+                }
+            } catch (e) {
+                console.error('Error marking as end:', e);
+                showToast('❌ Error marking as end', 2000);
+            } finally {
+                undoNewStateBtn.disabled = false;
+                undoOldStateBtn.disabled = false;
+                undoMarkEndBtn.disabled = false;
             }
         }
 
         // Bind undo classification modal events
         undoNewStateBtn.addEventListener('click', handleUndoClassifyNewState);
         undoOldStateBtn.addEventListener('click', handleUndoClassifyOldState);
+        undoMarkEndBtn.addEventListener('click', handleUndoMarkEnd);
 
         // --- Description bank helpers ---
         function extractThusText(s) {

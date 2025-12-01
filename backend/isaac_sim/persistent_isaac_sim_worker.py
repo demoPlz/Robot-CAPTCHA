@@ -135,7 +135,7 @@ class PersistentWorker:
                 print(
                     f"Debug: After capture_static_images - simulation_initialized = {self.isaac_worker.simulation_initialized}"
                 )
-                
+
                 # CRITICAL: Ensure simulation_initialized flag is set before returning
                 # This prevents race condition in manager's _verify_worker_simulation_ready()
                 if self.isaac_worker.simulation_initialized:
@@ -218,11 +218,11 @@ class PersistentWorker:
 
                 # Check if generation complete flag is present
                 generation_complete = result.pop("_generation_complete", False) if isinstance(result, dict) else False
-                
+
                 response = {"status": "success", "action": action, "result": result}
                 if generation_complete:
                     response["generation_complete"] = True
-                
+
                 return response
 
             elif action == "start_animation_loop":

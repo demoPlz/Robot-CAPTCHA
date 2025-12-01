@@ -102,30 +102,18 @@ class DatasetManager:
             # Update both the dataset features and metadata
             self.dataset.features["action"]["shape"] = new_action_shape
             self.dataset.meta.features["action"]["shape"] = new_action_shape
-            
+
             # Add new features for action selection logging to BOTH features dicts
             if "action_propensity" not in self.dataset.features:
-                self.dataset.features["action_propensity"] = {
-                    "dtype": "float32",
-                    "shape": (1,),
-                    "names": None
-                }
+                self.dataset.features["action_propensity"] = {"dtype": "float32", "shape": (1,), "names": None}
                 self.dataset.meta.features["action_propensity"] = self.dataset.features["action_propensity"]
-            
+
             if "selector_mode" not in self.dataset.features:
-                self.dataset.features["selector_mode"] = {
-                    "dtype": "string",
-                    "shape": (1,),
-                    "names": None
-                }
+                self.dataset.features["selector_mode"] = {"dtype": "string", "shape": (1,), "names": None}
                 self.dataset.meta.features["selector_mode"] = self.dataset.features["selector_mode"]
-            
+
             if "approval_status" not in self.dataset.features:
-                self.dataset.features["approval_status"] = {
-                    "dtype": "string",
-                    "shape": (1,),
-                    "names": None
-                }
+                self.dataset.features["approval_status"] = {"dtype": "string", "shape": (1,), "names": None}
                 self.dataset.meta.features["approval_status"] = self.dataset.features["approval_status"]
 
             # Recreate the HF dataset with updated features
@@ -144,9 +132,9 @@ class DatasetManager:
 
                 # Replace the old dataset
                 self.dataset.hf_dataset = new_hf_dataset
-            
+
             # Clear any existing episode buffer so it gets recreated with new features
-            if hasattr(self.dataset, 'episode_buffer') and self.dataset.episode_buffer is not None:
+            if hasattr(self.dataset, "episode_buffer") and self.dataset.episode_buffer is not None:
                 self.dataset.episode_buffer = None
 
             print(
@@ -161,13 +149,13 @@ class DatasetManager:
         """Save episode from completed states buffer to dataset."""
         episode_index = self.dataset.meta.total_episodes
         propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
-        
+
         for state_id in sorted(buffer.keys()):
             state = buffer[state_id]
             obs = self.load_obs_from_disk(state["obs_path"])
             if "depth" in obs:
                 del obs["depth"]  # delete the depth tensor
-            
+
             # Construct frame with action selection metadata
             frame = {
                 **obs,
@@ -177,27 +165,33 @@ class DatasetManager:
                 "selector_mode": state.get("action_selection_metadata", {}).get("selector_used", "unknown"),
                 "approval_status": state.get("approval_status") or "none",  # "approved", "rejected", or "none"
             }
-            
+
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
-            
+
             # Log detailed propensity info to separate JSONL file for offline analysis
             action_metadata = state.get("action_selection_metadata", {})
             log_entry = {
                 "episode_index": episode_index,
                 "state_id": state_id,
                 "frame_index": self.dataset.episode_buffer["size"] - 1,  # Just added
-                "timestamp": self.dataset.episode_buffer["timestamp"][-1] if self.dataset.episode_buffer["timestamp"] else None,
+                "timestamp": (
+                    self.dataset.episode_buffer["timestamp"][-1] if self.dataset.episode_buffer["timestamp"] else None
+                ),
                 "is_critical": state.get("critical", False),
                 "approval_status": state.get("approval_status"),
                 "action_propensity": float(state.get("action_propensity", 1.0)),
                 "selector_mode": action_metadata.get("selector_used"),
                 "epsilon": action_metadata.get("epsilon"),
                 "resampled": action_metadata.get("resampled", False),
-                "num_candidate_actions": action_metadata.get("num_remaining_actions") if action_metadata.get("resampled") else len(state.get("actions", [])),
+                "num_candidate_actions": (
+                    action_metadata.get("num_remaining_actions")
+                    if action_metadata.get("resampled")
+                    else len(state.get("actions", []))
+                ),
                 "num_already_executed": action_metadata.get("num_already_executed", 0),
             }
-            
+
             # Append to JSONL log
             with open(propensity_log_path, "a") as f:
                 f.write(json.dumps(log_entry) + "\n")

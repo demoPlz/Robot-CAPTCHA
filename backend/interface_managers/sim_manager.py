@@ -171,7 +171,7 @@ class SimManager:
 
             # Get drawer joint positions if available
             drawer_joint_positions = state_info.get("drawer_joint_positions", {})
-            
+
             print(f"🗄️  [SimManager] drawer_joint_positions from state_info: {drawer_joint_positions}")
 
             config = {
@@ -181,7 +181,7 @@ class SimManager:
                 "object_poses": state_info.get("object_poses", {}),
                 "drawer_joint_positions": drawer_joint_positions if drawer_joint_positions else {},
             }
-            
+
             print(f"🗄️  [SimManager] Config drawer_joint_positions: {config['drawer_joint_positions']}")
 
             # Use persistent worker for fast capture with animation sync
@@ -239,7 +239,7 @@ class SimManager:
                 duration=duration,
                 gripper_action=gripper_action,
             )
-            
+
             return result
 
         except Exception as e:
@@ -300,7 +300,7 @@ class SimManager:
                 return {"status": "error", "message": "No active animation for session"}
 
             result = self.isaac_manager.capture_user_frame(user_id)
-            
+
             # Check if generation just completed - auto-release slot
             if result.get("generation_complete") and session_id in self.isaac_manager.session_to_user:
                 user_id = self.isaac_manager.session_to_user[session_id]
@@ -361,55 +361,57 @@ class SimManager:
 
     def _capture_and_persist_webcam_views(self, episode_id: str, state_id: int) -> dict[str, str]:
         """Capture webcam views (left and front) and persist them to disk.
-        
+
         Args:
             episode_id: Episode identifier
             state_id: State identifier
-            
+
         Returns:
             Dict mapping webcam view names to file paths (e.g., {"webcam_left": "/path/to/file.jpg"})
+
         """
         if not self.webcam_manager:
             return {}
-            
+
         view_paths = {}
         try:
             # Get latest webcam snapshots (base64 data URLs)
             webcam_snapshots = self.webcam_manager.snapshot_latest_views()
-            
+
             # Only capture left and front cameras
             target_cams = ["left", "front"]
-            
+
             # Create directory for webcam views
             d = self.obs_cache_root / str(episode_id) / "webcam_views"
             d.mkdir(parents=True, exist_ok=True)
-            
+
             for cam_name in target_cams:
                 if cam_name in webcam_snapshots:
                     data_url = webcam_snapshots[cam_name]
-                    
+
                     # Extract base64 data from data URL
                     if isinstance(data_url, str) and "base64," in data_url:
                         idx = data_url.find("base64,")
-                        b64_data = data_url[idx + len("base64,"):]
-                        
+                        b64_data = data_url[idx + len("base64,") :]
+
                         try:
                             import base64
+
                             raw_data = base64.b64decode(b64_data)
-                            
+
                             # Save to disk with webcam_ prefix to distinguish from sim views
                             file_path = d / f"{state_id}_webcam_{cam_name}.jpg"
                             with open(file_path, "wb") as f:
                                 f.write(raw_data)
-                            
+
                             # Use webcam_ prefix in the key to distinguish from sim views
                             view_paths[f"webcam_{cam_name}"] = str(file_path)
                             print(f"✓ Captured webcam view: {cam_name} -> {file_path}")
-                            
+
                         except Exception as e:
                             print(f"⚠️ Failed to decode/save webcam view {cam_name}: {e}")
-                            
+
         except Exception as e:
             print(f"⚠️ Failed to capture webcam views for ep={episode_id}, state={state_id}: {e}")
-            
+
         return view_paths

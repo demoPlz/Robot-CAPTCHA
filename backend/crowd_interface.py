@@ -14,6 +14,7 @@ from threading import Lock
 import numpy as np
 import torch
 from hardware_config import CAM_IDS, REAL_CALIB_PATHS, SIM_CALIB_PATHS
+from interface_managers.action_selector_manager import ActionSelectorManager
 from interface_managers.calibration_manager import CalibrationManager
 from interface_managers.dataset_manager import DatasetManager
 from interface_managers.demo_video_manager import DemoVideoManager
@@ -23,7 +24,6 @@ from interface_managers.pose_estimation_manager import PoseEstimationManager
 from interface_managers.sim_manager import SimManager
 from interface_managers.state_manager import StateManager
 from interface_managers.webcam_manager import WebcamManager
-from interface_managers.action_selector_manager import ActionSelectorManager
 
 
 class CrowdInterface:

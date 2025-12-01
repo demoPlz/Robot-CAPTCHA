@@ -6,15 +6,16 @@ Manages action selection strategy for the crowd interface. Supports:
 - Pure learned selection (epsilon=0)
 
 Handles propensity logging for importance-weighted training.
+
 """
 
 import random
+import sys
+from pathlib import Path
 from typing import Any, Literal
 
 import torch
 
-import sys
-from pathlib import Path
 # Add backend to path to support both absolute and relative imports
 backend_path = Path(__file__).parent.parent
 if str(backend_path) not in sys.path:
@@ -27,15 +28,16 @@ from action_selector.selector import ActionSelector
 
 class ActionSelectorManager:
     """Manages action selection strategy and propensity logging.
-    
+
     Supports three modes:
     1. "random": Pure uniform random selection
     2. "epsilon_greedy": Mix of random (epsilon) and learned (1-epsilon)
     3. "learned": Pure learned selection (epsilon=0)
-    
+
     For epsilon-greedy, propensity is computed as:
         P(a|s) = epsilon * (1/n) + (1-epsilon) * P_learned(a|s)
     where n is the number of actions.
+
     """
 
     def __init__(
@@ -46,12 +48,13 @@ class ActionSelectorManager:
         device: str = "cpu",
     ):
         """Initialize action selector manager.
-        
+
         Args:
             mode: Selection strategy ('random', 'epsilon_greedy', or 'learned')
             epsilon: Exploration rate for epsilon-greedy (0.0 to 1.0)
             learned_model_path: Path to learned model weights (required for epsilon_greedy/learned)
             device: Device for learned model ('cpu' or 'cuda')
+
         """
         self.mode = mode
         self.epsilon = epsilon
@@ -77,16 +80,17 @@ class ActionSelectorManager:
         self, actions: list[torch.Tensor], state_info: dict[str, Any]
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
         """Select an action and compute its propensity.
-        
+
         Args:
             actions: List of action tensors from crowd workers
             state_info: State information (observations, metadata, etc.)
-        
+
         Returns:
             Tuple of:
                 - selected_action: The chosen action tensor
                 - propensity: P(selected_action | state)
                 - metadata: Additional info about selection (selector used, epsilon, etc.)
+
         """
         if len(actions) == 0:
             raise ValueError("Cannot select from empty action list")
@@ -140,17 +144,18 @@ class ActionSelectorManager:
         self, actions: list[torch.Tensor], state_info: dict[str, Any], target_action: torch.Tensor
     ) -> tuple[torch.Tensor, float]:
         """Get learned selector's propensity for a specific action.
-        
+
         Used in epsilon-greedy when random selector chooses an action,
         but we need learned propensity for the full propensity calculation.
-        
+
         Args:
             actions: All available actions
             state_info: State information
             target_action: The action to get propensity for
-        
+
         Returns:
             Tuple of (target_action, its learned propensity)
+
         """
         with torch.no_grad():
             # Get all learned propensities

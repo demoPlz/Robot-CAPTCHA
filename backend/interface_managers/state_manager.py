@@ -143,9 +143,11 @@ class StateManager:
         # Critical state approval tracking
         self.pending_approval_state = None  # {episode_id, state_id, approved: None/True/False}
         self.approval_lock = Lock()
-        
+
         # Undo state tracking
-        self.pending_undo_classification = None  # {episode_id, state_id, is_new_state: None/True/False, already_executed_actions: []}
+        self.pending_undo_classification = (
+            None  # {episode_id, state_id, is_new_state: None/True/False, already_executed_actions: []}
+        )
         self.undo_lock = Lock()
         self.undo_motion_start_state_id = None  # Track when undo motion begins to delete intermediate states
 
@@ -249,21 +251,22 @@ class StateManager:
             info["critical"] = True
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
-        
+
         # ---- Phase 1.4: Check if this is post-undo arrival, trigger classification if needed ----
         should_trigger_undo_classification = False
         undo_arrived_obs_path = None
         undo_classification_result = None
         with self.undo_lock:
-            if (self.pending_undo_classification is not None and 
-                self.pending_undo_classification.get("awaiting_robot_arrival", False)):
+            if self.pending_undo_classification is not None and self.pending_undo_classification.get(
+                "awaiting_robot_arrival", False
+            ):
                 should_trigger_undo_classification = True
                 # Get the obs_path from the state we just marked critical
                 with self.state_lock:
                     ep = self.pending_states_by_episode.get(latest_episode_id)
                     if ep and latest_state_id in ep:
                         undo_arrived_obs_path = ep[latest_state_id].get("obs_path")
-        
+
         if should_trigger_undo_classification and undo_arrived_obs_path:
             # Robot has arrived at undo target and we marked it critical
             # Now trigger classification modal (blocking)
@@ -288,13 +291,14 @@ class StateManager:
                 self.pending_approval_state = {
                     "episode_id": latest_episode_id,
                     "state_id": latest_state_id,
-                    "approved": None  # None=pending, True=approved, False=rejected
+                    "approved": None,  # None=pending, True=approved, False=rejected
                 }
-            
+
             print(f"⏸️  Waiting for administrator approval for state {latest_state_id}...")
-            
+
             # Poll for approval decision (blocking)
             import time
+
             while True:
                 time.sleep(0.1)
                 with self.approval_lock:
@@ -306,13 +310,13 @@ class StateManager:
                         approved = self.pending_approval_state["approved"]
                         self.pending_approval_state = None
                         break
-        
+
         if not approved:
             # Administrator rejected - perform undo
             print(f"❌ Administrator rejected state {latest_state_id}, performing undo")
             self.undo_to_previous_critical_state()
             return
-        
+
         print(f"✅ Administrator approved state {latest_state_id}, proceeding...")
 
         # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
@@ -323,7 +327,7 @@ class StateManager:
                 print(f"⚠️  State {latest_state_id} was removed during approval")
                 return
             info = ep[latest_state_id]
-        
+
         poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
             latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
         )
@@ -335,7 +339,7 @@ class StateManager:
                 # Load the observation
                 obs_dict = torch.load(info["obs_path"], map_location="cpu")
                 drawer_joint_positions = self.drawer_position.get_joint_position_from_obs(obs_dict)
-                
+
                 if drawer_joint_positions:
                     # Update the state info with drawer position
                     with self.state_lock:
@@ -343,7 +347,9 @@ class StateManager:
                         if ep and latest_state_id in ep:
                             ep[latest_state_id]["drawer_joint_positions"] = drawer_joint_positions
                             drawer_positions_ready = True
-                            print(f"🗄️  Drawer position captured for critical state (ep={latest_episode_id}, state={latest_state_id})")
+                            print(
+                                f"🗄️  Drawer position captured for critical state (ep={latest_episode_id}, state={latest_state_id})"
+                            )
                 else:
                     print(f"⚠️  Drawer position estimation failed for ep={latest_episode_id}, state={latest_state_id}")
             except Exception as e:
@@ -451,7 +457,7 @@ class StateManager:
                     selected_action, propensity, selection_metadata = self.action_selector.select_action(
                         state_info["actions"][:required_responses], state_info
                     )
-                    
+
                     # Find index of selected action and move it to front
                     for idx, action in enumerate(state_info["actions"][:required_responses]):
                         if torch.equal(action, selected_action):
@@ -461,16 +467,16 @@ class StateManager:
                                 state_info["actions"][0],
                             )
                             break
-                    
+
                     self.latest_goal = state_info["actions"][0]
-                    
+
                     # Store selection metadata and propensity for logging/training
                     state_info["action_selection_metadata"] = selection_metadata
                     state_info["action_propensity"] = propensity
-                    
+
                     print(f"🎯 Selected action using {selection_metadata['selector_used']} selector")
                     print(f"   Propensity: {propensity:.4f} | Mode: {selection_metadata['mode']}")
-                    
+
                     # Track this action as executed for potential resampling after undo
                     if "executed_actions" not in state_info:
                         state_info["executed_actions"] = []
@@ -583,195 +589,200 @@ class StateManager:
         goal = self.latest_goal
         self.latest_goal = None
         return goal
-    
+
     def get_pending_undo_classification(self) -> dict | None:
         """Get the state awaiting undo classification from administrator."""
         with self.undo_lock:
             if self.pending_undo_classification is None or self.pending_undo_classification["is_new_state"] is not None:
                 return None
-            
+
             # Don't show modal until robot has arrived
             if self.pending_undo_classification.get("awaiting_robot_arrival", True):
                 return None
-            
+
             episode_id = self.pending_undo_classification["episode_id"]
             state_id = self.pending_undo_classification["state_id"]
             previous_obs_path = self.pending_undo_classification.get("previous_obs_path")
             arrived_obs_path = self.pending_undo_classification.get("arrived_obs_path")
             already_executed = self.pending_undo_classification.get("already_executed_actions", [])
-            
+
             return {
                 "episode_id": episode_id,
                 "state_id": state_id,
                 "previous_obs_path": previous_obs_path,  # Previous critical state (target)
-                "arrived_obs_path": arrived_obs_path,     # State after undo motion
+                "arrived_obs_path": arrived_obs_path,  # State after undo motion
                 "num_remaining_actions": len(already_executed),
             }
-    
+
     def classify_undo_as_new_state(self, episode_id: int, state_id: int) -> bool:
         """Classify post-undo state as a new state (requires new action submissions)."""
         with self.undo_lock:
             if self.pending_undo_classification is None:
                 return False
-            if (self.pending_undo_classification["episode_id"] != episode_id or 
-                self.pending_undo_classification["state_id"] != state_id):
+            if (
+                self.pending_undo_classification["episode_id"] != episode_id
+                or self.pending_undo_classification["state_id"] != state_id
+            ):
                 return False
-            
+
             self.pending_undo_classification["is_new_state"] = True
             return True
-    
+
     def classify_undo_as_old_state(self, episode_id: int, state_id: int) -> bool:
         """Classify post-undo state as old state (resample from existing actions)."""
         with self.undo_lock:
             if self.pending_undo_classification is None:
                 return False
-            if (self.pending_undo_classification["episode_id"] != episode_id or 
-                self.pending_undo_classification["state_id"] != state_id):
+            if (
+                self.pending_undo_classification["episode_id"] != episode_id
+                or self.pending_undo_classification["state_id"] != state_id
+            ):
                 return False
-            
+
             self.pending_undo_classification["is_new_state"] = False
             return True
-    
+
     def get_pending_approval_state(self) -> dict | None:
         """Get the state awaiting approval from administrator."""
         with self.approval_lock:
             if self.pending_approval_state is None or self.pending_approval_state["approved"] is not None:
                 return None
-            
+
             episode_id = self.pending_approval_state["episode_id"]
             state_id = self.pending_approval_state["state_id"]
-            
+
             # Get state info
             with self.state_lock:
                 if episode_id not in self.pending_states_by_episode:
                     return None
                 if state_id not in self.pending_states_by_episode[episode_id]:
                     return None
-                
+
                 current_state = self.pending_states_by_episode[episode_id][state_id]
-                
+
                 # Find previous critical state for comparison
                 previous_critical_obs_path = None
                 all_states = {
                     **self.pending_states_by_episode.get(episode_id, {}),
-                    **self.completed_states_by_episode.get(episode_id, {})
+                    **self.completed_states_by_episode.get(episode_id, {}),
                 }
-                
+
                 previous_critical_states = [
-                    (sid, sinfo) for sid, sinfo in sorted(all_states.items())
+                    (sid, sinfo)
+                    for sid, sinfo in sorted(all_states.items())
                     if sid < state_id and sinfo.get("critical", False)
                 ]
-                
+
                 if previous_critical_states:
                     _, prev_state = previous_critical_states[-1]
                     previous_critical_obs_path = prev_state.get("obs_path")
-                
+
                 return {
                     "episode_id": episode_id,
                     "state_id": state_id,
                     "obs_path": current_state.get("obs_path"),
-                    "previous_critical_obs_path": previous_critical_obs_path
+                    "previous_critical_obs_path": previous_critical_obs_path,
                 }
-    
+
     def approve_critical_state(self, episode_id: int, state_id: int) -> bool:
         """Approve a pending critical state."""
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
-            if (self.pending_approval_state["episode_id"] != episode_id or 
-                self.pending_approval_state["state_id"] != state_id):
+            if (
+                self.pending_approval_state["episode_id"] != episode_id
+                or self.pending_approval_state["state_id"] != state_id
+            ):
                 return False
-            
+
             self.pending_approval_state["approved"] = True
-            
+
             # Mark the state as approved in completed_states_by_episode
             with self.state_lock:
                 if episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[episode_id]:
                         self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "approved"
-            
+
             return True
-    
+
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
         """Reject a pending critical state."""
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
-            if (self.pending_approval_state["episode_id"] != episode_id or 
-                self.pending_approval_state["state_id"] != state_id):
+            if (
+                self.pending_approval_state["episode_id"] != episode_id
+                or self.pending_approval_state["state_id"] != state_id
+            ):
                 return False
-            
+
             self.pending_approval_state["approved"] = False
-            
+
             # Mark the state as rejected in completed_states_by_episode
             with self.state_lock:
                 if episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[episode_id]:
                         self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "rejected"
-            
+
             return True
 
     def undo_to_previous_critical_state(self) -> dict | None:
         """Undo to the previous critical state by discarding all states since then.
-        
+
         Returns the joint positions and gripper state of the previous critical state,
         or None if there is no previous critical state to undo to.
-        
+
         This function:
         1. Finds the current latest critical state
         2. Finds the previous critical state (if any)
         3. Deletes all states after the previous critical state
         4. Returns the robot position to execute (previous critical state's position)
+
         """
         with self.state_lock:
             if not self.pending_states_by_episode and not self.completed_states_by_episode:
                 print("⚠️  No states to undo")
                 return None
-            
+
             # Get the latest episode
-            all_episode_ids = set(self.pending_states_by_episode.keys()) | set(
-                self.completed_states_by_episode.keys()
-            )
+            all_episode_ids = set(self.pending_states_by_episode.keys()) | set(self.completed_states_by_episode.keys())
             if not all_episode_ids:
                 print("⚠️  No episodes found")
                 return None
-            
+
             latest_episode_id = max(all_episode_ids)
-            
+
             # Combine pending and completed states for this episode
             episode_states = {
                 **self.pending_states_by_episode.get(latest_episode_id, {}),
                 **self.completed_states_by_episode.get(latest_episode_id, {}),
             }
-            
+
             if not episode_states:
                 print("⚠️  No states in latest episode")
                 return None
-            
+
             # Find all critical states in chronological order
             critical_states = [
                 (state_id, state_info)
                 for state_id, state_info in sorted(episode_states.items())
                 if state_info.get("critical", False)
             ]
-            
+
             if len(critical_states) < 2:
                 print("⚠️  Need at least 2 critical states to undo (found {})".format(len(critical_states)))
                 return None
-            
+
             # Get the second-to-last critical state (the one to revert to)
             previous_critical_state_id, previous_critical_state_info = critical_states[-2]
             current_critical_state_id = critical_states[-1][0]
-            
+
             print(f"🔙 Undoing: reverting from state {current_critical_state_id} to state {previous_critical_state_id}")
-            
+
             # Delete all states AFTER the previous critical state (not including it)
             # This deletes both the current critical state and all intermediate non-critical states
-            states_to_delete = [
-                state_id for state_id in episode_states.keys()
-                if state_id > previous_critical_state_id
-            ]
-            
+            states_to_delete = [state_id for state_id in episode_states.keys() if state_id > previous_critical_state_id]
+
             deleted_count = 0
             for state_id in states_to_delete:
                 # Remove from pending states
@@ -782,7 +793,7 @@ class StateManager:
                         self._delete_obs_from_disk(state_info.get("obs_path"))
                         del self.pending_states_by_episode[latest_episode_id][state_id]
                         deleted_count += 1
-                
+
                 # Remove from completed states
                 if latest_episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[latest_episode_id]:
@@ -791,38 +802,40 @@ class StateManager:
                         self._delete_obs_from_disk(state_info.get("obs_path"))
                         del self.completed_states_by_episode[latest_episode_id][state_id]
                         deleted_count += 1
-                
+
                 # Remove from completed buffer (used for dataset writes)
                 if latest_episode_id in self.completed_states_buffer_by_episode:
                     if state_id in self.completed_states_buffer_by_episode[latest_episode_id]:
                         del self.completed_states_buffer_by_episode[latest_episode_id][state_id]
-            
+
             print(f"🗑️  Deleted {deleted_count} states after previous critical state {previous_critical_state_id}")
-            
+
             # Mark the state_id where undo motion begins - all states >= this will be deleted later
             self.undo_motion_start_state_id = previous_critical_state_id + 1
-            
+
             # Note: next_state_id continues incrementing normally - we'll clean up states during undo motion later
-            
+
             # Return the robot position to execute (revert to previous critical state)
             joint_positions = previous_critical_state_info["joint_positions"]
             gripper_action = previous_critical_state_info.get("gripper", 0)
-            
-            print(f"↩️  Returning to state {previous_critical_state_id}: joints={joint_positions}, gripper={gripper_action}")
-            
+
+            print(
+                f"↩️  Returning to state {previous_critical_state_id}: joints={joint_positions}, gripper={gripper_action}"
+            )
+
             # Convert joint_positions dict to tensor in correct order (matching normal action format)
             goal_positions = []
             for joint_name in JOINT_NAMES:
                 joint_value = joint_positions[joint_name]
                 goal_positions.append(float(joint_value))
-            
+
             # Set gripper position based on gripper action
             goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
             goal_tensor = torch.tensor(goal_positions, dtype=torch.float32)
-            
+
             # Set as latest_goal for robot to consume
             self.latest_goal = goal_tensor
-            
+
         # ---- Set up pending undo classification (will be triggered after robot arrives) ----
         # Store the previous critical state info for later classification
         with self.undo_lock:
@@ -834,44 +847,45 @@ class StateManager:
                 "previous_obs_path": previous_critical_state_info.get("obs_path"),  # For side-by-side comparison
                 "awaiting_robot_arrival": True,  # Flag to indicate robot hasn't arrived yet
             }
-        
+
         print(f"↩️  Robot will move to previous state {previous_critical_state_id}...")
         print(f"⏸️  Administrator must classify after arrival: new state or old state?")
-        
+
         return {
             "episode_id": latest_episode_id,
             "reverted_to_state_id": previous_critical_state_id,
             "awaiting_classification": True,
         }
 
-    
     def trigger_undo_classification_after_arrival(self, arrived_obs_path: str):
         """Called after robot arrives at the undo target state.
-        
-        This triggers the classification modal with side-by-side comparison.
-        Blocks until administrator makes a decision.
+
+        This triggers the classification modal with side-by-side comparison. Blocks until administrator makes a
+        decision.
+
         """
         with self.undo_lock:
             if self.pending_undo_classification is None:
                 print("⚠️  No pending undo classification")
                 return
-            
+
             if not self.pending_undo_classification.get("awaiting_robot_arrival"):
                 print("⚠️  Undo classification not awaiting arrival")
                 return
-            
+
             # Update with arrived observation for side-by-side comparison
             self.pending_undo_classification["arrived_obs_path"] = arrived_obs_path
             self.pending_undo_classification["awaiting_robot_arrival"] = False
-            
+
             latest_episode_id = self.pending_undo_classification["episode_id"]
             previous_critical_state_id = self.pending_undo_classification["state_id"]
-        
+
         print(f"📸 Robot arrived at previous state {previous_critical_state_id}")
         print(f"⏸️  Waiting for administrator classification: new state or old state?")
-        
+
         # Poll for administrator decision (blocking)
         import time
+
         while True:
             time.sleep(0.1)
             with self.undo_lock:
@@ -883,17 +897,17 @@ class StateManager:
                     already_executed = self.pending_undo_classification["already_executed_actions"]
                     self.pending_undo_classification = None
                     break
-        
+
         # Delete all states created during undo motion (from undo_motion_start_state_id onwards)
         # This includes all states created while robot was moving back to previous critical state
         self._delete_states_from_id_onwards(latest_episode_id, self.undo_motion_start_state_id)
         self.undo_motion_start_state_id = None
-        
+
         if is_new_state:
             # Treat as new state - the previous critical state remains completed
             # and we'll create a new state when add_state is called
             print(f"✅ Administrator classified as NEW STATE - will collect new actions")
-            
+
             return {
                 "classified_as_new_state": True,
             }
@@ -901,70 +915,71 @@ class StateManager:
             # Treat as old state - resample from existing actions
             # We're acting as if the robot is back at the previous critical state
             print(f"✅ Administrator classified as OLD STATE - will resample from existing actions")
-            
+
             with self.state_lock:
                 # Re-fetch the previous critical state
                 ep = self.completed_states_by_episode.get(latest_episode_id)
                 if not ep or previous_critical_state_id not in ep:
                     print(f"⚠️  Previous critical state no longer exists")
                     return None
-                
+
                 state_info = ep[previous_critical_state_id]
-                
+
                 # Get all submitted actions for this state
                 all_actions = state_info.get("actions", [])
                 required_responses = self.required_responses_per_critical_state
                 available_actions = all_actions[:required_responses]
-                
+
                 if not available_actions:
                     print(f"⚠️  No actions available to resample from")
                     return None
-                
+
                 # Filter out already executed actions
                 remaining_actions = [
-                    action for action in available_actions
+                    action
+                    for action in available_actions
                     if not any(torch.equal(action, executed) for executed in already_executed)
                 ]
-                
+
                 if not remaining_actions:
                     print(f"⚠️  All actions have been executed, cannot resample")
                     print(f"    Consider classifying as new state instead")
                     return None
-                
-                print(f"🎲 Resampling from {len(remaining_actions)} remaining actions (out of {len(available_actions)} total)")
-                
+
+                print(
+                    f"🎲 Resampling from {len(remaining_actions)} remaining actions (out of {len(available_actions)} total)"
+                )
+
                 # Use action selector to pick from remaining actions
                 # Need to compute propensity accounting for the filtering
                 selected_action, base_propensity, selection_metadata = self.action_selector.select_action(
                     remaining_actions, state_info
                 )
-                
+
                 # Adjust propensity to account for filtering out already-executed actions
                 # P(a|s, not executed before) = P(a|s) / P(not executed before | s)
                 # where P(not executed before | s) = sum over remaining actions of P(a|s)
-                
+
                 # For proper importance weighting, we need to compute the conditional propensity
                 # This requires getting propensities for all remaining actions
-                remaining_propensities = self._get_propensities_for_actions(
-                    remaining_actions, state_info
-                )
-                
+                remaining_propensities = self._get_propensities_for_actions(remaining_actions, state_info)
+
                 # The conditional propensity given we're sampling from remaining actions
                 total_remaining_propensity = sum(remaining_propensities)
-                
+
                 # Find the propensity of the selected action among remaining actions
                 selected_idx = None
                 for idx, action in enumerate(remaining_actions):
                     if torch.equal(action, selected_action):
                         selected_idx = idx
                         break
-                
+
                 if selected_idx is None:
                     print(f"⚠️  Selected action not found in remaining actions")
                     return None
-                
+
                 conditional_propensity = remaining_propensities[selected_idx] / total_remaining_propensity
-                
+
                 # Update state info with new selection
                 # Move selected action to front
                 for idx, action in enumerate(state_info["actions"][:required_responses]):
@@ -974,10 +989,10 @@ class StateManager:
                             state_info["actions"][0],
                         )
                         break
-                
+
                 # Set as latest goal
                 self.latest_goal = state_info["actions"][0]
-                
+
                 # Update metadata for this resampled selection
                 state_info["action_selection_metadata"] = {
                     **selection_metadata,
@@ -987,93 +1002,96 @@ class StateManager:
                     "conditional_propensity": conditional_propensity,
                 }
                 state_info["action_propensity"] = conditional_propensity
-                
+
                 # Track this as executed
                 if "executed_actions" not in state_info:
                     state_info["executed_actions"] = []
                 state_info["executed_actions"].append(selected_action)
-                
+
                 print(f"🎯 Resampled action using {selection_metadata['selector_used']} selector")
                 print(f"   Conditional propensity: {conditional_propensity:.4f}")
                 print(f"   (Base propensity: {base_propensity:.4f}, Remaining mass: {total_remaining_propensity:.4f})")
-                
+
             return {
                 "classified_as_new_state": False,
                 "resampled": True,
             }
-    
+
     def _get_propensities_for_actions(self, actions: list, state_info: dict) -> list[float]:
         """Compute propensities for a list of actions without sampling.
-        
+
         This is used for computing conditional propensities when resampling.
+
         """
         if self.action_selector.mode == "random":
             # For random selector, all actions have equal propensity
             n = len(actions)
             return [1.0 / n] * n
-        
+
         elif self.action_selector.mode == "learned":
             # For learned selector, compute softmax probabilities
             import torch.nn.functional as F
+
             with torch.no_grad():
                 state_features = torch.zeros(1).to(self.action_selector.device)
                 action_tensor = torch.stack(actions).to(self.action_selector.device)
                 logits = self.action_selector.learned_selector.model(state_features, action_tensor)
                 probs = F.softmax(logits, dim=0)
                 return probs.cpu().tolist()
-        
+
         elif self.action_selector.mode == "epsilon_greedy":
             # For epsilon-greedy, combine random and learned propensities
             import torch.nn.functional as F
+
             epsilon = self.action_selector.epsilon
             n = len(actions)
-            
+
             with torch.no_grad():
                 state_features = torch.zeros(1).to(self.action_selector.device)
                 action_tensor = torch.stack(actions).to(self.action_selector.device)
                 logits = self.action_selector.learned_selector.model(state_features, action_tensor)
                 learned_probs = F.softmax(logits, dim=0)
-            
+
             # Combine: epsilon * (1/n) + (1-epsilon) * learned_prob
             combined_probs = [
-                epsilon * (1.0 / n) + (1 - epsilon) * learned_prob
-                for learned_prob in learned_probs.cpu().tolist()
+                epsilon * (1.0 / n) + (1 - epsilon) * learned_prob for learned_prob in learned_probs.cpu().tolist()
             ]
             return combined_probs
-        
+
         else:
             # Fallback to uniform
             n = len(actions)
             return [1.0 / n] * n
-    
+
     def _delete_states_from_id_onwards(self, episode_id: int, from_state_id: int):
         """Delete all states (pending, completed, buffer) from from_state_id onwards.
-        
+
         Args:
             episode_id: Episode to delete states from
             from_state_id: Delete all states with state_id >= this value
+
         """
         if from_state_id is None:
             return
-        
+
         with self.state_lock:
             states_to_delete = []
-            
+
             # Collect states to delete from pending
             if episode_id in self.pending_states_by_episode:
                 for state_id in self.pending_states_by_episode[episode_id].keys():
                     if state_id >= from_state_id:
                         states_to_delete.append(state_id)
-            
+
             # Collect states to delete from completed
             if episode_id in self.completed_states_by_episode:
                 for state_id in self.completed_states_by_episode[episode_id].keys():
                     if state_id >= from_state_id:
                         states_to_delete.append(state_id)
-            
+
             # Remove duplicates and sort
             states_to_delete = sorted(set(states_to_delete))
-            
+
             deleted_count = 0
             for state_id in states_to_delete:
                 # Delete from pending
@@ -1083,7 +1101,7 @@ class StateManager:
                         self._delete_obs_from_disk(state_info.get("obs_path"))
                         del self.pending_states_by_episode[episode_id][state_id]
                         deleted_count += 1
-                
+
                 # Delete from completed
                 if episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[episode_id]:
@@ -1091,21 +1109,22 @@ class StateManager:
                         self._delete_obs_from_disk(state_info.get("obs_path"))
                         del self.completed_states_by_episode[episode_id][state_id]
                         deleted_count += 1
-                
+
                 # Delete from buffer
                 if episode_id in self.completed_states_buffer_by_episode:
                     if state_id in self.completed_states_buffer_by_episode[episode_id]:
                         del self.completed_states_buffer_by_episode[episode_id][state_id]
-            
+
             if deleted_count > 0:
                 print(f"🗑️  Deleted {deleted_count} states from state_id {from_state_id} onwards")
-    
+
     def _delete_obs_from_disk(self, obs_path: str | None):
         """Delete observation file from disk cache."""
         if not obs_path:
             return
         try:
             import os
+
             if os.path.exists(obs_path):
                 os.remove(obs_path)
                 print(f"🗑️  Deleted obs cache: {obs_path}")
@@ -1138,10 +1157,12 @@ class StateManager:
         for state_id in self.pending_states_by_episode[episode_id].keys():
             # If demoting a state that's pending approval, clear the approval request
             with self.approval_lock:
-                if (self.pending_approval_state and 
-                    self.pending_approval_state["episode_id"] == episode_id and
-                    self.pending_approval_state["state_id"] == state_id and
-                    state_id < current_state_id):
+                if (
+                    self.pending_approval_state
+                    and self.pending_approval_state["episode_id"] == episode_id
+                    and self.pending_approval_state["state_id"] == state_id
+                    and state_id < current_state_id
+                ):
                     print(f"🚫 Clearing approval request for demoted state {state_id}")
                     self.pending_approval_state = None
             if (
@@ -1292,10 +1313,23 @@ class StateManager:
 
         state_info["action_to_save"] = all_actions
 
+        # Mark as approved since we're auto-filling with "End."
+        state_info["approval_status"] = "approved"
+
         self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
         self.completed_states_by_episode[episode_id][state_id] = state_info
 
         del self.pending_states_by_episode[episode_id][state_id]
+
+        # Clear pending approval if this state was awaiting approval
+        with self.approval_lock:
+            if (
+                self.pending_approval_state
+                and self.pending_approval_state["episode_id"] == episode_id
+                and self.pending_approval_state["state_id"] == state_id
+            ):
+                print(f"✅ Auto-approved state {state_id} (marked as end)")
+                self.pending_approval_state = None
 
         if not self.pending_states_by_episode[episode_id]:
             self._schedule_episode_finalize_after_grace(episode_id)
