@@ -182,18 +182,6 @@ class StateManager:
         # Push obs to monitoring frontend
         self.obs_stream.push_obs_view("obs_main", obs_dict.get("observation.images.cam_main"))
         self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
-        
-        # Check if we just arrived at an undo target state
-        # If so, trigger classification modal (this must happen AFTER we capture the observation)
-        should_trigger_undo_classification = False
-        with self.undo_lock:
-            if (self.pending_undo_classification is not None and 
-                self.pending_undo_classification.get("awaiting_robot_arrival", False)):
-                should_trigger_undo_classification = True
-        
-        if should_trigger_undo_classification:
-            # Robot has arrived at undo target, trigger classification (outside of lock)
-            self.trigger_undo_classification_after_arrival(obs_path)
 
         state_info = {
             # Identity
@@ -220,6 +208,8 @@ class StateManager:
             "task_text": self.task_text,
             # Sim
             "sim_ready": False if self.use_sim else True,
+            # Approval (for critical states only)
+            "approval_status": None,  # None=pending/non-critical, "approved", "rejected"
             # Drawer joint positions will be computed when we call set_last_state_to_critical (like object_poses)
             # "drawer_joint_positions"
             # Poses of each object in self.object will be computed when we call set_last_state_to_critical
@@ -259,31 +249,63 @@ class StateManager:
             info["critical"] = True
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
+        
+        # ---- Phase 1.4: Check if this is post-undo arrival, trigger classification if needed ----
+        should_trigger_undo_classification = False
+        undo_arrived_obs_path = None
+        undo_classification_result = None
+        with self.undo_lock:
+            if (self.pending_undo_classification is not None and 
+                self.pending_undo_classification.get("awaiting_robot_arrival", False)):
+                should_trigger_undo_classification = True
+                # Get the obs_path from the state we just marked critical
+                with self.state_lock:
+                    ep = self.pending_states_by_episode.get(latest_episode_id)
+                    if ep and latest_state_id in ep:
+                        undo_arrived_obs_path = ep[latest_state_id].get("obs_path")
+        
+        if should_trigger_undo_classification and undo_arrived_obs_path:
+            # Robot has arrived at undo target and we marked it critical
+            # Now trigger classification modal (blocking)
+            undo_classification_result = self.trigger_undo_classification_after_arrival(undo_arrived_obs_path)
+            # If we resampled (old state), skip the approval phase since action is already set
+            # If we're collecting new actions (new state), continue with normal approval flow
+            if undo_classification_result and not undo_classification_result.get("classified_as_new_state", True):
+                # Old state - action was resampled and latest_goal is set, skip to pose estimation
+                print(f"⏩ Skipping approval phase - action already resampled from undo")
+                # Skip approval, jump directly to Phase 2
+                approved = True
+            else:
+                # New state - proceed with normal approval flow
+                approved = None  # Will be set in approval phase below
+        else:
+            approved = None  # Will be set in approval phase below
 
         # ---- Phase 1.5: Wait for administrator approval ----
-        # Set pending approval and wait for response
-        with self.approval_lock:
-            self.pending_approval_state = {
-                "episode_id": latest_episode_id,
-                "state_id": latest_state_id,
-                "approved": None  # None=pending, True=approved, False=rejected
-            }
-        
-        print(f"⏸️  Waiting for administrator approval for state {latest_state_id}...")
-        
-        # Poll for approval decision (blocking)
-        import time
-        while True:
-            time.sleep(0.1)
+        if approved is None:  # Only do approval if not already handled by undo classification
+            # Set pending approval and wait for response
             with self.approval_lock:
-                if self.pending_approval_state is None:
-                    # State was demoted, exit
-                    print(f"⚠️  State {latest_state_id} was demoted, canceling approval")
-                    return
-                if self.pending_approval_state["approved"] is not None:
-                    approved = self.pending_approval_state["approved"]
-                    self.pending_approval_state = None
-                    break
+                self.pending_approval_state = {
+                    "episode_id": latest_episode_id,
+                    "state_id": latest_state_id,
+                    "approved": None  # None=pending, True=approved, False=rejected
+                }
+            
+            print(f"⏸️  Waiting for administrator approval for state {latest_state_id}...")
+            
+            # Poll for approval decision (blocking)
+            import time
+            while True:
+                time.sleep(0.1)
+                with self.approval_lock:
+                    if self.pending_approval_state is None:
+                        # State was demoted, exit
+                        print(f"⚠️  State {latest_state_id} was demoted, canceling approval")
+                        return
+                    if self.pending_approval_state["approved"] is not None:
+                        approved = self.pending_approval_state["approved"]
+                        self.pending_approval_state = None
+                        break
         
         if not approved:
             # Administrator rejected - perform undo
@@ -661,6 +683,13 @@ class StateManager:
                 return False
             
             self.pending_approval_state["approved"] = True
+            
+            # Mark the state as approved in completed_states_by_episode
+            with self.state_lock:
+                if episode_id in self.completed_states_by_episode:
+                    if state_id in self.completed_states_by_episode[episode_id]:
+                        self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "approved"
+            
             return True
     
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
@@ -673,6 +702,13 @@ class StateManager:
                 return False
             
             self.pending_approval_state["approved"] = False
+            
+            # Mark the state as rejected in completed_states_by_episode
+            with self.state_lock:
+                if episode_id in self.completed_states_by_episode:
+                    if state_id in self.completed_states_by_episode[episode_id]:
+                        self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "rejected"
+            
             return True
 
     def undo_to_previous_critical_state(self) -> dict | None:
@@ -729,7 +765,8 @@ class StateManager:
             
             print(f"🔙 Undoing: reverting from state {current_critical_state_id} to state {previous_critical_state_id}")
             
-            # Delete all states after the previous critical state
+            # Delete all states AFTER the previous critical state (not including it)
+            # This deletes both the current critical state and all intermediate non-critical states
             states_to_delete = [
                 state_id for state_id in episode_states.keys()
                 if state_id > previous_critical_state_id
@@ -760,13 +797,12 @@ class StateManager:
                     if state_id in self.completed_states_buffer_by_episode[latest_episode_id]:
                         del self.completed_states_buffer_by_episode[latest_episode_id][state_id]
             
-            print(f"🗑️  Deleted {deleted_count} states after state {previous_critical_state_id}")
+            print(f"🗑️  Deleted {deleted_count} states after previous critical state {previous_critical_state_id}")
             
-            # Adjust next_state_id to continue from where we are
-            self.next_state_id = previous_critical_state_id + 1
-            
-            # Mark that undo motion is starting - we'll delete states created during this motion
+            # Mark the state_id where undo motion begins - all states >= this will be deleted later
             self.undo_motion_start_state_id = previous_critical_state_id + 1
+            
+            # Note: next_state_id continues incrementing normally - we'll clean up states during undo motion later
             
             # Return the robot position to execute (revert to previous critical state)
             joint_positions = previous_critical_state_info["joint_positions"]
@@ -848,23 +884,23 @@ class StateManager:
                     self.pending_undo_classification = None
                     break
         
+        # Delete all states created during undo motion (from undo_motion_start_state_id onwards)
+        # This includes all states created while robot was moving back to previous critical state
+        self._delete_states_from_id_onwards(latest_episode_id, self.undo_motion_start_state_id)
+        self.undo_motion_start_state_id = None
+        
         if is_new_state:
             # Treat as new state - the previous critical state remains completed
             # and we'll create a new state when add_state is called
             print(f"✅ Administrator classified as NEW STATE - will collect new actions")
-            
-            # Delete intermediate states created during undo motion
-            self._delete_undo_motion_states(latest_episode_id)
             
             return {
                 "classified_as_new_state": True,
             }
         else:
             # Treat as old state - resample from existing actions
+            # We're acting as if the robot is back at the previous critical state
             print(f"✅ Administrator classified as OLD STATE - will resample from existing actions")
-            
-            # Delete intermediate states created during undo motion
-            self._delete_undo_motion_states(latest_episode_id)
             
             with self.state_lock:
                 # Re-fetch the previous critical state
@@ -1010,38 +1046,59 @@ class StateManager:
             n = len(actions)
             return [1.0 / n] * n
     
-    def _delete_undo_motion_states(self, episode_id: int):
-        """Delete intermediate states created during undo motion.
+    def _delete_states_from_id_onwards(self, episode_id: int, from_state_id: int):
+        """Delete all states (pending, completed, buffer) from from_state_id onwards.
         
-        When undoing, the robot creates uncritical states while traveling from the rejected
-        critical state back to the previous critical state. These should be deleted regardless
-        of whether the administrator classifies the arrival as new or old state.
+        Args:
+            episode_id: Episode to delete states from
+            from_state_id: Delete all states with state_id >= this value
         """
-        if self.undo_motion_start_state_id is None:
+        if from_state_id is None:
             return
         
         with self.state_lock:
             states_to_delete = []
             
-            # Find all states created during undo motion (>= undo_motion_start_state_id)
+            # Collect states to delete from pending
             if episode_id in self.pending_states_by_episode:
                 for state_id in self.pending_states_by_episode[episode_id].keys():
-                    if state_id >= self.undo_motion_start_state_id:
+                    if state_id >= from_state_id:
                         states_to_delete.append(state_id)
+            
+            # Collect states to delete from completed
+            if episode_id in self.completed_states_by_episode:
+                for state_id in self.completed_states_by_episode[episode_id].keys():
+                    if state_id >= from_state_id:
+                        states_to_delete.append(state_id)
+            
+            # Remove duplicates and sort
+            states_to_delete = sorted(set(states_to_delete))
             
             deleted_count = 0
             for state_id in states_to_delete:
-                state_info = self.pending_states_by_episode[episode_id][state_id]
-                # Clean up observation cache
-                self._delete_obs_from_disk(state_info.get("obs_path"))
-                del self.pending_states_by_episode[episode_id][state_id]
-                deleted_count += 1
+                # Delete from pending
+                if episode_id in self.pending_states_by_episode:
+                    if state_id in self.pending_states_by_episode[episode_id]:
+                        state_info = self.pending_states_by_episode[episode_id][state_id]
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.pending_states_by_episode[episode_id][state_id]
+                        deleted_count += 1
+                
+                # Delete from completed
+                if episode_id in self.completed_states_by_episode:
+                    if state_id in self.completed_states_by_episode[episode_id]:
+                        state_info = self.completed_states_by_episode[episode_id][state_id]
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.completed_states_by_episode[episode_id][state_id]
+                        deleted_count += 1
+                
+                # Delete from buffer
+                if episode_id in self.completed_states_buffer_by_episode:
+                    if state_id in self.completed_states_buffer_by_episode[episode_id]:
+                        del self.completed_states_buffer_by_episode[episode_id][state_id]
             
             if deleted_count > 0:
-                print(f"🗑️  Deleted {deleted_count} intermediate states created during undo motion")
-            
-            # Reset the marker
-            self.undo_motion_start_state_id = None
+                print(f"🗑️  Deleted {deleted_count} states from state_id {from_state_id} onwards")
     
     def _delete_obs_from_disk(self, obs_path: str | None):
         """Delete observation file from disk cache."""
