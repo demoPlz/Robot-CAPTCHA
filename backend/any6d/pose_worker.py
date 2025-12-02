@@ -80,8 +80,11 @@ if str(THIS_DIR) not in sys.path:
 from estimate_pose import (
     create_engines,
     estimate_pose_from_tensors,
+    estimate_pose_repeated,
+    estimate_pose_multi_frame,
     reset_tracking,
     visualize_estimation,
+    PoseOutput,
 )
 
 
@@ -119,6 +122,28 @@ def _extract_rgb_depth(obs: dict) -> tuple[torch.Tensor, torch.Tensor]:
     if depth.ndim == 3 and depth.shape[-1] == 1:
         depth = depth.squeeze(-1)
     return rgb, depth
+
+
+def _load_observations(obs_paths: list[str], K: np.ndarray) -> list[dict]:
+    """Load multiple observation files and prepare them for multi-frame estimation.
+    
+    Returns list of dicts with 'rgb', 'depth', 'K' keys.
+    """
+    observations = []
+    for obs_path in obs_paths:
+        try:
+            obs = _load_obs(obs_path)
+            rgb_t, depth_t = _extract_rgb_depth(obs)
+            observations.append({
+                'rgb': rgb_t,
+                'depth': depth_t,
+                'K': torch.from_numpy(K.copy()),
+            })
+        except Exception as e:
+            print(f"⚠️  Failed to load observation {obs_path}: {e}", flush=True)
+            # Skip this observation and continue with others
+            continue
+    return observations
 
 
 def _as_K_array(K_like) -> np.ndarray:
@@ -175,6 +200,12 @@ def main():
     ap.add_argument("--est-refine-iter", type=int, default=None)
     ap.add_argument("--track-refine-iter", type=int, default=None)
     ap.add_argument("--save-viz", action="store_true", help="Save RGB overlay PNG per job")
+    ap.add_argument("--multi-frame", action="store_true", help="Enable multi-frame averaging with outlier rejection")
+    ap.add_argument("--num-frames", type=int, default=5, help="Number of frames to average (multi-frame mode)")
+    ap.add_argument("--repeated-inference", action="store_true", default=False, help="Run inference multiple times on same frame for outlier rejection")
+    ap.add_argument("--num-inferences", type=int, default=5, help="Number of inferences to run (repeated mode)")
+    ap.add_argument("--inlier-threshold", type=float, default=0.05, help="Distance threshold for outlier rejection (meters)")
+    ap.add_argument("--min-inliers", type=int, default=2, help="Minimum inliers required for valid result")
     args = ap.parse_args()
 
     inbox = (args.jobs_dir / "inbox").resolve()
@@ -223,15 +254,29 @@ def main():
         job_id = job.get("job_id", "unknown")
         episode_id = int(job.get("episode_id"))
         state_id = int(job.get("state_id"))
-        obs_path = job.get("obs_path")
+        obs_path = job.get("obs_path")  # Single observation (legacy)
+        obs_paths = job.get("obs_paths")  # Multiple observations (multi-frame)
         prompt = job.get("prompt") or args.prompt or args.object
         K = _as_K_array(job.get("K"))
         est_iters = int(job.get("est_refine_iter") or args.est_refine_iter or 20)
         track_iters = int(job.get("track_refine_iter") or args.track_refine_iter or 8)
 
-        print(f"[{args.object}] 🔍 Processing job {job_id} (ep={episode_id}, state={state_id})", flush=True)
-        print(f"[{args.object}]    obs_path: {obs_path}", flush=True)
-        print(f"[{args.object}]    prompt: {prompt}", flush=True)
+        # Determine mode priority: multi-frame > repeated > single
+        # Default is repeated inference for single frames
+        use_multi_frame = args.multi_frame or obs_paths is not None
+        use_repeated = args.repeated_inference if not use_multi_frame else False
+        if not use_multi_frame and "repeated_inference" in job:
+            use_repeated = bool(job.get("repeated_inference"))
+        
+        if use_multi_frame and obs_paths:
+            print(f"[{args.object}] 🔍 Processing MULTI-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{args.object}]    {len(obs_paths)} observations, prompt: {prompt}", flush=True)
+        elif use_repeated:
+            print(f"[{args.object}] 🔍 Processing REPEATED-INFERENCE job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{args.object}]    {args.num_inferences} inferences with noise, prompt: {prompt}", flush=True)
+        else:
+            print(f"[{args.object}] 🔍 Processing SINGLE-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{args.object}]    obs_path: {obs_path}, prompt: {prompt}", flush=True)
 
         result = {
             "job_id": job_id,
@@ -242,16 +287,23 @@ def main():
         }
 
         try:
-            print(f"[{args.object}] 📂 Loading observation from {obs_path}...", flush=True)
-            obs = _load_obs(obs_path)
-            print(f"[{args.object}] 🖼️  Extracting RGB and depth...", flush=True)
-            rgb_t, depth_t = _extract_rgb_depth(obs)
-            print(
-                f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})",
-                flush=True,
-            )
+            if use_multi_frame and obs_paths:
+                print(f"[{args.object}] 📂 Loading {len(obs_paths)} observations...", flush=True)
+                observations = _load_observations(obs_paths, K)
+                if not observations:
+                    raise RuntimeError("Failed to load any observations from provided paths")
+                print(f"[{args.object}] ✓ Loaded {len(observations)} observations successfully", flush=True)
+            else:
+                print(f"[{args.object}] 📂 Loading observation from {obs_path}...", flush=True)
+                obs = _load_obs(obs_path)
+                print(f"[{args.object}] 🖼️  Extracting RGB and depth...", flush=True)
+                rgb_t, depth_t = _extract_rgb_depth(obs)
+                print(
+                    f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})",
+                    flush=True,
+                )
         except Exception as e:
-            print(f"[{args.object}] ❌ Failed to load observation: {e}", flush=True)
+            print(f"[{args.object}] ❌ Failed to load observation(s): {e}", flush=True)
             result["error"] = f"obs load/extract failed: {e}"
             write_json_atomic(result, outbox, f"{job_id}.json")
             try:
@@ -260,61 +312,172 @@ def main():
                 pass
             continue
 
-        # Run pose (stateless per call)
+        # Run pose (single, repeated, or multi-frame mode)
         try:
-            # Make each call independent
-            reset_tracking(engines)
-
-            print(f"[{args.object}] 🎯 Running pose estimation...", flush=True)
-            out = estimate_pose_from_tensors(
-                mesh=mesh,
-                rgb_t=rgb_t,
-                depth_t=depth_t,
-                K=K,
-                language_prompt=prompt,
-                est_refine_iter=est_iters,
-                track_refine_iter=track_iters,
-                debug=0,
-                engines=engines,
-            )
-            if out.success:
-                result["success"] = True
-                result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
-                result["mask_area"] = int(out.extras.get("mask_area", 0))
-                if "score" in out.extras:
-                    result["score"] = float(out.extras["score"])
-                print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
-                if "score" in result:
-                    print(f"[{args.object}]    confidence score: {result['score']:.3f}", flush=True)
-                print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
+            if use_multi_frame and obs_paths:
+                # Multi-frame mode with outlier rejection
+                print(f"[{args.object}] 🎯 Running MULTI-FRAME pose estimation ({len(observations)} frames)...", flush=True)
+                out = estimate_pose_multi_frame(
+                    mesh=mesh,
+                    observations=observations,
+                    language_prompt=prompt,
+                    num_frames=args.num_frames,
+                    inlier_threshold=args.inlier_threshold,
+                    min_inliers=args.min_inliers,
+                    est_refine_iter=est_iters,
+                    track_refine_iter=track_iters,
+                    debug=0,
+                    engines=engines,
+                )
+                
+                if out.success:
+                    result["success"] = True
+                    result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
+                    result["num_frames_processed"] = out.extras.get("num_frames_processed", 0)
+                    result["successful_frames"] = out.extras.get("successful_frames", 0)
+                    result["failed_frames"] = out.extras.get("failed_frames", 0)
+                    result["num_inliers"] = out.extras.get("num_inliers", 0)
+                    result["num_outliers"] = out.extras.get("num_outliers", 0)
+                    
+                    print(f"[{args.object}] ✅ Multi-frame pose estimation SUCCESS!", flush=True)
+                    print(f"[{args.object}]    Processed: {result['num_frames_processed']} frames", flush=True)
+                    print(f"[{args.object}]    Success: {result['successful_frames']}, Failed: {result['failed_frames']}", flush=True)
+                    print(f"[{args.object}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
+                    print(f"[{args.object}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
+                else:
+                    result["error"] = out.extras.get("error", "multi-frame pose failed")
+                    if "successful_frames" in out.extras:
+                        result["successful_frames"] = out.extras["successful_frames"]
+                    if "failed_frames" in out.extras:
+                        result["failed_frames"] = out.extras["failed_frames"]
+                    
+                    error_msg = result["error"]
+                    if "successful_frames" in result:
+                        error_msg += f", successful={result['successful_frames']}"
+                    if "failed_frames" in result:
+                        error_msg += f", failed={result['failed_frames']}"
+                    
+                    print(f"[{args.object}] ❌ Multi-frame pose estimation FAILED: {error_msg}", flush=True)
+                
+                # Use last observation for visualization
+                rgb_t = observations[-1]['rgb']
+                depth_t = observations[-1]['depth']
+                
+            elif use_repeated:
+                # Repeated inference mode with noise perturbations
+                print(f"[{args.object}] 🎯 Running REPEATED-INFERENCE pose estimation ({args.num_inferences} inferences)...", flush=True)
+                out = estimate_pose_repeated(
+                    mesh=mesh,
+                    rgb_t=rgb_t,
+                    depth_t=depth_t,
+                    K=K,
+                    language_prompt=prompt,
+                    num_inferences=args.num_inferences,
+                    rgb_noise_std=args.rgb_noise_std,
+                    depth_noise_std=args.depth_noise_std,
+                    inlier_threshold=args.inlier_threshold,
+                    min_inliers=args.min_inliers,
+                    est_refine_iter=est_iters,
+                    track_refine_iter=track_iters,
+                    debug=0,
+                    engines=engines,
+                )
+                
+                if out.success:
+                    result["success"] = True
+                    result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
+                    result["num_inferences"] = out.extras.get("num_inferences", 0)
+                    result["successful_inferences"] = out.extras.get("successful_inferences", 0)
+                    result["failed_inferences"] = out.extras.get("failed_inferences", 0)
+                    result["num_inliers"] = out.extras.get("num_inliers", 0)
+                    result["num_outliers"] = out.extras.get("num_outliers", 0)
+                    
+                    print(f"[{args.object}] ✅ Repeated-inference pose estimation SUCCESS!", flush=True)
+                    print(f"[{args.object}]    Inferences: {result['num_inferences']}", flush=True)
+                    print(f"[{args.object}]    Success: {result['successful_inferences']}, Failed: {result['failed_inferences']}", flush=True)
+                    print(f"[{args.object}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
+                    print(f"[{args.object}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
+                else:
+                    result["error"] = out.extras.get("error", "repeated inference failed")
+                    if "successful_inferences" in out.extras:
+                        result["successful_inferences"] = out.extras["successful_inferences"]
+                    if "failed_inferences" in out.extras:
+                        result["failed_inferences"] = out.extras["failed_inferences"]
+                    
+                    error_msg = result["error"]
+                    if "successful_inferences" in result:
+                        error_msg += f", successful={result['successful_inferences']}"
+                    if "failed_inferences" in result:
+                        error_msg += f", failed={result['failed_inferences']}"
+                    
+                    print(f"[{args.object}] ❌ Repeated-inference pose estimation FAILED: {error_msg}", flush=True)
+                
             else:
-                # Extract all available error information
-                result["error"] = out.extras.get("error", "pose failed")
-                if "reason" in out.extras:
-                    result["reason"] = out.extras["reason"]
-                if "mask_area" in out.extras:
-                    result["mask_area"] = int(out.extras["mask_area"])
-                if "score" in out.extras:
-                    result["score"] = float(out.extras["score"])
+                # Single-frame mode (original behavior)
+                reset_tracking(engines)
+                
+                print(f"[{args.object}] 🎯 Running pose estimation...", flush=True)
+                out = estimate_pose_from_tensors(
+                    mesh=mesh,
+                    rgb_t=rgb_t,
+                    depth_t=depth_t,
+                    K=K,
+                    language_prompt=prompt,
+                    est_refine_iter=est_iters,
+                    track_refine_iter=track_iters,
+                    debug=0,
+                    engines=engines,
+                )
+                
+                if out.success:
+                    result["success"] = True
+                    result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
+                    result["mask_area"] = int(out.extras.get("mask_area", 0))
+                    if "score" in out.extras:
+                        result["score"] = float(out.extras["score"])
+                    print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
+                    if "score" in result:
+                        print(f"[{args.object}]    confidence score: {result['score']:.3f}", flush=True)
+                    print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
+                else:
+                    # Extract all available error information
+                    result["error"] = out.extras.get("error", "pose failed")
+                    if "reason" in out.extras:
+                        result["reason"] = out.extras["reason"]
+                    if "mask_area" in out.extras:
+                        result["mask_area"] = int(out.extras["mask_area"])
+                    if "score" in out.extras:
+                        result["score"] = float(out.extras["score"])
 
-                # Print detailed error info
-                error_parts = [f"error={result['error']}"]
-                if "reason" in result:
-                    error_parts.append(f"reason={result['reason']}")
-                if "mask_area" in result:
-                    error_parts.append(f"mask_area={result['mask_area']}")
-                if "score" in result:
-                    error_parts.append(f"score={result['score']:.3f}")
+                    # Print detailed error info
+                    error_parts = [f"error={result['error']}"]
+                    if "reason" in result:
+                        error_parts.append(f"reason={result['reason']}")
+                    if "mask_area" in result:
+                        error_parts.append(f"mask_area={result['mask_area']}")
+                    if "score" in result:
+                        error_parts.append(f"score={result['score']:.3f}")
 
-                error_msg = ", ".join(error_parts)
-                print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
-                print(f"[{args.object}]    extras: {out.extras}", flush=True)
+                    error_msg = ", ".join(error_parts)
+                    print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
+                    print(f"[{args.object}]    extras: {out.extras}", flush=True)
+                    
         except Exception as e:
             result["error"] = f"pose exception: {e}"
             print(f"[{args.object}] ❌ Pose estimation EXCEPTION: {e}", flush=True)
             import traceback
 
             traceback.print_exc()
+            
+            # Create a dummy failed output for visualization to work
+            out = PoseOutput(
+                success=False,
+                pose_cam_T_obj=None,
+                mask=None,
+                bbox_obj_frame=None,
+                to_origin=None,
+                extras={"error": str(e)},
+            )
 
         # TEMPORARY: Always save visualization (both success and failure cases)
         try:

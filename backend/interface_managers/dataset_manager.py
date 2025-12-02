@@ -7,6 +7,7 @@ observation loading/cleanup.
 
 import json
 import os
+import time
 from pathlib import Path
 
 import datasets
@@ -103,18 +104,32 @@ class DatasetManager:
             self.dataset.features["action"]["shape"] = new_action_shape
             self.dataset.meta.features["action"]["shape"] = new_action_shape
 
-            # Add new features for action selection logging to BOTH features dicts
-            if "action_propensity" not in self.dataset.features:
-                self.dataset.features["action_propensity"] = {"dtype": "float32", "shape": (1,), "names": None}
-                self.dataset.meta.features["action_propensity"] = self.dataset.features["action_propensity"]
+            # Add fields for executed actions with their propensities and approvals
+            # All three arrays have matching indices:
+            # executed_actions[i] has executed_propensities[i] and executed_approvals[i]
+            if "executed_actions" not in self.dataset.features:
+                self.dataset.features["executed_actions"] = {
+                    "dtype": "float32",
+                    "shape": (self.required_responses_per_critical_state * original_action_dim,),
+                    "names": None,
+                }
+                self.dataset.meta.features["executed_actions"] = self.dataset.features["executed_actions"]
+            
+            if "executed_propensities" not in self.dataset.features:
+                self.dataset.features["executed_propensities"] = {
+                    "dtype": "float32",
+                    "shape": (self.required_responses_per_critical_state,),
+                    "names": None,
+                }
+                self.dataset.meta.features["executed_propensities"] = self.dataset.features["executed_propensities"]
 
-            if "selector_mode" not in self.dataset.features:
-                self.dataset.features["selector_mode"] = {"dtype": "string", "shape": (1,), "names": None}
-                self.dataset.meta.features["selector_mode"] = self.dataset.features["selector_mode"]
-
-            if "approval_status" not in self.dataset.features:
-                self.dataset.features["approval_status"] = {"dtype": "string", "shape": (1,), "names": None}
-                self.dataset.meta.features["approval_status"] = self.dataset.features["approval_status"]
+            if "executed_approvals" not in self.dataset.features:
+                self.dataset.features["executed_approvals"] = {
+                    "dtype": "float32",  # Using float to allow NaN for non-executed
+                    "shape": (self.required_responses_per_critical_state,),
+                    "names": None,
+                }
+                self.dataset.meta.features["executed_approvals"] = self.dataset.features["executed_approvals"]
 
             # Recreate the HF dataset with updated features
             if self.dataset.hf_dataset is not None:
@@ -145,6 +160,58 @@ class DatasetManager:
     # Episode Saving
     # =========================
 
+    def log_execution_attempt(
+        self,
+        episode_index: int,
+        state_id: int,
+        execution_index: int,
+        action: torch.Tensor,
+        propensity: float,
+        selector_metadata: dict,
+    ) -> None:
+        """Log an individual execution attempt immediately when it happens."""
+        propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
+        
+        log_entry = {
+            "type": "execution_attempt",
+            "episode_index": episode_index,
+            "state_id": state_id,
+            "execution_index": execution_index,
+            "timestamp": time.time(),
+            "propensity": propensity,
+            "selector": selector_metadata.get("selector_used"),
+            "mode": selector_metadata.get("mode"),
+            "resampled": selector_metadata.get("resampled", False),
+            "epsilon": selector_metadata.get("epsilon"),
+        }
+        
+        with open(propensity_log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+    
+    def log_approval_summary(
+        self,
+        episode_index: int,
+        state_id: int,
+        num_executions: int,
+        execution_propensities: list[float],
+        approved: bool,
+    ) -> None:
+        """Log a summary when an action is approved/rejected and we proceed."""
+        propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
+        
+        log_entry = {
+            "type": "approval_summary",
+            "episode_index": episode_index,
+            "state_id": state_id,
+            "timestamp": time.time(),
+            "approved": approved,
+            "num_executions": num_executions,
+            "execution_propensities": execution_propensities,
+        }
+        
+        with open(propensity_log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
     def save_episode(self, buffer):
         """Save episode from completed states buffer to dataset."""
         episode_index = self.dataset.meta.total_episodes
@@ -156,45 +223,44 @@ class DatasetManager:
             if "depth" in obs:
                 del obs["depth"]  # delete the depth tensor
 
+            # Build execution history arrays with matching indices
+            execution_history = state.get("execution_history", [])
+            action_dim = len(state["action_to_save"]) // self.required_responses_per_critical_state
+            
+            # Initialize arrays with NaN
+            executed_actions = np.full(
+                self.required_responses_per_critical_state * action_dim, np.nan, dtype=np.float32
+            )
+            executed_propensities = np.full(self.required_responses_per_critical_state, np.nan, dtype=np.float32)
+            executed_approvals = np.full(self.required_responses_per_critical_state, np.nan, dtype=np.float32)
+            
+            # Fill in data for each execution (matching indices)
+            for i, execution in enumerate(execution_history[:self.required_responses_per_critical_state]):
+                # Store the executed action
+                action_tensor = execution["action"]
+                start_idx = i * action_dim
+                end_idx = start_idx + action_dim
+                executed_actions[start_idx:end_idx] = action_tensor.numpy()
+                
+                # Store propensity
+                executed_propensities[i] = execution["propensity"]
+                
+                # Store approval: 1 = approved, -1 = rejected, None = pending (use NaN)
+                if execution["approval"] is not None:
+                    executed_approvals[i] = float(execution["approval"])
+
             # Construct frame with action selection metadata
             frame = {
                 **obs,
                 "action": state["action_to_save"],
                 "task": state["task_text"],
-                "action_propensity": np.array([state.get("action_propensity", 1.0)], dtype=np.float32),
-                "selector_mode": state.get("action_selection_metadata", {}).get("selector_used", "unknown"),
-                "approval_status": state.get("approval_status") or "none",  # "approved", "rejected", or "none"
+                "executed_actions": executed_actions,
+                "executed_propensities": executed_propensities,
+                "executed_approvals": executed_approvals,
             }
 
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
-
-            # Log detailed propensity info to separate JSONL file for offline analysis
-            action_metadata = state.get("action_selection_metadata", {})
-            log_entry = {
-                "episode_index": episode_index,
-                "state_id": state_id,
-                "frame_index": self.dataset.episode_buffer["size"] - 1,  # Just added
-                "timestamp": (
-                    self.dataset.episode_buffer["timestamp"][-1] if self.dataset.episode_buffer["timestamp"] else None
-                ),
-                "is_critical": state.get("critical", False),
-                "approval_status": state.get("approval_status"),
-                "action_propensity": float(state.get("action_propensity", 1.0)),
-                "selector_mode": action_metadata.get("selector_used"),
-                "epsilon": action_metadata.get("epsilon"),
-                "resampled": action_metadata.get("resampled", False),
-                "num_candidate_actions": (
-                    action_metadata.get("num_remaining_actions")
-                    if action_metadata.get("resampled")
-                    else len(state.get("actions", []))
-                ),
-                "num_already_executed": action_metadata.get("num_already_executed", 0),
-            }
-
-            # Append to JSONL log
-            with open(propensity_log_path, "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
 
         self.dataset.save_episode()
 

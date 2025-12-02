@@ -247,6 +247,7 @@ class CrowdInterface:
             drawer_position_manager=self.drawer_position,
             sim_manager=self.sim_manager,
             action_selector_manager=self.action_selector,
+            dataset_manager=self.dataset_manager,
             persist_views_callback=self._persist_views_to_disk,
             persist_obs_callback=self._persist_obs_to_disk,
             snapshot_views_callback=self.snapshot_latest_views,

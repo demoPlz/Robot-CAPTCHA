@@ -58,6 +58,7 @@ class StateManager:
         drawer_position_manager,
         sim_manager,
         action_selector_manager,
+        dataset_manager,
         # Callbacks for external operations
         persist_views_callback,
         persist_obs_callback,
@@ -86,6 +87,7 @@ class StateManager:
             drawer_position_manager: DrawerPositionManager instance
             sim_manager: SimManager instance
             action_selector_manager: ActionSelectorManager instance for action selection
+            dataset_manager: DatasetManager instance for logging
             persist_views_callback: Callback to persist views to disk
             persist_obs_callback: Callback to persist observations to disk
             snapshot_views_callback: Callback to snapshot current views
@@ -127,6 +129,7 @@ class StateManager:
         self.drawer_position = drawer_position_manager
         self.sim_manager = sim_manager
         self.action_selector = action_selector_manager
+        self.dataset_manager = dataset_manager
 
         # Callbacks for external operations
         self._persist_views_callback = persist_views_callback
@@ -212,6 +215,8 @@ class StateManager:
             "sim_ready": False if self.use_sim else True,
             # Approval (for critical states only)
             "approval_status": None,  # None=pending/non-critical, "approved", "rejected"
+            # Execution history: list of {"action": tensor, "propensity": float, "approval": 1/-1/None}
+            "execution_history": [],
             # Drawer joint positions will be computed when we call set_last_state_to_critical (like object_poses)
             # "drawer_joint_positions"
             # Poses of each object in self.object will be computed when we call set_last_state_to_critical
@@ -481,6 +486,25 @@ class StateManager:
                     if "executed_actions" not in state_info:
                         state_info["executed_actions"] = []
                     state_info["executed_actions"].append(selected_action)
+                    
+                    # Record execution attempt in history (approval status will be set later)
+                    execution_index = len(state_info.get("execution_history", []))
+                    state_info["execution_history"].append({
+                        "action": selected_action.clone(),
+                        "propensity": propensity,
+                        "selector_metadata": selection_metadata.copy(),
+                        "approval": None  # Will be set to 1 (approved) or -1 (rejected) later
+                    })
+                    
+                    # Log this execution attempt immediately
+                    self.dataset_manager.log_execution_attempt(
+                        episode_index=episode_id,
+                        state_id=state_id,
+                        execution_index=execution_index,
+                        action=selected_action,
+                        propensity=propensity,
+                        selector_metadata=selection_metadata,
+                    )
 
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
@@ -701,7 +725,21 @@ class StateManager:
             with self.state_lock:
                 if episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[episode_id]:
-                        self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "approved"
+                        state_info = self.completed_states_by_episode[episode_id][state_id]
+                        state_info["approval_status"] = "approved"
+                        # Mark the last execution attempt as approved
+                        if state_info.get("execution_history"):
+                            state_info["execution_history"][-1]["approval"] = 1
+                            
+                            # Log approval summary
+                            execution_history = state_info["execution_history"]
+                            self.dataset_manager.log_approval_summary(
+                                episode_index=episode_id,
+                                state_id=state_id,
+                                num_executions=len(execution_history),
+                                execution_propensities=[e["propensity"] for e in execution_history],
+                                approved=True,
+                            )
 
             return True
 
@@ -722,7 +760,21 @@ class StateManager:
             with self.state_lock:
                 if episode_id in self.completed_states_by_episode:
                     if state_id in self.completed_states_by_episode[episode_id]:
-                        self.completed_states_by_episode[episode_id][state_id]["approval_status"] = "rejected"
+                        state_info = self.completed_states_by_episode[episode_id][state_id]
+                        state_info["approval_status"] = "rejected"
+                        # Mark the last execution attempt as rejected
+                        if state_info.get("execution_history"):
+                            state_info["execution_history"][-1]["approval"] = -1
+                            
+                            # Log rejection summary (we don't proceed to new state, but still summarize)
+                            execution_history = state_info["execution_history"]
+                            self.dataset_manager.log_approval_summary(
+                                episode_index=episode_id,
+                                state_id=state_id,
+                                num_executions=len(execution_history),
+                                execution_propensities=[e["propensity"] for e in execution_history],
+                                approved=False,
+                            )
 
             return True
 
@@ -1007,6 +1059,25 @@ class StateManager:
                 if "executed_actions" not in state_info:
                     state_info["executed_actions"] = []
                 state_info["executed_actions"].append(selected_action)
+                
+                # Record resampled execution attempt in history
+                execution_index = len(state_info.get("execution_history", []))
+                state_info["execution_history"].append({
+                    "action": selected_action.clone(),
+                    "propensity": conditional_propensity,
+                    "selector_metadata": {**selection_metadata, "resampled": True},
+                    "approval": None  # Will be set when approved/rejected
+                })
+                
+                # Log this resampled execution attempt immediately
+                self.dataset_manager.log_execution_attempt(
+                    episode_index=latest_episode_id,
+                    state_id=previous_critical_state_id,
+                    execution_index=execution_index,
+                    action=selected_action,
+                    propensity=conditional_propensity,
+                    selector_metadata={**selection_metadata, "resampled": True},
+                )
 
                 print(f"🎯 Resampled action using {selection_metadata['selector_used']} selector")
                 print(f"   Conditional propensity: {conditional_propensity:.4f}")

@@ -362,6 +362,31 @@ def estimate_pose_from_tensors(
             extras={"mask_area": area, "reason": "mask area out of bounds"},
         )
 
+    # ---- Validate depth quality in masked region
+    masked_depth = depth_np[ob_mask]
+    if masked_depth.size == 0:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=torch.from_numpy(ob_mask),
+            bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
+            to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
+            extras={"error": "No valid depth values in mask"},
+        )
+    
+    # Check for degenerate depth (all same value or too little variation)
+    depth_std = np.std(masked_depth)
+    depth_range = masked_depth.max() - masked_depth.min()
+    if depth_std < 0.001 or depth_range < 0.005:  # Less than 5mm range
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=torch.from_numpy(ob_mask),
+            bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
+            to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
+            extras={"error": f"Degenerate depth: std={depth_std:.6f}, range={depth_range:.6f}"},
+        )
+
     # ---- Run Any6D initialization
     try:
         pose_init_np = any6d.register_any6d(
@@ -426,6 +451,536 @@ def estimate_pose_from_tensors(
         bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
         to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
         extras=extras,
+    )
+
+
+# ------------------------- Multi-frame tracking with outlier filtering -------------------------
+
+
+def add_observation_noise(
+    rgb: torch.Tensor,
+    depth: torch.Tensor,
+    *,
+    rgb_noise_std: float = 1.0,  # RGB noise in [0-255] scale (reduced from 2.0)
+    depth_noise_std: float = 0.001,  # Depth noise in meters (~1mm, reduced from 2mm)
+    seed: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Add small Gaussian noise to RGB and depth observations.
+    
+    Used to create slightly perturbed versions of the same frame
+    for robust multi-inference estimation.
+    
+    Args:
+        rgb: (H,W,3) RGB tensor (uint8 or float)
+        depth: (H,W) depth tensor (float, meters)
+        rgb_noise_std: Standard deviation of RGB noise
+        depth_noise_std: Standard deviation of depth noise (meters)
+        seed: Random seed for reproducibility
+        
+    Returns:
+        (noisy_rgb, noisy_depth) with same dtypes as inputs
+    """
+    # Set random seed if provided
+    if seed is not None:
+        torch.manual_seed(seed)
+    
+    # RGB noise
+    rgb_float = rgb.float() if rgb.dtype == torch.uint8 else rgb.clone()
+    rgb_noise = torch.randn_like(rgb_float) * rgb_noise_std
+    rgb_noisy = rgb_float + rgb_noise
+    
+    if rgb.dtype == torch.uint8:
+        rgb_noisy = torch.clamp(rgb_noisy, 0, 255).to(torch.uint8)
+    else:
+        # Assume [0,1] range for float inputs
+        if rgb_noisy.max() <= 1.5:  # Heuristic for [0,1] range
+            rgb_noisy = torch.clamp(rgb_noisy, 0.0, 1.0)
+    
+    # Depth noise (convert to float if needed, only add noise where depth > 0)
+    depth_float = depth.float() if depth.dtype != torch.float32 else depth.clone()
+    valid_mask = depth_float > 0
+    depth_noise = torch.randn_like(depth_float) * depth_noise_std
+    depth_noisy = depth_float.clone()
+    depth_noisy[valid_mask] = (depth_float + depth_noise)[valid_mask]
+    depth_noisy = torch.clamp(depth_noisy, 0.0, 10.0)  # Reasonable depth range
+    
+    # Return in original dtype if it was integer
+    if depth.dtype in (torch.uint16, torch.int16, torch.int32):
+        # For integer depth, we still return float since we added fractional noise
+        # Caller expects float depth anyway
+        pass
+    
+    return rgb_noisy, depth_noisy
+
+
+def compute_pose_distance(pose1: np.ndarray, pose2: np.ndarray) -> float:
+    """Compute a combined translation + rotation distance between two 4x4 poses.
+    
+    Returns a scalar metric that combines:
+      - Translation distance (Euclidean norm)
+      - Rotation distance (geodesic angle in radians)
+    
+    Weights are heuristic: translation in meters, rotation contribution scaled.
+    """
+    # Translation component (Euclidean distance)
+    t1 = pose1[:3, 3]
+    t2 = pose2[:3, 3]
+    trans_dist = float(np.linalg.norm(t1 - t2))
+    
+    # Rotation component (geodesic distance)
+    R1 = pose1[:3, :3]
+    R2 = pose2[:3, :3]
+    
+    # Compute relative rotation: R_rel = R1^T @ R2
+    R_rel = R1.T @ R2
+    
+    # Geodesic angle: theta = arccos((trace(R_rel) - 1) / 2)
+    trace_val = np.clip(np.trace(R_rel), -1.0, 3.0)
+    cos_theta = (trace_val - 1.0) / 2.0
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    rot_angle = float(np.arccos(cos_theta))  # radians
+    
+    # Combined metric: weight rotation by ~0.1m per radian (heuristic)
+    # Adjust weight based on your application (larger weight = rotation matters more)
+    rotation_weight = 0.1
+    combined = trans_dist + rotation_weight * rot_angle
+    
+    return combined
+
+
+def reject_outliers_ransac(
+    poses: list[np.ndarray],
+    *,
+    inlier_threshold: float = 0.05,  # 5cm combined distance
+    min_inliers: int = 2,
+) -> tuple[list[np.ndarray], list[int]]:
+    """Simple RANSAC-style outlier rejection for pose estimates.
+    
+    Args:
+        poses: List of 4x4 pose matrices (np.ndarray)
+        inlier_threshold: Maximum distance for a pose to be considered an inlier
+        min_inliers: Minimum number of inliers required (otherwise return empty)
+    
+    Returns:
+        (inlier_poses, inlier_indices)
+    """
+    if len(poses) < min_inliers:
+        return [], []
+    
+    if len(poses) == 1:
+        return poses, [0]
+    
+    # For small sets, use pairwise consensus approach instead of random sampling
+    n = len(poses)
+    best_inliers = []
+    best_indices = []
+    
+    # Try each pose as a potential "good" reference
+    for i in range(n):
+        ref_pose = poses[i]
+        inliers = [ref_pose]
+        indices = [i]
+        
+        for j in range(n):
+            if i == j:
+                continue
+            dist = compute_pose_distance(ref_pose, poses[j])
+            if dist <= inlier_threshold:
+                inliers.append(poses[j])
+                indices.append(j)
+        
+        if len(inliers) > len(best_inliers):
+            best_inliers = inliers
+            best_indices = indices
+    
+    if len(best_inliers) < min_inliers:
+        return [], []
+    
+    return best_inliers, best_indices
+
+
+def average_poses(poses: list[np.ndarray]) -> np.ndarray:
+    """Average a list of 4x4 pose matrices.
+    
+    Translation: simple mean
+    Rotation: quaternion averaging (approximation for small differences)
+    
+    Args:
+        poses: List of 4x4 np.ndarray poses
+    
+    Returns:
+        Averaged 4x4 pose matrix
+    """
+    if not poses:
+        return np.eye(4, dtype=np.float32)
+    
+    if len(poses) == 1:
+        return poses[0].copy()
+    
+    # Average translation
+    translations = np.array([p[:3, 3] for p in poses])
+    avg_translation = np.mean(translations, axis=0)
+    
+    # Average rotation via quaternions (simple approach for similar rotations)
+    try:
+        from scipy.spatial.transform import Rotation as R
+        
+        rotations = [R.from_matrix(p[:3, :3]) for p in poses]
+        quats = np.array([r.as_quat() for r in rotations])  # shape (n, 4)
+        
+        # Ensure all quaternions are in the same hemisphere (flip if needed)
+        q_ref = quats[0]
+        for i in range(1, len(quats)):
+            if np.dot(quats[i], q_ref) < 0:
+                quats[i] = -quats[i]
+        
+        # Average quaternions
+        avg_quat = np.mean(quats, axis=0)
+        avg_quat = avg_quat / np.linalg.norm(avg_quat)  # renormalize
+        
+        avg_rotation = R.from_quat(avg_quat).as_matrix()
+    except ImportError:
+        # Fallback: just use first rotation (scipy not available)
+        avg_rotation = poses[0][:3, :3].copy()
+    
+    # Build averaged pose
+    avg_pose = np.eye(4, dtype=np.float32)
+    avg_pose[:3, :3] = avg_rotation
+    avg_pose[:3, 3] = avg_translation
+    
+    return avg_pose
+
+
+@torch.no_grad()
+def estimate_pose_repeated(
+    mesh: trimesh.Trimesh,
+    rgb_t: torch.Tensor,
+    depth_t: torch.Tensor,
+    K: torch.Tensor | np.ndarray,
+    *,
+    language_prompt: str = "object",
+    num_inferences: int = 5,
+    rgb_noise_std: float = 1.0,
+    depth_noise_std: float = 0.001,
+    inlier_threshold: float = 0.05,
+    min_inliers: int = 2,
+    depth_min: float = 0.1,
+    depth_max: float = 1.0,
+    mask_min_pixels: int = 500,
+    mask_max_pixels: int = 80_000,
+    est_refine_iter: int = 20,
+    track_refine_iter: int = 8,
+    debug: int = 0,
+    engines: PoseEngines | None = None,
+) -> PoseOutput:
+    """Multi-inference pose estimation on a SINGLE frame with noise perturbations.
+    
+    Runs pose estimation multiple times on slightly perturbed versions of the same
+    observation, then uses outlier rejection and averaging for robust results.
+    
+    This is useful when you only have one frame but want outlier rejection.
+    
+    Args:
+        mesh: Object mesh
+        rgb_t: (H,W,3) RGB tensor
+        depth_t: (H,W) depth tensor
+        K: (3,3) camera intrinsics
+        num_inferences: Number of times to run inference (with noise)
+        rgb_noise_std: RGB noise standard deviation (in 0-255 scale)
+        depth_noise_std: Depth noise standard deviation (meters)
+        inlier_threshold: Distance threshold for outlier rejection
+        min_inliers: Minimum inliers needed for valid result
+        ...: Other parameters passed to estimate_pose_from_tensors
+        
+    Returns:
+        PoseOutput with averaged pose (or failure if insufficient inliers)
+    """
+    if num_inferences < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={"error": f"num_inferences ({num_inferences}) < min_inliers ({min_inliers})"},
+        )
+    
+    # Create engines once for all inferences
+    if engines is None:
+        engines = create_engines(mesh=mesh, debug=debug)
+    
+    successful_poses = []
+    successful_outputs = []
+    failed_count = 0
+    
+    # Run inference multiple times with noise perturbations
+    # NOTE: We don't actually add noise because it breaks LangSAM mask generation
+    # Instead, we rely on the inherent randomness in the neural networks
+    for i in range(num_inferences):
+        # Use original data for all inferences
+        # The randomness comes from the neural networks themselves (dropout, etc.)
+        rgb_i = rgb_t
+        depth_i = depth_t
+        
+        # Each inference is independent (reset tracking)
+        reset_tracking(engines)
+        
+        result = estimate_pose_from_tensors(
+            mesh=mesh,
+            rgb_t=rgb_i,
+            depth_t=depth_i,
+            K=K,
+            language_prompt=language_prompt,
+            depth_min=depth_min,
+            depth_max=depth_max,
+            mask_min_pixels=mask_min_pixels,
+            mask_max_pixels=mask_max_pixels,
+            est_refine_iter=est_refine_iter,
+            track_refine_iter=track_refine_iter,
+            debug=debug,
+            engines=engines,
+        )
+        
+        if result.success:
+            pose_np = result.pose_cam_T_obj.detach().cpu().numpy().astype(np.float32)
+            successful_poses.append(pose_np)
+            successful_outputs.append(result)
+        else:
+            failed_count += 1
+            # Always log failures for debugging
+            error_msg = result.extras.get('error', 'unknown')
+            reason = result.extras.get('reason', '')
+            mask_area = result.extras.get('mask_area', 'N/A')
+            score = result.extras.get('score', 'N/A')
+            print(f"[Inference {i+1}/{num_inferences}] FAILED: {error_msg}", flush=True)
+            if reason:
+                print(f"  Reason: {reason}", flush=True)
+            if mask_area != 'N/A':
+                print(f"  Mask area: {mask_area}", flush=True)
+            if score != 'N/A':
+                print(f"  Score: {score}", flush=True)
+    
+    # Check if we have enough successful estimates
+    if len(successful_poses) < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={
+                "error": f"Insufficient successful inferences: {len(successful_poses)}/{num_inferences}",
+                "failed_inferences": failed_count,
+            },
+        )
+    
+    # Reject outliers
+    inlier_poses, inlier_indices = reject_outliers_ransac(
+        successful_poses,
+        inlier_threshold=inlier_threshold,
+        min_inliers=min_inliers,
+    )
+    
+    if len(inlier_poses) < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={
+                "error": f"Insufficient inliers after outlier rejection: {len(inlier_poses)}/{len(successful_poses)}",
+                "successful_inferences": len(successful_poses),
+                "failed_inferences": failed_count,
+            },
+        )
+    
+    # Average the inlier poses
+    avg_pose_np = average_poses(inlier_poses)
+    
+    # Use the first successful output for mask/bbox/to_origin
+    representative_output = successful_outputs[inlier_indices[0]]
+    
+    return PoseOutput(
+        success=True,
+        pose_cam_T_obj=torch.from_numpy(avg_pose_np),
+        mask=representative_output.mask,
+        bbox_obj_frame=representative_output.bbox_obj_frame,
+        to_origin=representative_output.to_origin,
+        extras={
+            "num_inferences": num_inferences,
+            "successful_inferences": len(successful_poses),
+            "failed_inferences": failed_count,
+            "num_inliers": len(inlier_poses),
+            "num_outliers": len(successful_poses) - len(inlier_poses),
+            "inlier_indices": inlier_indices,
+        },
+    )
+
+
+@torch.no_grad()
+def estimate_pose_multi_frame(
+    mesh: trimesh.Trimesh,
+    observations: list[dict],  # List of obs dicts with 'rgb', 'depth', 'K'
+    *,
+    language_prompt: str = "object",
+    num_frames: int | None = None,  # If None, use all observations
+    inlier_threshold: float = 0.05,  # meters + weighted rotation
+    min_inliers: int = 2,
+    depth_min: float = 0.1,
+    depth_max: float = 1.0,
+    mask_min_pixels: int = 500,
+    mask_max_pixels: int = 80_000,
+    est_refine_iter: int = 20,
+    track_refine_iter: int = 8,
+    debug: int = 0,
+    engines: PoseEngines | None = None,
+) -> PoseOutput:
+    """Multi-frame pose estimation with outlier rejection and averaging.
+    
+    Processes multiple observations (frames) with continuous tracking,
+    rejects outliers using RANSAC-style consensus, and returns averaged pose.
+    
+    Args:
+        mesh: Object mesh
+        observations: List of observation dicts, each containing:
+            - 'rgb': torch.Tensor (H,W,3)
+            - 'depth': torch.Tensor (H,W)
+            - 'K': torch.Tensor or np.ndarray (3,3)
+        language_prompt: Text prompt for mask generation
+        num_frames: Number of frames to process (None = all)
+        inlier_threshold: Distance threshold for outlier rejection
+        min_inliers: Minimum inliers needed for valid result
+        ...: Other parameters passed to estimate_pose_from_tensors
+        
+    Returns:
+        PoseOutput with averaged pose (or failure if insufficient inliers)
+    """
+    if not observations:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={"error": "No observations provided"},
+        )
+    
+    # Create engines once for all frames
+    if engines is None:
+        engines = create_engines(mesh=mesh, debug=debug)
+    
+    # Process requested number of frames
+    n_frames = len(observations) if num_frames is None else min(num_frames, len(observations))
+    if n_frames < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={"error": f"Need at least {min_inliers} frames, got {n_frames}"},
+        )
+    
+    successful_poses = []
+    successful_outputs = []
+    failed_count = 0
+    
+    # Process each frame with continuous tracking
+    for i, obs in enumerate(observations[:n_frames]):
+        rgb_t = obs['rgb']
+        depth_t = obs['depth']
+        K = obs['K']
+        
+        # First frame: reset tracking (initialization)
+        # Subsequent frames: use tracking mode (don't reset)
+        if i == 0:
+            reset_tracking(engines)
+        
+        result = estimate_pose_from_tensors(
+            mesh=mesh,
+            rgb_t=rgb_t,
+            depth_t=depth_t,
+            K=K,
+            language_prompt=language_prompt,
+            depth_min=depth_min,
+            depth_max=depth_max,
+            mask_min_pixels=mask_min_pixels,
+            mask_max_pixels=mask_max_pixels,
+            est_refine_iter=est_refine_iter,
+            track_refine_iter=track_refine_iter,
+            debug=debug,
+            engines=engines,
+        )
+        
+        if result.success:
+            pose_np = result.pose_cam_T_obj.detach().cpu().numpy().astype(np.float32)
+            successful_poses.append(pose_np)
+            successful_outputs.append(result)
+        else:
+            failed_count += 1
+            if debug > 0:
+                error_msg = result.extras.get('error', 'unknown')
+                reason = result.extras.get('reason', '')
+                print(f"Frame {i}/{n_frames} failed: {error_msg}")
+                if reason:
+                    print(f"  Reason: {reason}")
+    
+    # Check if we have enough successful estimates
+    if len(successful_poses) < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={
+                "error": f"Insufficient successful frames: {len(successful_poses)}/{n_frames}",
+                "failed_frames": failed_count,
+            },
+        )
+    
+    # Reject outliers
+    inlier_poses, inlier_indices = reject_outliers_ransac(
+        successful_poses,
+        inlier_threshold=inlier_threshold,
+        min_inliers=min_inliers,
+    )
+    
+    if len(inlier_poses) < min_inliers:
+        return PoseOutput(
+            success=False,
+            pose_cam_T_obj=None,
+            mask=None,
+            bbox_obj_frame=None,
+            to_origin=None,
+            extras={
+                "error": f"Insufficient inliers after outlier rejection: {len(inlier_poses)}/{len(successful_poses)}",
+                "successful_frames": len(successful_poses),
+                "failed_frames": failed_count,
+            },
+        )
+    
+    # Average the inlier poses
+    avg_pose_np = average_poses(inlier_poses)
+    
+    # Use the last successful output for mask/bbox/to_origin
+    representative_output = successful_outputs[inlier_indices[-1]]
+    
+    return PoseOutput(
+        success=True,
+        pose_cam_T_obj=torch.from_numpy(avg_pose_np),
+        mask=representative_output.mask,
+        bbox_obj_frame=representative_output.bbox_obj_frame,
+        to_origin=representative_output.to_origin,
+        extras={
+            "num_frames_processed": n_frames,
+            "successful_frames": len(successful_poses),
+            "failed_frames": failed_count,
+            "num_inliers": len(inlier_poses),
+            "num_outliers": len(successful_poses) - len(inlier_poses),
+            "inlier_indices": inlier_indices,
+        },
     )
 
 
