@@ -1579,16 +1579,16 @@ async function getCurrentCloudflaredUrl() {
     
     // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
     console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-    return 'https://honolulu-behavior-rock-become.trycloudflare.com';
+    return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
   } catch (error) {
     console.error('Error getting backend URL:', error);
     // Fallback to Cloudflare Tunnel URL
-    return 'https://honolulu-behavior-rock-become.trycloudflare.com';
+    return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
   }
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
-let API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
+let API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com'; // Cloudflare Tunnel (publicly accessible)
 
 async function refreshViews() {
   console.log('🔄 Refreshing views with latest static images...');
@@ -1665,9 +1665,55 @@ async function getInitialState() {
 
 // Polling for ready states when important states are blocked
 let pollTimer = null;
+let backgroundStateCheckTimer = null; // New: continuous background check
+
+// Background polling to detect when backend runs out of states
+function startBackgroundStateCheck() {
+  if (backgroundStateCheckTimer) return; // Already running
+  
+  console.log('🔍 Starting background state availability check...');
+  
+  // Check every 5 seconds if backend still has states available
+  backgroundStateCheckTimer = setInterval(async () => {
+    try {
+      const response = await apiFetch(`/api/get-state`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Check if backend has switched to "no states" mode
+        if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode')) {
+          console.warn('⚠️  Backend ran out of states! Discarding current work and showing wait screen...');
+          stopBackgroundStateCheck();
+          
+          // Immediately show waiting message and discard user work
+          if (data.blocked_important_states) {
+            startRapidPollingForReadyStates();
+          } else {
+            startRegularPollingForStates();
+          }
+        }
+      }
+    } catch (error) {
+      // Network errors are okay - backend might be restarting
+      console.debug('Background state check error (expected during backend restart):', error);
+    }
+  }, 5000); // Check every 5 seconds
+}
+
+function stopBackgroundStateCheck() {
+  if (backgroundStateCheckTimer) {
+    clearInterval(backgroundStateCheckTimer);
+    backgroundStateCheckTimer = null;
+    console.log('🛑 Stopped background state availability check');
+  }
+}
 
 function startRapidPollingForReadyStates() {
   stopPolling();
+  stopBackgroundStateCheck(); // Stop background check when switching to rapid polling
   console.log('🚀 Starting rapid polling for ready important states...');
   
   // Hide server not started message since we know server is responding
@@ -1703,6 +1749,7 @@ function startRapidPollingForReadyStates() {
 
 function startRegularPollingForStates() {
   stopPolling();
+  stopBackgroundStateCheck(); // Stop background check when switching to regular polling
   console.log('⏰ Starting regular polling for new states...');
   
   // Hide server not started message since we know server is responding
@@ -1741,6 +1788,7 @@ function stopPolling() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  // Note: Don't stop backgroundStateCheckTimer here - it runs independently
 }
 
 function showWaitingForStatesMessage(message) {
@@ -1812,6 +1860,7 @@ function hideWaitingMessage() {
 // Stop polling when page unloads
 window.addEventListener('beforeunload', () => {
   stopPolling();
+  stopBackgroundStateCheck();
   // Clean up animation session
   if (backendAnimState.active) {
     navigator.sendBeacon(`${API_BASE_URL}/api/animation/release`, JSON.stringify({}));
@@ -3289,7 +3338,7 @@ loader.load(
       }
     } else {
       // Running on deployed Netlify - use Cloudflare Tunnel (publicly accessible)
-      API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
+      API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com';
       console.log('[DEBUG] Using Tailscale Funnel for production:', API_BASE_URL);
     }
 
@@ -3525,6 +3574,9 @@ loader.load(
       showServerNotStarted();
       return; // ← prevents creating sliders/buttons and starting animation
     }
+    
+    // Successfully loaded state - start background monitoring for state availability
+    startBackgroundStateCheck();
 
     /* ---------- build textures from JPEG base64 views --------------- */
     const viewTextures = {}; // 'front' → THREE.Texture

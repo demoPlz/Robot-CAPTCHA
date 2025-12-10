@@ -102,10 +102,25 @@ def create_engines(
 
 
 def reset_tracking(engines: PoseEngines) -> None:
-    """Clear any persistent per-sequence tracking state so a new call is independent."""
+    """Clear any persistent per-sequence tracking state so a new call is independent.
+    
+    This clears:
+    - FoundationPose.pose_last: Last pose used for tracking
+    - Any6D.pose_last: Last pose from Any6D estimation
+    - PoseRefinePredictor.last_trans_update: Cached translation delta
+    - PoseRefinePredictor.last_rot_update: Cached rotation delta
+    """
+    # Clear FoundationPose tracking state
     engines.fpose.pose_last = None
+    
+    # Clear Any6D tracking state if it exists
     if hasattr(engines.any6d, "pose_last"):
         engines.any6d.pose_last = None
+    
+    # Clear PoseRefinePredictor cached deltas (can accumulate GPU memory)
+    if hasattr(engines.fpose, "refiner"):
+        engines.fpose.refiner.last_trans_update = None
+        engines.fpose.refiner.last_rot_update = None
 
 
 # ------------------------- Visualization -------------------------

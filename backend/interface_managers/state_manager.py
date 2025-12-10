@@ -143,9 +143,13 @@ class StateManager:
         # Active episode tracking
         self._active_episode_id = None
 
-        # Critical state approval tracking
+        # Critical state approval tracking (post-execution)
         self.pending_approval_state = None  # {episode_id, state_id, approved: None/True/False}
         self.approval_lock = Lock()
+
+        # Pre-execution approval tracking (before robot moves)
+        self.pending_pre_execution_approval = None  # {episode_id, state_id, action, obs_path, view_paths, approved: None/True/False}
+        self.pre_execution_approval_lock = Lock()
 
         # Undo state tracking
         self.pending_undo_classification = (
@@ -182,6 +186,10 @@ class StateManager:
         for key, value in obs_dict.items():
             obs_dict_deep_copy[key] = value.clone().detach()
         obs_path = self._persist_obs_callback(episode_id, state_id, obs_dict_deep_copy)
+        if obs_path is None:
+            print(f"⚠️  WARNING: obs_path is None for episode={episode_id} state={state_id}")
+        else:
+            print(f"✓ Persisted obs to: {obs_path}")
         del obs_dict_deep_copy
 
         # Push obs to monitoring frontend
@@ -473,8 +481,6 @@ class StateManager:
                             )
                             break
 
-                    self.latest_goal = state_info["actions"][0]
-
                     # Store selection metadata and propensity for logging/training
                     state_info["action_selection_metadata"] = selection_metadata
                     state_info["action_propensity"] = propensity
@@ -482,29 +488,27 @@ class StateManager:
                     print(f"🎯 Selected action using {selection_metadata['selector_used']} selector")
                     print(f"   Propensity: {propensity:.4f} | Mode: {selection_metadata['mode']}")
 
-                    # Track this action as executed for potential resampling after undo
-                    if "executed_actions" not in state_info:
-                        state_info["executed_actions"] = []
-                    state_info["executed_actions"].append(selected_action)
+                    # Store selection metadata and propensity for later use in approval phase
+                    state_info["selected_action"] = selected_action
+                    state_info["selected_action_propensity"] = propensity
+                    state_info["selected_action_metadata"] = selection_metadata
                     
-                    # Record execution attempt in history (approval status will be set later)
-                    execution_index = len(state_info.get("execution_history", []))
-                    state_info["execution_history"].append({
-                        "action": selected_action.clone(),
-                        "propensity": propensity,
-                        "selector_metadata": selection_metadata.copy(),
-                        "approval": None  # Will be set to 1 (approved) or -1 (rejected) later
-                    })
+                    # Set up pre-execution approval (non-blocking - admin will review in monitor.html)
+                    with self.pre_execution_approval_lock:
+                        self.pending_pre_execution_approval = {
+                            "episode_id": episode_id,
+                            "state_id": state_id,
+                            "action": selected_action.tolist(),  # Convert tensor to list for JSON
+                            "propensity": propensity,
+                            "selector_metadata": selection_metadata,
+                            "obs_path": state_info.get("obs_path"),
+                            "view_paths": state_info.get("view_paths"),
+                            "approved": None,  # None=pending, True=approved, False=rejected
+                        }
                     
-                    # Log this execution attempt immediately
-                    self.dataset_manager.log_execution_attempt(
-                        episode_index=episode_id,
-                        state_id=state_id,
-                        execution_index=execution_index,
-                        action=selected_action,
-                        propensity=propensity,
-                        selector_metadata=selection_metadata,
-                    )
+                    print(f"⏸️  Pre-execution approval pending for state {state_id} (non-blocking)")
+                    
+                    # NOTE: Don't set latest_goal here - robot loop will check approval status first
 
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
@@ -609,7 +613,137 @@ class StateManager:
             }
 
     def get_latest_goal(self) -> dict | None:
-        """Get and clear the latest goal (for robot loop to consume)"""
+        """Get and clear the latest goal (for robot loop to consume).
+        
+        Checks pre-execution approval status before returning goal.
+        If action is pending approval or rejected, handles accordingly.
+        """
+        # Check if there's a pending pre-execution approval
+        with self.pre_execution_approval_lock:
+            if self.pending_pre_execution_approval is not None:
+                approval_status = self.pending_pre_execution_approval.get("approved")
+                
+                if approval_status is None:
+                    # Still waiting for approval - don't return goal yet
+                    return None
+                    
+                elif approval_status is False:
+                    # Rejected - handle resampling
+                    episode_id = self.pending_pre_execution_approval["episode_id"]
+                    state_id = self.pending_pre_execution_approval["state_id"]
+                    rejected_action = torch.tensor(self.pending_pre_execution_approval["action"])
+                    propensity = self.pending_pre_execution_approval["propensity"]
+                    selector_metadata = self.pending_pre_execution_approval["selector_metadata"]
+                    
+                    # Clear pending approval
+                    self.pending_pre_execution_approval = None
+                    
+                    # Record rejection in execution history
+                    with self.state_lock:
+                        ep = self.completed_states_by_episode.get(episode_id, {})
+                        state_info = ep.get(state_id)
+                        if state_info:
+                            if "execution_history" not in state_info:
+                                state_info["execution_history"] = []
+                            execution_index = len(state_info["execution_history"])
+                            state_info["execution_history"].append({
+                                "action": rejected_action.clone(),
+                                "propensity": propensity,
+                                "selector_metadata": selector_metadata.copy(),
+                                "approval": -1  # Rejected in pre-execution phase
+                            })
+                            
+                            # Log rejection
+                            self.dataset_manager.log_execution_attempt(
+                                episode_index=episode_id,
+                                state_id=state_id,
+                                execution_index=execution_index,
+                                action=rejected_action,
+                                propensity=propensity,
+                                selector_metadata=selector_metadata,
+                            )
+                            self.dataset_manager.log_approval_summary(
+                                episode_index=episode_id,
+                                state_id=state_id,
+                                num_executions=len(state_info["execution_history"]),
+                                execution_propensities=[e["propensity"] for e in state_info["execution_history"]],
+                                approved=False,
+                            )
+                            
+                            # Try to resample from remaining actions
+                            remaining_actions = [a for a in state_info.get("actions", []) if not torch.equal(a, rejected_action)]
+                            if len(remaining_actions) > 0:
+                                # Select another action
+                                new_action, new_propensity, new_metadata = self.action_selector.select_action(
+                                    remaining_actions, state_info
+                                )
+                                
+                                print(f"🔄 Resampled new action after rejection (state {state_id})")
+                                
+                                # Set up new pre-execution approval
+                                with self.pre_execution_approval_lock:
+                                    self.pending_pre_execution_approval = {
+                                        "episode_id": episode_id,
+                                        "state_id": state_id,
+                                        "action": new_action.tolist(),
+                                        "propensity": new_propensity,
+                                        "selector_metadata": new_metadata,
+                                        "obs_path": state_info.get("obs_path"),
+                                        "view_paths": state_info.get("view_paths"),
+                                        "approved": None,
+                                    }
+                                return None  # Wait for approval of new action
+                            else:
+                                print(f"⚠️  No more actions to resample for state {state_id}")
+                                return None
+                                
+                elif approval_status is True:
+                    # Approved - execute the action
+                    episode_id = self.pending_pre_execution_approval["episode_id"]
+                    state_id = self.pending_pre_execution_approval["state_id"]
+                    approved_action = torch.tensor(self.pending_pre_execution_approval["action"])
+                    propensity = self.pending_pre_execution_approval["propensity"]
+                    selector_metadata = self.pending_pre_execution_approval["selector_metadata"]
+                    
+                    # Clear pending approval
+                    self.pending_pre_execution_approval = None
+                    
+                    # Set as latest goal for execution
+                    self.latest_goal = approved_action
+                    
+                    # Record in execution history (will be updated with post-execution approval later)
+                    with self.state_lock:
+                        ep = self.completed_states_by_episode.get(episode_id, {})
+                        state_info = ep.get(state_id)
+                        if state_info:
+                            if "execution_history" not in state_info:
+                                state_info["execution_history"] = []
+                            execution_index = len(state_info["execution_history"])
+                            state_info["execution_history"].append({
+                                "action": approved_action.clone(),
+                                "propensity": propensity,
+                                "selector_metadata": selector_metadata.copy(),
+                                "approval": None  # Will be set after post-execution approval
+                            })
+                            
+                            # Track for potential undo
+                            if "executed_actions" not in state_info:
+                                state_info["executed_actions"] = []
+                            state_info["executed_actions"].append(approved_action)
+                            
+                            # Log execution attempt
+                            self.dataset_manager.log_execution_attempt(
+                                episode_index=episode_id,
+                                state_id=state_id,
+                                execution_index=execution_index,
+                                action=approved_action,
+                                propensity=propensity,
+                                selector_metadata=selector_metadata,
+                            )
+                    
+                    print(f"✅ Pre-execution approved - executing action for state {state_id}")
+        
+        # Normal case - return and clear goal
         goal = self.latest_goal
         self.latest_goal = None
         return goal
@@ -741,6 +875,58 @@ class StateManager:
                                 approved=True,
                             )
 
+            return True
+
+    # =========================
+    # Pre-Execution Approval (New)
+    # =========================
+
+    def get_pending_pre_execution_approval(self) -> dict | None:
+        """Get the action awaiting pre-execution approval from administrator."""
+        with self.pre_execution_approval_lock:
+            if self.pending_pre_execution_approval is None or self.pending_pre_execution_approval["approved"] is not None:
+                return None
+
+            episode_id = self.pending_pre_execution_approval["episode_id"]
+            state_id = self.pending_pre_execution_approval["state_id"]
+            action = self.pending_pre_execution_approval["action"]
+            obs_path = self.pending_pre_execution_approval["obs_path"]
+            view_paths = self.pending_pre_execution_approval["view_paths"]
+
+            return {
+                "episode_id": episode_id,
+                "state_id": state_id,
+                "action": action,  # Joint positions as list
+                "obs_path": obs_path,
+                "view_paths": view_paths,
+            }
+
+    def approve_pre_execution(self, episode_id: int, state_id: int) -> bool:
+        """Approve a pending pre-execution action."""
+        with self.pre_execution_approval_lock:
+            if self.pending_pre_execution_approval is None:
+                return False
+            if (
+                self.pending_pre_execution_approval["episode_id"] != episode_id
+                or self.pending_pre_execution_approval["state_id"] != state_id
+            ):
+                return False
+
+            self.pending_pre_execution_approval["approved"] = True
+            return True
+
+    def reject_pre_execution(self, episode_id: int, state_id: int) -> bool:
+        """Reject a pending pre-execution action (will trigger resampling)."""
+        with self.pre_execution_approval_lock:
+            if self.pending_pre_execution_approval is None:
+                return False
+            if (
+                self.pending_pre_execution_approval["episode_id"] != episode_id
+                or self.pending_pre_execution_approval["state_id"] != state_id
+            ):
+                return False
+
+            self.pending_pre_execution_approval["approved"] = False
             return True
 
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
@@ -1350,6 +1536,13 @@ class StateManager:
             if self.pending_states_by_episode.get(episode_id):
                 # New states has become pending in the episode
                 return
+
+            # Check if there's a pre-execution approval pending for this episode
+            with self.pre_execution_approval_lock:
+                if (self.pending_pre_execution_approval and 
+                    self.pending_pre_execution_approval.get("episode_id") == episode_id):
+                    # Don't finalize - waiting for pre-execution approval
+                    return
 
             self.episodes_completed.add(episode_id)  # for monitoring
 

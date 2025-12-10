@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Data Collection Monitor</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "three":              "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+        "three/addons/":      "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/",
+        "urdf-loader":        "https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/src/URDFLoader.js?module"
+      }
+    }
+    </script>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
@@ -380,6 +389,63 @@
         .approval-btn-reject:hover {
             background: linear-gradient(135deg, #dc2626, #b91c1c);
         }
+
+        /* Pre-Execution Modal Styles */
+        .pre-execution-modal-card {
+            width: min(95vw, 1600px);
+            max-height: 90vh;
+            background: white;
+            border-radius: 14px;
+            box-shadow: 0 30px 80px rgba(2,6,23,0.35);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .pre-execution-modal-body {
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .pre-execution-top-row {
+            display: flex;
+            justify-content: center;
+        }
+        .pre-execution-top-row .approval-image-container {
+            max-width: 600px;
+        }
+        .pre-execution-views-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+        .pre-exec-view-container {
+            position: relative;
+            background: #0b1220;
+            border-radius: 8px;
+            padding: 8px;
+            overflow: hidden;
+        }
+        .pre-exec-view-label {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            z-index: 10;
+        }
+        .pre-exec-view-canvas {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
@@ -587,6 +653,43 @@
         </div>
     </div>
 
+    <!-- Pre-Execution Approval Modal -->
+    <div class="approval-modal-overlay" id="pre-execution-modal">
+        <div class="pre-execution-modal-card">
+            <div class="approval-modal-header">
+                <h2 class="approval-modal-title">Approve Action Before Execution?</h2>
+                <p style="margin-top: 10px; font-size: 14px; color: #666;">
+                    Review the proposed action with robot visualization before executing
+                </p>
+            </div>
+            <div class="pre-execution-modal-body">
+                <!-- Top row: Current observation -->
+                <div class="pre-execution-top-row">
+                    <div class="approval-image-container">
+                        <div class="approval-image-label">Current State (Observation)</div>
+                        <div class="approval-image-wrapper">
+                            <img id="pre-exec-current-image" class="approval-image" alt="Current state">
+                        </div>
+                    </div>
+                </div>
+                <!-- Bottom row: 6 views with robot rendered at goal -->
+                <div class="pre-execution-views-grid" id="pre-exec-views-grid">
+                    <!-- Views will be dynamically created here -->
+                </div>
+            </div>
+            <div class="approval-modal-footer">
+                <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
+                    <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
+                        <span class="control-icon">❌</span> Reject & Resample
+                    </button>
+                    <button class="approval-btn approval-btn-proceed" id="pre-exec-approve-btn">
+                        <span class="control-icon">✅</span> Approve & Execute
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast" id="app-toast"></div>
 
@@ -601,14 +704,14 @@
                 }
                 // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
                 console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-                return 'https://honolulu-behavior-rock-become.trycloudflare.com';
+                return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
                 // Fallback to Cloudflare Tunnel URL
-                return 'https://honolulu-behavior-rock-become.trycloudflare.com';
+                return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
             }
         }
-        let API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
+        let API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
@@ -618,7 +721,7 @@
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                API_BASE_URL = 'https://honolulu-behavior-rock-become.trycloudflare.com';
+                API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com';
                 console.log('[DEBUG] Monitor using Tailscale Funnel:', API_BASE_URL);
             }
         }
@@ -661,6 +764,13 @@
         const undoNewStateBtn = document.getElementById('undo-new-state-btn');
         const undoOldStateBtn = document.getElementById('undo-old-state-btn');
         const undoMarkEndBtn = document.getElementById('undo-mark-end-btn');
+
+        // Pre-execution approval modal elements
+        const preExecutionModal = document.getElementById('pre-execution-modal');
+        const preExecCurrentImage = document.getElementById('pre-exec-current-image');
+        const preExecViewsGrid = document.getElementById('pre-exec-views-grid');
+        const preExecApproveBtn = document.getElementById('pre-exec-approve-btn');
+        const preExecRejectBtn = document.getElementById('pre-exec-reject-btn');
 
         const cameraViews = {
             front: document.getElementById('camera-front'),
@@ -1371,6 +1481,169 @@
         approvalRejectBtn.addEventListener('click', handleApprovalReject);
         approvalMarkEndBtn.addEventListener('click', handleApprovalMarkEnd);
 
+        // --- Pre-Execution Approval Modal ---
+        let currentPreExecutionApproval = null;
+
+        async function fetchPendingPreExecutionApproval() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/control/pending-pre-execution-approval`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                
+                if (data.status === 'pending') {
+                    // New pre-execution approval needed
+                    if (!currentPreExecutionApproval || 
+                        currentPreExecutionApproval.episode_id !== data.episode_id ||
+                        currentPreExecutionApproval.state_id !== data.state_id) {
+                        
+                        currentPreExecutionApproval = data;
+                        await showPreExecutionModal(data);
+                    }
+                } else {
+                    // No pending pre-execution approval
+                    if (currentPreExecutionApproval) {
+                        currentPreExecutionApproval = null;
+                        hidePreExecutionModal();
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching pending pre-execution approval:', e);
+            }
+        }
+
+        async function showPreExecutionModal(data) {
+            // Load current observation image
+            if (data.current_image_url) {
+                preExecCurrentImage.src = data.current_image_url;
+            } else {
+                preExecCurrentImage.src = '';
+                preExecCurrentImage.alt = 'Image not available';
+            }
+            
+            // Clear previous views
+            preExecViewsGrid.innerHTML = '';
+            
+            // Render views with robot overlay at proposed action joint positions
+            const viewNames = ['front', 'left', 'right', 'top', 'webcam_front', 'webcam_left', 'webcam_right'];
+            const viewLabels = {
+                'front': 'Simulated: Front-view',
+                'left': 'Simulated: Right-view',
+                'right': 'Simulated: Left-view',
+                'top': 'Simulated: Top-view',
+                'webcam_front': 'Real-Life: Front-view',
+                'webcam_left': 'Real-Life: Right-view',
+                'webcam_right': 'Real-Life: Left-view'
+            };
+            
+            for (const viewName of viewNames) {
+                if (data.view_urls && data.view_urls[viewName]) {
+                    const container = document.createElement('div');
+                    container.className = 'pre-exec-view-container';
+                    
+                    const label = document.createElement('div');
+                    label.className = 'pre-exec-view-label';
+                    label.textContent = viewLabels[viewName] || viewName;
+                    
+                    const img = document.createElement('img');
+                    img.className = 'pre-exec-view-canvas';
+                    img.src = data.view_urls[viewName];
+                    img.alt = viewName;
+                    
+                    container.appendChild(label);
+                    container.appendChild(img);
+                    preExecViewsGrid.appendChild(container);
+                }
+            }
+            
+            // Render robot at proposed action joint positions
+            // data.action is already the joint positions array
+            if (window.preExecRobotRenderer && data.action) {
+                await window.preExecRobotRenderer.renderRobotAtAction(
+                    data.action,
+                    data.view_urls,
+                    data.camera_poses,
+                    data.camera_models,
+                    viewNames
+                );
+            }
+            
+            preExecutionModal.classList.add('show');
+            console.log('🎯 Pre-execution approval modal shown with action:', data.action);
+        }
+
+        function hidePreExecutionModal() {
+            preExecutionModal.classList.remove('show');
+        }
+
+        async function handlePreExecutionApprove() {
+            if (!currentPreExecutionApproval) return;
+            
+            try {
+                preExecApproveBtn.disabled = true;
+                preExecRejectBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/approve-pre-execution`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentPreExecutionApproval.episode_id,
+                        state_id: currentPreExecutionApproval.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('✅ Action approved - executing...');
+                    currentPreExecutionApproval = null;
+                    hidePreExecutionModal();
+                } else {
+                    showToast('❌ Failed to approve action', 2000);
+                }
+            } catch (e) {
+                console.error('Error approving pre-execution:', e);
+                showToast('❌ Error approving action', 2000);
+            } finally {
+                preExecApproveBtn.disabled = false;
+                preExecRejectBtn.disabled = false;
+            }
+        }
+
+        async function handlePreExecutionReject() {
+            if (!currentPreExecutionApproval) return;
+            
+            try {
+                preExecApproveBtn.disabled = true;
+                preExecRejectBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/reject-pre-execution`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentPreExecutionApproval.episode_id,
+                        state_id: currentPreExecutionApproval.state_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('❌ Action rejected - resampling...');
+                    currentPreExecutionApproval = null;
+                    hidePreExecutionModal();
+                } else {
+                    showToast('❌ Failed to reject action', 2000);
+                }
+            } catch (e) {
+                console.error('Error rejecting pre-execution:', e);
+                showToast('❌ Error rejecting action', 2000);
+            } finally {
+                preExecApproveBtn.disabled = false;
+                preExecRejectBtn.disabled = false;
+            }
+        }
+
+        // Bind pre-execution approval events
+        preExecApproveBtn.addEventListener('click', handlePreExecutionApprove);
+        preExecRejectBtn.addEventListener('click', handlePreExecutionReject);
+
         // --- Undo Classification Modal ---
         let currentUndoClassification = null;
 
@@ -1982,6 +2255,9 @@
                         pendingInfoInFlight = true; fetchPendingStatesInfo().finally(()=>pendingInfoInFlight=false);
                     }
                 }, INFO_POLL_MS),
+                preExecutionApproval: setInterval(() => {
+                    fetchPendingPreExecutionApproval();
+                }, 500),  // Poll pre-execution approval more frequently (500ms)
                 approval: setInterval(() => {
                     fetchPendingApproval();
                 }, 500),  // Poll approval more frequently (500ms)
@@ -1994,6 +2270,7 @@
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval.cameras);
                 clearInterval(autoRefreshInterval.info);
+                clearInterval(autoRefreshInterval.preExecutionApproval);
                 clearInterval(autoRefreshInterval.approval);
                 clearInterval(autoRefreshInterval.undoClassification);
                 autoRefreshInterval = null;
@@ -2019,6 +2296,293 @@
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) stopAutoRefresh();
             else startAutoRefresh();
+        });
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import URDFLoader from 'urdf-loader';
+        
+        class PreExecutionRobotRenderer {
+            constructor() {
+                this.robot = null;
+                this.loading = false;
+                this.loaded = false;
+                this.scenes = new Map();
+                this.renderers = new Map();
+                this.ROBOT_Z_OFFSET = 0.005;
+            }
+            
+            async loadRobot() {
+                if (this.loaded) return this.robot;
+                if (this.loading) {
+                    // Wait for existing load
+                    return new Promise((resolve) => {
+                        const check = setInterval(() => {
+                            if (this.loaded) {
+                                clearInterval(check);
+                                resolve(this.robot);
+                            }
+                        }, 100);
+                    });
+                }
+                
+                this.loading = true;
+                
+                return new Promise((resolve, reject) => {
+                    const loader = new URDFLoader();
+                    loader.packages = {
+                        'trossen_arm_description': '/assets/trossen_arm_description'
+                    };
+                    
+                    loader.load(
+                        '/assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf',
+                        (robot) => {
+                            this.robot = robot;
+                            this.applyGoldTint(robot);
+                            this.loaded = true;
+                            this.loading = false;
+                            resolve(robot);
+                        },
+                        undefined,
+                        (error) => {
+                            console.error('Failed to load URDF:', error);
+                            this.loading = false;
+                            reject(error);
+                        }
+                    );
+                });
+            }
+            
+            applyGoldTint(root) {
+                const GOLD_HEX = 0xffc83d;
+                const GOLD_EMISSIVE_HEX = 0x6a4b00;
+                
+                root.traverse(obj => {
+                    if (obj.isMesh && obj.material) {
+                        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+                        materials.forEach(mat => {
+                            if (mat.color) mat.color.setHex(GOLD_HEX);
+                            if (mat.emissive) {
+                                mat.emissive.setHex(GOLD_EMISSIVE_HEX);
+                                mat.emissiveIntensity = 0.40;
+                            }
+                            if ('metalness' in mat) mat.metalness = 0.6;
+                            if ('roughness' in mat) mat.roughness = 0.35;
+                            mat.needsUpdate = true;
+                        });
+                    }
+                });
+            }
+            
+            poseToMatrix(mat) {
+                return new THREE.Matrix4().set(
+                    mat[0][0], mat[0][1], mat[0][2], mat[0][3],
+                    mat[1][0], mat[1][1], mat[1][2], mat[1][3],
+                    mat[2][0], mat[2][1], mat[2][2], mat[2][3],
+                    mat[3][0], mat[3][1], mat[3][2], mat[3][3]
+                );
+            }
+            
+            createCamera(viewName, cameraModel, cameraPose, canvasWidth, canvasHeight) {
+                // Check if orthographic (simulated views)
+                const isOrthographic = cameraModel && cameraModel.projection_type === 'orthographic';
+                
+                const camera = isOrthographic 
+                    ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100)
+                    : new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+                
+                // Apply camera pose (extrinsics) - pose is a 4x4 matrix
+                if (cameraPose && Array.isArray(cameraPose)) {
+                    const m = this.poseToMatrix(cameraPose);
+                    const pos = new THREE.Vector3();
+                    const quat = new THREE.Quaternion();
+                    const scale = new THREE.Vector3();
+                    m.decompose(pos, quat, scale);
+                    
+                    camera.position.copy(pos);
+                    camera.quaternion.copy(quat);
+                    camera.updateMatrixWorld();
+                }
+                
+                // Apply camera intrinsics using projection matrix (like sim.html does)
+                if (cameraModel && cameraModel.Knew) {
+                    const K = cameraModel.Knew;
+                    const W = cameraModel.width || 640;
+                    const H = cameraModel.height || 480;
+                    const near = camera.near;
+                    const far = camera.far;
+                    
+                    // Scale intrinsics to canvas size
+                    const vw = canvasWidth;
+                    const vh = canvasHeight;
+                    const sx = vw / W;
+                    const sy = vh / H;
+                    
+                    if (isOrthographic) {
+                        // Orthographic projection
+                        const orthoWidth = cameraModel.orthographic_width || 1.0;
+                        const orthoHeight = cameraModel.orthographic_height || 1.0;
+                        
+                        const left = -orthoWidth / 2;
+                        const right = orthoWidth / 2;
+                        const top = orthoHeight / 2;
+                        const bottom = -orthoHeight / 2;
+                        
+                        const P = new THREE.Matrix4().makeOrthographic(left, right, top, bottom, near, far);
+                        camera.projectionMatrix.copy(P);
+                        camera.projectionMatrixInverse.copy(P).invert();
+                        camera.projectionMatrixAutoUpdate = false;
+                    } else {
+                        // Perspective projection
+                        const fx = K[0][0] * sx;
+                        const fy = K[1][1] * sy;
+                        const cx = K[0][2] * sx;
+                        const cy = K[1][2] * sy;
+                        
+                        // OpenCV pixels (origin top-left, +y down) → Three frustum (y up)
+                        const left   = -cx * near / fx;
+                        const right  =  (vw - cx) * near / fx;
+                        const top    =  cy * near / fy;
+                        const bottom = -(vh - cy) * near / fy;
+                        
+                        const P = new THREE.Matrix4().makePerspective(left, right, top, bottom, near, far);
+                        camera.projectionMatrix.copy(P);
+                        camera.projectionMatrixInverse.copy(P).invert();
+                        camera.projectionMatrixAutoUpdate = false;
+                    }
+                }
+                
+                return camera;
+            }
+            
+            setRobotJoints(robot, jointPositions) {
+                // jointPositions is array: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5, left_carriage_joint]
+                const jointNames = ['joint_0', 'joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'left_carriage_joint'];
+                jointNames.forEach((name, i) => {
+                    if (jointPositions[i] !== undefined) {
+                        robot.setJointValue(name, jointPositions[i]);
+                    }
+                });
+                robot.updateMatrixWorld(true);
+            }
+            
+            async renderRobotAtAction(jointPositions, viewUrls, cameraPoses, cameraModels, viewNames) {
+                try {
+                    await this.loadRobot();
+                    
+                    // For each view, create a canvas overlay and render the robot
+                    const containers = document.querySelectorAll('.pre-exec-view-container');
+                    
+                    for (const container of containers) {
+                        const img = container.querySelector('img');
+                        if (!img) continue;
+                        
+                        const viewName = img.alt;
+                        if (!viewNames.includes(viewName)) continue;
+                        
+                        // Wait for image to load to get dimensions
+                        await new Promise((resolve) => {
+                            if (img.complete) resolve();
+                            else img.onload = resolve;
+                        });
+                        
+                        // Use image's natural dimensions for rendering
+                        const renderWidth = img.naturalWidth || 640;
+                        const renderHeight = img.naturalHeight || 480;
+                        
+                        // Create WebGL canvas for robot rendering
+                        const webglCanvas = document.createElement('canvas');
+                        webglCanvas.width = renderWidth;
+                        webglCanvas.height = renderHeight;
+                        
+                        // Get camera for this view
+                        const poseKey = `${viewName}_pose`;
+                        const cameraPose = cameraPoses[poseKey];
+                        const cameraModel = cameraModels[viewName];
+                        
+                        if (!cameraPose || !cameraModel) continue;
+                        
+                        // Create scene for this view
+                        const scene = new THREE.Scene();
+                        const camera = this.createCamera(viewName, cameraModel, cameraPose, webglCanvas.width, webglCanvas.height);
+                        
+                        // Clone robot for this view
+                        const robotClone = this.robot.clone();
+                        const robotGroup = new THREE.Group();
+                        robotGroup.position.z = this.ROBOT_Z_OFFSET;
+                        robotGroup.add(robotClone);
+                        scene.add(robotGroup);
+                        
+                        // Set robot joints to proposed action positions
+                        this.setRobotJoints(robotClone, jointPositions);
+                        
+                        // Make robot visible (show all meshes)
+                        robotClone.traverse(obj => {
+                            if (obj.isMesh) obj.visible = true;
+                        });
+                        
+                        // Add lighting (matching sim.html)
+                        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+                        scene.add(hemiLight);
+                        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+                        dirLight.position.set(2, 4, 2);
+                        scene.add(dirLight);
+                        
+                        // Create renderer
+                        const renderer = new THREE.WebGLRenderer({ 
+                            canvas: webglCanvas, 
+                            alpha: true,
+                            antialias: true,
+                            preserveDrawingBuffer: true
+                        });
+                        renderer.setClearColor(0x000000, 0); // Transparent
+                        renderer.setSize(webglCanvas.width, webglCanvas.height);
+                        
+                        // Render robot
+                        renderer.render(scene, camera);
+                        
+                        // Create 2D canvas for compositing
+                        const compositeCanvas = document.createElement('canvas');
+                        compositeCanvas.width = renderWidth;
+                        compositeCanvas.height = renderHeight;
+                        const ctx = compositeCanvas.getContext('2d');
+                        
+                        // Draw background image first
+                        ctx.drawImage(img, 0, 0, renderWidth, renderHeight);
+                        
+                        // Draw robot overlay on top
+                        ctx.drawImage(webglCanvas, 0, 0);
+                        
+                        // Convert to data URL and replace image source
+                        const compositeDataUrl = compositeCanvas.toDataURL('image/jpeg', 0.95);
+                        img.src = compositeDataUrl;
+                        
+                        // Clean up
+                        renderer.dispose();
+                        this.scenes.set(viewName, scene);
+                        this.renderers.set(viewName, renderer);
+                    }
+                } catch (error) {
+                    console.error('Error rendering robot:', error);
+                }
+            }
+            
+            dispose() {
+                for (const renderer of this.renderers.values()) {
+                    renderer.dispose();
+                }
+                this.scenes.clear();
+                this.renderers.clear();
+            }
+        }
+        
+        // Create global instance
+        window.preExecRobotRenderer = new PreExecutionRobotRenderer();
+        
+        // Pre-load robot for faster first render
+        window.preExecRobotRenderer.loadRobot().catch(err => {
+            console.error('Failed to preload robot:', err);
         });
     </script>
 </body>

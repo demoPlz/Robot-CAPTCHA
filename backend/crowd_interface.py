@@ -514,12 +514,19 @@ class CrowdInterface:
     def _persist_obs_to_disk(self, episode_id: str, state_id: int, obs: dict) -> str | None:
         """Writes the observations dict to a single file for the state and returns the path."""
         try:
-            p = self._episode_cache_dir(episode_id) / f"{state_id}.pt"
+            cache_dir = self._episode_cache_dir(episode_id)
+            p = cache_dir / f"{state_id}.pt"
+            print(f"🔍 Attempting to save obs to: {p}")
+            print(f"   Cache dir exists: {cache_dir.exists()}, is dir: {cache_dir.is_dir()}")
+            print(f"   Obs keys: {list(obs.keys())}")
             # Tensors/ndarrays/py objects handled by torch.save
             torch.save(obs, p)
+            print(f"✓ Successfully saved obs to: {p}")
             return str(p)
         except Exception as e:
             print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _persist_views_to_disk(self, episode_id: str, state_id: int, views_b64: dict[str, str]) -> dict[str, str]:

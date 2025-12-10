@@ -314,6 +314,9 @@ def main():
 
         # Run pose (single, repeated, or multi-frame mode)
         try:
+            # Reset tracking state before each job to avoid accumulation
+            reset_tracking(engines)
+            
             if use_multi_frame and obs_paths:
                 # Multi-frame mode with outlier rejection
                 print(f"[{args.object}] 🎯 Running MULTI-FRAME pose estimation ({len(observations)} frames)...", flush=True)
@@ -528,6 +531,43 @@ def main():
             print(f"[{args.object}] 🗑️  Job file removed", flush=True)
         except Exception:
             pass
+        
+        # === VRAM cleanup: critical for long-running workers ===
+        # Explicitly delete large tensors to free GPU memory
+        try:
+            # Delete observation tensors
+            if 'rgb_t' in locals():
+                del rgb_t
+            if 'depth_t' in locals():
+                del depth_t
+            if 'obs' in locals():
+                del obs
+            if 'observations' in locals():
+                del observations
+            
+            # Delete inference outputs
+            if 'out' in locals():
+                del out
+            
+            # Delete visualization tensors
+            if 'viz' in locals():
+                del viz
+            
+            # Force CUDA cache cleanup every job to prevent accumulation
+            if torch.cuda.is_available():
+                # Clear any cached gradients (shouldn't exist in inference mode, but be safe)
+                torch.cuda.empty_cache()
+                # Synchronize to ensure all GPU operations are complete
+                torch.cuda.synchronize()
+                
+                # Optional: More aggressive cleanup every N jobs
+                # Uncomment if you still see accumulation:
+                # import gc
+                # gc.collect()
+                # torch.cuda.reset_peak_memory_stats()
+                
+        except Exception as e:
+            print(f"[{args.object}] ⚠️ Cleanup warning: {e}", flush=True)
 
 
 if __name__ == "__main__":

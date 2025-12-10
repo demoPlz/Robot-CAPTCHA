@@ -481,6 +481,125 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/pending-pre-execution-approval", methods=["GET"])
+    def get_pending_pre_execution_approval():
+        """Get the action awaiting pre-execution approval"""
+        try:
+            pending = crowd_interface.state_manager.get_pending_pre_execution_approval()
+            if pending is None:
+                return jsonify({"status": "none"})
+
+            # Load current state observation image - use main cam observation or real webcam_front
+            current_image_url = None
+            view_paths = pending.get("view_paths", {})
+            
+            # First priority: main cam observation from obs_path
+            if pending.get("obs_path"):
+                try:
+                    obs = crowd_interface.dataset_manager.load_obs_from_disk(pending["obs_path"])
+                    img = crowd_interface.load_main_cam_from_obs(obs)
+                    if img is not None:
+                        current_image_url = crowd_interface.encode_jpeg_base64(img)
+                except Exception as e:
+                    print(f"⚠️  failed to load obs from {pending.get('obs_path')}: {e}")
+            
+            # Second priority: real-life webcam front view (not simulated front)
+            if not current_image_url and "webcam_front" in view_paths:
+                try:
+                    import base64
+                    from pathlib import Path
+                    front_path = view_paths["webcam_front"]
+                    if Path(front_path).exists():
+                        with open(front_path, 'rb') as f:
+                            img_data = f.read()
+                            current_image_url = f"data:image/jpeg;base64,{base64.b64encode(img_data).decode()}"
+                except Exception as e:
+                    print(f"⚠️  Failed to load webcam_front for current image: {e}")
+
+            # Load view paths (static sim/webcam views)
+            view_urls = {}
+            for view_name, view_path in view_paths.items():
+                try:
+                    import base64
+                    from pathlib import Path
+                    if Path(view_path).exists():
+                        with open(view_path, 'rb') as f:
+                            img_data = f.read()
+                            view_urls[view_name] = f"data:image/jpeg;base64,{base64.b64encode(img_data).decode()}"
+                except Exception as e:
+                    print(f"⚠️  Failed to load view {view_name}: {e}")
+
+            # The action IS the joint positions (joint_0 through joint_5, left_carriage_joint)
+            # Convert action list to joint positions for robot rendering
+            action = pending["action"]  # This is already joint positions as a list
+            
+            return jsonify(
+                {
+                    "status": "pending",
+                    "episode_id": pending["episode_id"],
+                    "state_id": pending["state_id"],
+                    "action": action,  # Joint positions: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5, left_carriage_joint]
+                    "current_image_url": current_image_url,
+                    "view_urls": view_urls,  # Static views for rendering
+                    "camera_poses": crowd_interface.calibration.get_camera_poses(),
+                    "camera_models": crowd_interface.calibration.get_camera_models(),
+                }
+            )
+        except Exception as e:
+            print(f"❌ Error in pending-pre-execution-approval endpoint: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/approve-pre-execution", methods=["POST"])
+    def approve_pre_execution():
+        """Approve a pending pre-execution action"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            success = crowd_interface.state_manager.approve_pre_execution(episode_id, state_id)
+
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending pre-execution approval"}), 400
+
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in approve-pre-execution endpoint: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/reject-pre-execution", methods=["POST"])
+    def reject_pre_execution():
+        """Reject a pending pre-execution action (triggers resampling)"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            success = crowd_interface.state_manager.reject_pre_execution(episode_id, state_id)
+
+            if not success:
+                return jsonify({"status": "error", "message": "No matching pending pre-execution approval"}), 400
+
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in reject-pre-execution endpoint: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/control/reject-critical", methods=["POST"])
     def reject_critical():
         """Reject a pending critical state (triggers undo)"""
