@@ -1493,9 +1493,14 @@
                 
                 if (data.status === 'pending') {
                     // New pre-execution approval needed
+                    // Check if it's a different approval (episode, state, OR action changed)
+                    const actionChanged = !currentPreExecutionApproval || 
+                        JSON.stringify(currentPreExecutionApproval.action) !== JSON.stringify(data.action);
+                    
                     if (!currentPreExecutionApproval || 
                         currentPreExecutionApproval.episode_id !== data.episode_id ||
-                        currentPreExecutionApproval.state_id !== data.state_id) {
+                        currentPreExecutionApproval.state_id !== data.state_id ||
+                        actionChanged) {
                         
                         currentPreExecutionApproval = data;
                         await showPreExecutionModal(data);
