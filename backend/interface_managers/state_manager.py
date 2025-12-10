@@ -299,6 +299,13 @@ class StateManager:
 
         # ---- Phase 1.5: Wait for administrator approval ----
         if approved is None:  # Only do approval if not already handled by undo classification
+            # CRITICAL: Mark state as "pending" BEFORE setting up modal
+            # This protects it from demotion by future states arriving during modal setup
+            with self.state_lock:
+                if latest_episode_id in self.pending_states_by_episode:
+                    if latest_state_id in self.pending_states_by_episode[latest_episode_id]:
+                        self.pending_states_by_episode[latest_episode_id][latest_state_id]["approval_status"] = "pending"
+            
             # Set pending approval and wait for response
             with self.approval_lock:
                 self.pending_approval_state = {
@@ -884,25 +891,12 @@ class StateManager:
 
             self.pending_approval_state["approved"] = True
 
-            # Mark the state as approved in completed_states_by_episode
+            # Mark the state as approved in pending_states_by_episode (where it actually is)
             with self.state_lock:
-                if episode_id in self.completed_states_by_episode:
-                    if state_id in self.completed_states_by_episode[episode_id]:
-                        state_info = self.completed_states_by_episode[episode_id][state_id]
+                if episode_id in self.pending_states_by_episode:
+                    if state_id in self.pending_states_by_episode[episode_id]:
+                        state_info = self.pending_states_by_episode[episode_id][state_id]
                         state_info["approval_status"] = "approved"
-                        # Mark the last execution attempt as approved
-                        if state_info.get("execution_history"):
-                            state_info["execution_history"][-1]["approval"] = 1
-                            
-                            # Log approval summary
-                            execution_history = state_info["execution_history"]
-                            self.dataset_manager.log_approval_summary(
-                                episode_index=episode_id,
-                                state_id=state_id,
-                                num_executions=len(execution_history),
-                                execution_propensities=[e["propensity"] for e in execution_history],
-                                approved=True,
-                            )
 
             return True
 
@@ -974,27 +968,102 @@ class StateManager:
 
             self.pending_approval_state["approved"] = False
 
-            # Mark the state as rejected in completed_states_by_episode
+            # Mark the state as rejected in pending_states_by_episode (where it actually is)
             with self.state_lock:
-                if episode_id in self.completed_states_by_episode:
-                    if state_id in self.completed_states_by_episode[episode_id]:
-                        state_info = self.completed_states_by_episode[episode_id][state_id]
+                if episode_id in self.pending_states_by_episode:
+                    if state_id in self.pending_states_by_episode[episode_id]:
+                        state_info = self.pending_states_by_episode[episode_id][state_id]
                         state_info["approval_status"] = "rejected"
-                        # Mark the last execution attempt as rejected
-                        if state_info.get("execution_history"):
-                            state_info["execution_history"][-1]["approval"] = -1
-                            
-                            # Log rejection summary (we don't proceed to new state, but still summarize)
-                            execution_history = state_info["execution_history"]
-                            self.dataset_manager.log_approval_summary(
-                                episode_index=episode_id,
-                                state_id=state_id,
-                                num_executions=len(execution_history),
-                                execution_propensities=[e["propensity"] for e in execution_history],
-                                approved=False,
-                            )
 
             return True
+
+    def discard_jitter_states(self, episode_id: int) -> bool:
+        """Find last approved critical state and discard all states after it.
+        
+        This is used when newer states have been created due to motor jitter after
+        an approved state. Discarding allows the approved state to be served.
+        
+        Args:
+            episode_id: Episode to clean up
+            
+        Returns:
+            True if states were discarded, False if no approved state found or no states to discard
+        """
+        with self.state_lock:
+            # Find all critical states with approval_status = "approved"
+            all_states = {
+                **self.pending_states_by_episode.get(episode_id, {}),
+                **self.completed_states_by_episode.get(episode_id, {}),
+            }
+            
+            approved_critical_states = [
+                state_id for state_id, state_info in all_states.items()
+                if state_info.get("critical") and state_info.get("approval_status") == "approved"
+            ]
+            
+            if not approved_critical_states:
+                print(f"⚠️  No approved critical state found in episode {episode_id}")
+                return False
+            
+            # Get the last (highest state_id) approved critical state
+            last_approved_state_id = max(approved_critical_states)
+            print(f"📍 Last approved critical state: {last_approved_state_id}")
+            
+            # Collect all states after it
+            states_to_delete = []
+            if episode_id in self.pending_states_by_episode:
+                for other_state_id in self.pending_states_by_episode[episode_id].keys():
+                    if other_state_id > last_approved_state_id:
+                        states_to_delete.append(other_state_id)
+            
+            if episode_id in self.completed_states_by_episode:
+                for other_state_id in self.completed_states_by_episode[episode_id].keys():
+                    if other_state_id > last_approved_state_id:
+                        states_to_delete.append(other_state_id)
+            
+            if not states_to_delete:
+                print(f"⚠️  No states to discard after state {last_approved_state_id}")
+                return False
+            
+            # Remove duplicates and sort
+            states_to_delete = sorted(set(states_to_delete))
+            
+            # Delete them
+            deleted_count = 0
+            for delete_state_id in states_to_delete:
+                if episode_id in self.pending_states_by_episode:
+                    if delete_state_id in self.pending_states_by_episode[episode_id]:
+                        state_info = self.pending_states_by_episode[episode_id][delete_state_id]
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.pending_states_by_episode[episode_id][delete_state_id]
+                        deleted_count += 1
+                
+                if episode_id in self.completed_states_by_episode:
+                    if delete_state_id in self.completed_states_by_episode[episode_id]:
+                        state_info = self.completed_states_by_episode[episode_id][delete_state_id]
+                        self._delete_obs_from_disk(state_info.get("obs_path"))
+                        del self.completed_states_by_episode[episode_id][delete_state_id]
+                        deleted_count += 1
+                
+                if episode_id in self.completed_states_buffer_by_episode:
+                    if delete_state_id in self.completed_states_buffer_by_episode[episode_id]:
+                        del self.completed_states_buffer_by_episode[episode_id][delete_state_id]
+            
+            # Clear pending approval if it was for one of the deleted states
+            with self.approval_lock:
+                if (self.pending_approval_state and 
+                    self.pending_approval_state["episode_id"] == episode_id and
+                    self.pending_approval_state["state_id"] in states_to_delete):
+                    print(f"🗑️  Clearing pending approval for deleted state {self.pending_approval_state['state_id']}")
+                    self.pending_approval_state = None
+            
+            # Reset next_state_id to point after the last approved state
+            # This ensures get_latest_state() will serve the approved state
+            self.next_state_id = last_approved_state_id + 1
+            print(f"🔄 Reset next_state_id to {self.next_state_id}")
+            
+            print(f"🗑️  Discarded {deleted_count} jitter states after approved state {last_approved_state_id}")
+            return deleted_count > 0
 
     def undo_to_previous_critical_state(self) -> dict | None:
         """Undo to the previous critical state by discarding all states since then.
@@ -1448,24 +1517,42 @@ class StateManager:
     # =========================
 
     def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
-        """Demote critical states before state_id in episode with episode_id to non-critical."""
+        """Demote critical states before state_id in episode with episode_id to non-critical.
+        
+        Only demotes states that:
+        - Are earlier than current_state_id
+        - Are marked critical
+        - Have no actions yet
+        - Have NOT passed post-execution approval (not approved/rejected yet)
+        """
         for state_id in self.pending_states_by_episode[episode_id].keys():
-            # If demoting a state that's pending approval, clear the approval request
+            state_info = self.pending_states_by_episode[episode_id][state_id]
+            
+            # Don't demote if state has entered approval phase (pending, approved, or rejected)
+            if state_info.get("approval_status") in ["pending", "approved", "rejected"]:
+                continue  # In approval pipeline - protected from demotion
+            
+            # Don't demote if state is currently pending post-execution approval
+            is_pending_approval = False
             with self.approval_lock:
                 if (
                     self.pending_approval_state
                     and self.pending_approval_state["episode_id"] == episode_id
                     and self.pending_approval_state["state_id"] == state_id
-                    and state_id < current_state_id
                 ):
-                    print(f"🚫 Clearing approval request for demoted state {state_id}")
-                    self.pending_approval_state = None
+                    is_pending_approval = True
+            
+            if is_pending_approval:
+                continue  # Currently awaiting approval - protected from demotion
+            
+            # Only demote if: earlier, critical, no actions yet, and hasn't been approved
             if (
                 state_id < current_state_id
-                and self.pending_states_by_episode[episode_id][state_id]["critical"]
-                and not self.pending_states_by_episode[episode_id][state_id]["actions"]
+                and state_info["critical"]
+                and not state_info["actions"]
             ):
                 self.pending_states_by_episode[episode_id][state_id]["critical"] = False
+                print(f"⬇️  Demoted unanswered critical state {state_id} (new critical: {current_state_id})")
 
     def auto_label_previous_states(self, critical_state_id):
         self.auto_label_queue.put_nowait(critical_state_id)

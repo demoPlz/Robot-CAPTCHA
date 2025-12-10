@@ -598,6 +598,9 @@
                     <button class="approval-btn approval-btn-reject" id="approval-reject-btn">
                         <span class="control-icon">❌</span> Reject & Undo
                     </button>
+                    <button class="approval-btn" id="approval-discard-btn" style="background: linear-gradient(135deg, #f97316, #ea580c); color: white;">
+                        <span class="control-icon">🗑️</span> Discard Jitter States
+                    </button>
                     <button class="approval-btn approval-btn-proceed" id="approval-proceed-btn">
                         <span class="control-icon">✅</span> Proceed
                     </button>
@@ -754,6 +757,7 @@
         const approvalNewImage = document.getElementById('approval-new-image');
         const approvalProceedBtn = document.getElementById('approval-proceed-btn');
         const approvalRejectBtn = document.getElementById('approval-reject-btn');
+        const approvalDiscardBtn = document.getElementById('approval-discard-btn');
         const approvalMarkEndBtn = document.getElementById('approval-mark-end-btn');
 
         // Undo classification modal elements
@@ -1380,6 +1384,7 @@
             try {
                 approvalProceedBtn.disabled = true;
                 approvalRejectBtn.disabled = true;
+                approvalDiscardBtn.disabled = true;
                 approvalMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
@@ -1404,6 +1409,7 @@
             } finally {
                 approvalProceedBtn.disabled = false;
                 approvalRejectBtn.disabled = false;
+                approvalDiscardBtn.disabled = false;
                 approvalMarkEndBtn.disabled = false;
             }
         }
@@ -1414,6 +1420,7 @@
             try {
                 approvalProceedBtn.disabled = true;
                 approvalRejectBtn.disabled = true;
+                approvalDiscardBtn.disabled = true;
                 approvalMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/reject-critical`, {
@@ -1438,6 +1445,43 @@
             } finally {
                 approvalProceedBtn.disabled = false;
                 approvalRejectBtn.disabled = false;
+                approvalDiscardBtn.disabled = false;
+                approvalMarkEndBtn.disabled = false;
+            }
+        }
+
+        async function handleApprovalDiscard() {
+            if (!currentApprovalState) return;
+            
+            try {
+                approvalProceedBtn.disabled = true;
+                approvalRejectBtn.disabled = true;
+                approvalDiscardBtn.disabled = true;
+                approvalMarkEndBtn.disabled = true;
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/discard-jitter-states`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentApprovalState.episode_id
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('🗑️ Jitter states discarded');
+                    // Clear the modal since we discarded the pending approval state too
+                    currentApprovalState = null;
+                    hideApprovalModal();
+                } else {
+                    showToast('❌ Failed to discard states', 2000);
+                }
+            } catch (e) {
+                console.error('Error discarding states:', e);
+                showToast('❌ Error discarding states', 2000);
+            } finally {
+                approvalProceedBtn.disabled = false;
+                approvalRejectBtn.disabled = false;
+                approvalDiscardBtn.disabled = false;
                 approvalMarkEndBtn.disabled = false;
             }
         }
@@ -1448,6 +1492,7 @@
             try {
                 approvalProceedBtn.disabled = true;
                 approvalRejectBtn.disabled = true;
+                approvalDiscardBtn.disabled = true;
                 approvalMarkEndBtn.disabled = true;
                 
                 const response = await fetch(`${API_BASE_URL}/api/control/mark-state-as-end`, {
@@ -1472,6 +1517,7 @@
             } finally {
                 approvalProceedBtn.disabled = false;
                 approvalRejectBtn.disabled = false;
+                approvalDiscardBtn.disabled = false;
                 approvalMarkEndBtn.disabled = false;
             }
         }
@@ -1479,6 +1525,7 @@
         // Bind approval modal events
         approvalProceedBtn.addEventListener('click', handleApprovalProceed);
         approvalRejectBtn.addEventListener('click', handleApprovalReject);
+        approvalDiscardBtn.addEventListener('click', handleApprovalDiscard);
         approvalMarkEndBtn.addEventListener('click', handleApprovalMarkEnd);
 
         // --- Pre-Execution Approval Modal ---

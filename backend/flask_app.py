@@ -624,6 +624,29 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/discard-jitter-states", methods=["POST"])
+    def discard_jitter_states():
+        """Discard jitter states after the last approved critical state"""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+
+            if episode_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id"}), 400
+
+            success = crowd_interface.state_manager.discard_jitter_states(episode_id)
+
+            if not success:
+                return jsonify({"status": "error", "message": "No approved state found or no states to discard"}), 400
+
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in discard-jitter-states endpoint: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/control/pending-undo-classification", methods=["GET"])
     def get_pending_undo_classification():
         """Get the state awaiting undo classification (new state vs old state)"""
