@@ -3,19 +3,22 @@
 <meta charset="utf-8" />
 <title>Robot-Captcha</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#f5f5f5}
+  html{margin:0;padding:0;height:100%;overflow:auto;background:#f5f5f5}
+  body{margin:0;padding:20px;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;overflow:visible}
+  #page-wrapper{
+    position:relative;
+    display:inline-block;
+    white-space:nowrap;
+  }
   /* Multi-view container wrapper – white card */
   #viewport{
-    position:fixed; 
-    top:50%; 
-    /* Offset left to account for hints panel (300px width + 20px gap = 320px, half = 160px) */
-    left:calc(50% - 160px);
-    transform:translate(-50%, -50%);
+    position:relative;
+    display:inline-flex;
+    vertical-align:top;
     background: #ffffff;                 /* ⬅️ was #3b82f6 */
     border-radius: 12px;
     padding: 20px;
     box-shadow:0 4px 20px rgba(0,0,0,0.15);
-    display: flex;
     flex-direction: column;
     gap: 16px;                            /* a touch tighter spacing */
     /* Make the card's width fixed (we set the pixel value from JS).
@@ -25,59 +28,6 @@
     width: var(--viewport-total-px, auto);
     min-width: var(--viewport-total-px, auto);
     max-width: var(--viewport-total-px, none);
-    /* NEW: Scale down when window is too small, but preserve aspect ratio */
-    max-height: 95vh;
-    max-width: 95vw;
-  }
-  
-  /* NEW: Scale down the entire viewport uniformly when window is smaller to preserve aspect ratio */
-  @media (max-width: 1600px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.9);
-      transform-origin: center center;
-    }
-  }
-  @media (max-width: 1400px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.8);
-    }
-  }
-  @media (max-width: 1200px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.7);
-    }
-  }
-  @media (max-width: 1000px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.6);
-    }
-  }
-  @media (max-width: 800px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.5);
-    }
-  }
-  
-  /* Also scale down for height constraints to maintain aspect ratio */
-  @media (max-height: 900px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.85);
-    }
-  }
-  @media (max-height: 800px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.75);
-    }
-  }
-  @media (max-height: 700px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.65);
-    }
-  }
-  @media (max-height: 600px) {
-    #viewport {
-      transform: translate(-50%, -50%) scale(0.55);
-    }
   }
 
   /* Blue prompt bar at the top */
@@ -1030,7 +980,8 @@
 
 /* Hints panel on the right side of the main UI */
 .hints-panel {
-  position: absolute;
+  position: relative;
+  display: inline-block;
   width: 300px;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
@@ -1040,7 +991,9 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   opacity: 0;
   transition: opacity 0.3s ease-in;
-  z-index: 100;
+  vertical-align: top;
+  margin-left: 20px;
+  white-space: normal;
   /* Position will be set dynamically by JS to maintain relative position to viewport */
 }
 
@@ -1493,7 +1446,9 @@
 }
 </script></head><body>
   <!-- Centering mount for the WebGL canvas; avoids CSS stretching -->
-  <div id="viewport"></div>
+  <div id="page-wrapper">
+    <div id="viewport"></div>
+  </div>
 <script type="module">
 
 // === High-quality recording profile ==========================================
@@ -2947,21 +2902,12 @@ hintsPanel.innerHTML = `
     <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
   </ol>
 `;
-mount.parentNode.appendChild(hintsPanel);
+document.getElementById('page-wrapper').appendChild(hintsPanel);
 
-// Position hints panel to align with the top of the viewport with constant gap
-const HINTS_GAP = 20; // Constant gap between viewport and hints panel in pixels
+// Simple function to maintain compatibility with existing code
 function updateHintsPosition() {
-  const mountRect = mount.getBoundingClientRect();
-  const viewportRight = mountRect.right;
-  const hintsLeft = viewportRight + HINTS_GAP;
-  hintsPanel.style.left = `${hintsLeft}px`;
-  hintsPanel.style.right = 'auto'; // Override the fixed right position
-  hintsPanel.style.top = `${mountRect.top + window.scrollY}px`;
+  // Inline-block layout handles positioning automatically
 }
-
-window.addEventListener('resize', updateHintsPosition);
-window.addEventListener('scroll', updateHintsPosition);
 
 // Everything below goes into recordRegion (NOT directly into mount)
 const contentContainer = document.createElement('div');
