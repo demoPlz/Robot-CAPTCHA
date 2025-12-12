@@ -48,7 +48,8 @@ class CrowdInterface:
     def __init__(
         self,
         required_responses_per_state: int = 1,
-        required_responses_per_critical_state: int = 10,
+        required_responses_per_critical_state: int = 3,
+        required_approvals_per_critical_state: int = 2,
         autofill_critical_states: bool = False,
         num_autofill_actions: int | None = None,
         use_manual_prompt: bool = False,
@@ -112,6 +113,7 @@ class CrowdInterface:
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_critical_state = required_responses_per_critical_state
+        self.required_approvals_per_critical_state = required_approvals_per_critical_state
         self.autofill_critical_states = bool(autofill_critical_states)
         # If not specified, default to "complete on first submission"
         if num_autofill_actions is None:
@@ -230,6 +232,7 @@ class CrowdInterface:
         self.state_manager = StateManager(
             required_responses_per_state=self.required_responses_per_state,
             required_responses_per_critical_state=self.required_responses_per_critical_state,
+            required_approvals_per_critical_state=self.required_approvals_per_critical_state,
             autofill_critical_states=self.autofill_critical_states,
             num_autofill_actions=self.num_autofill_actions,
             use_manual_prompt=self.use_manual_prompt,

@@ -7,6 +7,7 @@ episode finalization.
 
 import queue
 import random
+import time
 from threading import Lock, Thread, Timer
 
 import torch
@@ -40,6 +41,7 @@ class StateManager:
         self,
         required_responses_per_state: int,
         required_responses_per_critical_state: int,
+        required_approvals_per_critical_state: int,
         autofill_critical_states: bool,
         num_autofill_actions: int,
         use_manual_prompt: bool,
@@ -96,6 +98,7 @@ class StateManager:
         """
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_critical_state = required_responses_per_critical_state
+        self.required_approvals_per_critical_state = required_approvals_per_critical_state
         self.autofill_critical_states = autofill_critical_states
         self.num_autofill_actions = num_autofill_actions
         self.use_manual_prompt = use_manual_prompt
@@ -122,6 +125,9 @@ class StateManager:
         # Auto-labeling
         self.auto_label_queue = queue.Queue()
         self.auto_label_worker_thread = None
+        
+        # Pre-approval threads tracking
+        self._pre_approval_threads: dict[tuple[int, int], Thread] = {}  # (episode_id, state_id) -> thread
 
         # Manager dependencies
         self.obs_stream = obs_stream_manager
@@ -225,6 +231,10 @@ class StateManager:
             "approval_status": None,  # None=pending/non-critical, "approved", "rejected"
             # Execution history: list of {"action": tensor, "propensity": float, "approval": 1/-1/None}
             "execution_history": [],
+            # Pre-approval tracking
+            "num_pre_approvals_completed": 0,
+            "pre_approval_loop_complete": False,  # Flag to track if pre-approval loop is done
+            "final_executed_action": None,
             # Drawer joint positions will be computed when we call set_last_state_to_critical (like object_poses)
             # "drawer_joint_positions"
             # Poses of each object in self.object will be computed when we call set_last_state_to_critical
@@ -338,6 +348,29 @@ class StateManager:
             return
 
         print(f"✅ Administrator approved state {latest_state_id}, proceeding...")
+        
+        # Record final_executed_action for the PREVIOUS critical state (the one we moved FROM)
+        # The action that got us to latest_state_id belongs to the previous critical state
+        with self.state_lock:
+            ep = self.completed_states_buffer_by_episode.get(latest_episode_id, {})
+            if ep:
+                # Find previous critical state
+                critical_states = [sid for sid, sinfo in ep.items() if sinfo.get("critical", False)]
+                critical_states.sort()
+                
+                if len(critical_states) > 0:
+                    # Previous critical is the one before this arrival
+                    prev_critical_state_id = critical_states[-1]
+                    prev_state_info = ep[prev_critical_state_id]
+                    
+                    # Find the executed action (the one that was approved post-execution)
+                    exec_history = prev_state_info.get("execution_history", [])
+                    for entry in exec_history:
+                        if entry.get("executed", False) and entry.get("post_execution_approved", False):
+                            executed_action = entry["action"]
+                            prev_state_info["final_executed_action"] = executed_action.tolist() if hasattr(executed_action, "tolist") else list(executed_action)
+                            print(f"✅ Recorded final_executed_action for PREVIOUS state {prev_critical_state_id}")
+                            break
 
         # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
         # Re-fetch info from state_lock after approval wait
@@ -429,6 +462,9 @@ class StateManager:
         Handles all the side-effects.
 
         """
+        should_run_pre_approval = False
+        state_info_copy = None
+        
         with self.state_lock:
             state_id = response_data["state_id"]
             episode_id = response_data["episode_id"]
@@ -472,51 +508,7 @@ class StateManager:
 
             # Handle completion
             if state_info["responses_received"] >= required_responses:
-                if state_info["critical"] and state_id == self.next_state_id - 1:
-                    # Use action selector to choose action and get propensity
-                    selected_action, propensity, selection_metadata = self.action_selector.select_action(
-                        state_info["actions"][:required_responses], state_info
-                    )
-
-                    # Find index of selected action and move it to front
-                    for idx, action in enumerate(state_info["actions"][:required_responses]):
-                        if torch.equal(action, selected_action):
-                            # Swap selected action to front
-                            state_info["actions"][0], state_info["actions"][idx] = (
-                                state_info["actions"][idx],
-                                state_info["actions"][0],
-                            )
-                            break
-
-                    # Store selection metadata and propensity for logging/training
-                    state_info["action_selection_metadata"] = selection_metadata
-                    state_info["action_propensity"] = propensity
-
-                    print(f"🎯 Selected action using {selection_metadata['selector_used']} selector")
-                    print(f"   Propensity: {propensity:.4f} | Mode: {selection_metadata['mode']}")
-
-                    # Store selection metadata and propensity for later use in approval phase
-                    state_info["selected_action"] = selected_action
-                    state_info["selected_action_propensity"] = propensity
-                    state_info["selected_action_metadata"] = selection_metadata
-                    
-                    # Set up pre-execution approval (non-blocking - admin will review in monitor.html)
-                    with self.pre_execution_approval_lock:
-                        self.pending_pre_execution_approval = {
-                            "episode_id": episode_id,
-                            "state_id": state_id,
-                            "action": selected_action.tolist(),  # Convert tensor to list for JSON
-                            "propensity": propensity,
-                            "selector_metadata": selection_metadata,
-                            "obs_path": state_info.get("obs_path"),
-                            "view_paths": state_info.get("view_paths"),
-                            "approved": None,  # None=pending, True=approved, False=rejected
-                        }
-                    
-                    print(f"⏸️  Pre-execution approval pending for state {state_id} (non-blocking)")
-                    
-                    # NOTE: Don't set latest_goal here - robot loop will check approval status first
-
+                # Build action tensor for all submissions
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
                 if required_responses < self.required_responses_per_critical_state:
@@ -541,9 +533,25 @@ class StateManager:
 
                 # Remove from pending
                 del self.pending_states_by_episode[episode_id][state_id]
+                
+                # Flag for pre-approval loop if critical
+                if state_info["critical"]:
+                    should_run_pre_approval = True
+                    state_info_copy = state_info.copy()
 
+        # Run pre-approval loop in background thread (only for completed critical states)
+        if should_run_pre_approval and state_info_copy:
+            thread = Thread(
+                target=self._run_pre_approval_loop_wrapper,
+                args=(state_info_copy, episode_id, state_id),
+                daemon=True,
+            )
+            self._pre_approval_threads[(episode_id, state_id)] = thread
+            thread.start()
+            
+        with self.state_lock:
                 # Handle episode completion
-                if not self.pending_states_by_episode[episode_id]:
+                if episode_id in self.pending_states_by_episode and not self.pending_states_by_episode[episode_id]:
                     self._schedule_episode_finalize_after_grace(episode_id)
 
     def get_pending_states_info(self) -> dict:
@@ -620,169 +628,55 @@ class StateManager:
             }
 
     def get_latest_goal(self) -> dict | None:
-        """Get and clear the latest goal (for robot loop to consume).
-        
-        Checks pre-execution approval status before returning goal.
-        If action is pending approval or rejected, handles accordingly.
+        """Get next approved action to execute.
+
+        Phase 2: Execution loop - select first non-executed pre-approved action from execution_history.
+
+        Returns:
+            dict with 'action' (list of floats) and 'is_undo' (bool), or None if no goal available
+
         """
-        # Check if there's a pending pre-execution approval
-        # Extract info from pending approval FIRST, then release lock before doing heavy work
-        pending_info = None
-        approved_info = None
-        
-        with self.pre_execution_approval_lock:
-            if self.pending_pre_execution_approval is not None:
-                approval_status = self.pending_pre_execution_approval.get("approved")
+        # Phase 2: Execution loop - find first non-executed pre-approved action
+        with self.state_lock:
+            # Find the latest completed critical state
+            latest_episode_id = max(self.completed_states_by_episode.keys()) if self.completed_states_by_episode else None
+            if latest_episode_id is None:
+                return None
                 
-                if approval_status is None:
-                    # Still waiting for approval - don't return goal yet
-                    return None
+            ep = self.completed_states_by_episode.get(latest_episode_id, {})
+            if not ep:
+                return None
+                
+            # Find latest critical state
+            critical_states = [sid for sid, sinfo in ep.items() if sinfo.get("critical", False)]
+            if not critical_states:
+                return None
+                
+            latest_critical_state_id = max(critical_states)
+            state_info = ep[latest_critical_state_id]
+            
+            # MUST check if pre-approval loop is complete FIRST, before looking at actions
+            if not state_info.get("pre_approval_loop_complete", False):
+                # Pre-approval loop still running - don't execute anything yet
+                return None
+            
+            exec_history = state_info.get("execution_history", [])
+            
+            # Find first non-executed approved action
+            for entry in exec_history:
+                if entry.get("approval") == 1 and not entry.get("executed", False):
+                    # Mark as executed
+                    entry["executed"] = True
+                    selected_action = entry["action"]
                     
-                elif approval_status is False:
-                    # Rejected - extract info and clear
-                    pending_info = {
-                        "episode_id": self.pending_pre_execution_approval["episode_id"],
-                        "state_id": self.pending_pre_execution_approval["state_id"],
-                        "rejected_action": torch.tensor(self.pending_pre_execution_approval["action"]),
-                        "propensity": self.pending_pre_execution_approval["propensity"],
-                        "selector_metadata": self.pending_pre_execution_approval["selector_metadata"],
-                    }
-                    # Clear pending approval BEFORE releasing lock
-                    self.pending_pre_execution_approval = None
+                    # Convert to list if tensor
+                    action_list = selected_action.tolist() if hasattr(selected_action, "tolist") else list(selected_action)
                     
-                elif approval_status is True:
-                    # Approved - extract info and clear
-                    approved_info = {
-                        "episode_id": self.pending_pre_execution_approval["episode_id"],
-                        "state_id": self.pending_pre_execution_approval["state_id"],
-                        "approved_action": torch.tensor(self.pending_pre_execution_approval["action"]),
-                        "propensity": self.pending_pre_execution_approval["propensity"],
-                        "selector_metadata": self.pending_pre_execution_approval["selector_metadata"],
-                    }
-                    # Clear pending approval
-                    self.pending_pre_execution_approval = None
-        
-        # Handle rejection outside of lock to avoid deadlock
-        if pending_info is not None:
-            episode_id = pending_info["episode_id"]
-            state_id = pending_info["state_id"]
-            rejected_action = pending_info["rejected_action"]
-            propensity = pending_info["propensity"]
-            selector_metadata = pending_info["selector_metadata"]
+                    print(f"✅ Executing pre-approved action for state {latest_critical_state_id}")
+                    return action_list
             
-            # Record rejection in execution history
-            with self.state_lock:
-                        ep = self.completed_states_by_episode.get(episode_id, {})
-                        state_info = ep.get(state_id)
-                        if state_info:
-                            if "execution_history" not in state_info:
-                                state_info["execution_history"] = []
-                            execution_index = len(state_info["execution_history"])
-                            state_info["execution_history"].append({
-                                "action": rejected_action.clone(),
-                                "propensity": propensity,
-                                "selector_metadata": selector_metadata.copy(),
-                                "approval": -1  # Rejected in pre-execution phase
-                            })
-                            
-                            # Log rejection
-                            self.dataset_manager.log_execution_attempt(
-                                episode_index=episode_id,
-                                state_id=state_id,
-                                execution_index=execution_index,
-                                action=rejected_action,
-                                propensity=propensity,
-                                selector_metadata=selector_metadata,
-                            )
-                            self.dataset_manager.log_approval_summary(
-                                episode_index=episode_id,
-                                state_id=state_id,
-                                num_executions=len(state_info["execution_history"]),
-                                execution_propensities=[e["propensity"] for e in state_info["execution_history"]],
-                                approved=False,
-                            )
-                            
-                            # Track rejected actions to exclude from resampling
-                            if "rejected_actions" not in state_info:
-                                state_info["rejected_actions"] = []
-                            state_info["rejected_actions"].append(rejected_action)
-                            
-                            # Filter out ALL rejected actions from the pool
-                            remaining_actions = [
-                                a for a in state_info.get("actions", []) 
-                                if not any(torch.equal(a, rejected) for rejected in state_info["rejected_actions"])
-                            ]
-                            if len(remaining_actions) > 0:
-                                # Select another action
-                                new_action, new_propensity, new_metadata = self.action_selector.select_action(
-                                    remaining_actions, state_info
-                                )
-                                
-                                print(f"🔄 Resampled new action after rejection (state {state_id})")
-                                print(f"   New action: {new_action.tolist()}")
-                                
-                                # Set up new pre-execution approval
-                                with self.pre_execution_approval_lock:
-                                    self.pending_pre_execution_approval = {
-                                        "episode_id": episode_id,
-                                        "state_id": state_id,
-                                        "action": new_action.tolist(),
-                                        "propensity": new_propensity,
-                                        "selector_metadata": new_metadata,
-                                        "obs_path": state_info.get("obs_path"),
-                                        "view_paths": state_info.get("view_paths"),
-                                        "approved": None,
-                                    }
-                                print(f"   ✓ New pre-execution approval set (ep={episode_id}, state={state_id}, approved={self.pending_pre_execution_approval['approved']})")
-                                print(f"      obs_path={state_info.get('obs_path')}")
-                                print(f"      view_paths keys={list(state_info.get('view_paths', {}).keys())}")
-                                return None  # Wait for approval of new action
-                            else:
-                                print(f"⚠️  No more actions to resample for state {state_id}")
-                                return None
-        
-        # Handle approval outside of lock
-        if approved_info is not None:
-            episode_id = approved_info["episode_id"]
-            state_id = approved_info["state_id"]
-            approved_action = approved_info["approved_action"]
-            propensity = approved_info["propensity"]
-            selector_metadata = approved_info["selector_metadata"]
-            
-            # Set as latest goal for execution
-            self.latest_goal = approved_action
-            
-            # Record in execution history (will be updated with post-execution approval later)
-            with self.state_lock:
-                ep = self.completed_states_by_episode.get(episode_id, {})
-                state_info = ep.get(state_id)
-                if state_info:
-                    if "execution_history" not in state_info:
-                        state_info["execution_history"] = []
-                    execution_index = len(state_info["execution_history"])
-                    state_info["execution_history"].append({
-                        "action": approved_action.clone(),
-                        "propensity": propensity,
-                        "selector_metadata": selector_metadata.copy(),
-                        "approval": None  # Will be set after post-execution approval
-                    })
-                    
-                    # Log execution attempt
-                    self.dataset_manager.log_execution_attempt(
-                        episode_index=episode_id,
-                        state_id=state_id,
-                        execution_index=execution_index,
-                        action=approved_action,
-                        propensity=propensity,
-                        selector_metadata=selector_metadata,
-                    )
-            
-            print(f"✅ Pre-execution approved - executing action for state {state_id}")
-        
-        # Normal case - return and clear goal
-        goal = self.latest_goal
-        self.latest_goal = None
-        return goal
+            # No approved actions available - return None silently
+            return None
 
     def get_pending_undo_classification(self) -> dict | None:
         """Get the state awaiting undo classification from administrator."""
@@ -879,7 +773,7 @@ class StateManager:
                 }
 
     def approve_critical_state(self, episode_id: int, state_id: int) -> bool:
-        """Approve a pending critical state."""
+        """Approve a pending critical state (post-execution approval)."""
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
@@ -897,6 +791,25 @@ class StateManager:
                     if state_id in self.pending_states_by_episode[episode_id]:
                         state_info = self.pending_states_by_episode[episode_id][state_id]
                         state_info["approval_status"] = "approved"
+                        
+                # Also mark the executed action as post-execution approved in completed states
+                ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
+                if ep_completed:
+                    # Find previous critical state (the one that has the executed action)
+                    critical_states = [sid for sid, sinfo in ep_completed.items() if sinfo.get("critical", False)]
+                    critical_states.sort()
+                    
+                    if len(critical_states) > 0:
+                        prev_critical_state_id = critical_states[-1]
+                        prev_state_info = ep_completed[prev_critical_state_id]
+                        
+                        # Mark the executed action as post-execution approved
+                        exec_history = prev_state_info.get("execution_history", [])
+                        for entry in exec_history:
+                            if entry.get("executed", False):
+                                entry["post_execution_approved"] = True
+                                print(f"✅ Marked executed action as post-execution approved for state {prev_critical_state_id}")
+                                break
 
             return True
 
@@ -1511,6 +1424,108 @@ class StateManager:
         # Check if this is a critical state with "end." text - auto-fill with current position
         if text and text.strip().lower() == "end.":
             self._auto_fill_end_state_locked(state_info, episode_id, state_id)
+
+    def _run_pre_approval_loop_wrapper(self, state_info: dict, episode_id: int, state_id: int) -> None:
+        """Wrapper for pre-approval loop that handles cleanup."""
+        try:
+            self._run_pre_approval_loop(state_info, episode_id, state_id)
+        finally:
+            # Clean up thread tracking
+            key = (episode_id, state_id)
+            if key in self._pre_approval_threads:
+                del self._pre_approval_threads[key]
+
+    def _run_pre_approval_loop(self, state_info: dict, episode_id: int, state_id: int) -> None:
+        """Phase 1: Sample actions one-by-one for pre-approval until stopping condition met.
+        
+        Stopping condition: (num_pre_approvals_completed >= required_approvals_per_critical_state) AND (at least 1 approved)
+        
+        Args:
+            state_info: State dict with actions list
+            episode_id: Episode ID
+            state_id: State ID
+        """
+        required_responses = self.required_responses_per_critical_state
+        available_actions = state_info.get("actions", [])[:required_responses]
+        
+        if not available_actions:
+            print(f"⚠️  No actions available for pre-approval loop (state {state_id})")
+            return
+            
+        reviewed_actions = []
+        num_approved = 0
+        
+        while True:
+            # Check stopping condition
+            num_reviewed = len(reviewed_actions)
+            if num_reviewed >= self.required_approvals_per_critical_state and num_approved >= 1:
+                print(f"✅ Pre-approval loop complete: {num_reviewed} reviewed, {num_approved} approved")
+                break
+                
+            # Check if we have more actions to sample
+            remaining_actions = [a for a in available_actions if not any(torch.equal(a, r["action"]) for r in reviewed_actions)]
+            if not remaining_actions:
+                print(f"⚠️  No more actions to review (reviewed {num_reviewed}, approved {num_approved})")
+                break
+                
+            # Sample next action
+            selected_action, propensity, selection_metadata = self.action_selector.select_action(
+                remaining_actions, state_info
+            )
+            
+            # Set up pre-execution approval modal (blocking)
+            with self.pre_execution_approval_lock:
+                self.pending_pre_execution_approval = {
+                    "episode_id": episode_id,
+                    "state_id": state_id,
+                    "action": selected_action.tolist(),
+                    "propensity": propensity,
+                    "selector_metadata": selection_metadata,
+                    "obs_path": state_info.get("obs_path"),
+                    "view_paths": state_info.get("view_paths"),
+                    "approved": None,
+                }
+                
+            print(f"⏸️  Waiting for pre-approval decision (state {state_id}, action {num_reviewed + 1})")
+            
+            # Block until admin makes decision
+            approved = None
+            while approved is None:
+                time.sleep(0.1)
+                with self.pre_execution_approval_lock:
+                    if self.pending_pre_execution_approval is None:
+                        print(f"⚠️  Pre-approval was cleared, exiting loop")
+                        return
+                    if self.pending_pre_execution_approval["approved"] is not None:
+                        approved = self.pending_pre_execution_approval["approved"]
+                        self.pending_pre_execution_approval = None
+                        break
+                        
+            # Record decision
+            approval_value = 1 if approved else -1
+            reviewed_actions.append({
+                "action": selected_action,
+                "propensity": propensity,
+                "selector_metadata": selection_metadata,
+                "approval": approval_value,
+            })
+            
+            if approved:
+                num_approved += 1
+                print(f"✅ Action {num_reviewed + 1} approved ({num_approved} total approved)")
+            else:
+                print(f"❌ Action {num_reviewed + 1} rejected")
+                
+        # Store all reviewed actions in execution_history and mark loop as complete
+        with self.state_lock:
+            # Update in both completed_states_by_episode and completed_states_buffer_by_episode
+            for ep_dict in [self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
+                if episode_id in ep_dict and state_id in ep_dict[episode_id]:
+                    ep_dict[episode_id][state_id]["execution_history"] = reviewed_actions
+                    ep_dict[episode_id][state_id]["num_pre_approvals_completed"] = len(reviewed_actions)
+                    ep_dict[episode_id][state_id]["pre_approval_loop_complete"] = True
+        
+        print(f"📊 Pre-approval complete: {len(reviewed_actions)} actions reviewed, {num_approved} approved")
 
     # =========================
     # Internal Helper Methods

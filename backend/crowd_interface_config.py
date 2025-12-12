@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
 
-        self.required_approvals_per_state: int = 2
+        self.required_approvals_per_critical_state: int = 2
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
@@ -96,6 +96,11 @@ class CrowdInterfaceConfig:
             help="Number of user responses required for critical states",
         )
         parser.add_argument(
+            "--required-approvals-per-critical-state",
+            type=int,
+            help="Number of pre-approved actions required per critical state",
+        )
+        parser.add_argument(
             "--autofill-critical-states",
             action="store_true",
             help="Auto-complete critical states after partial responses",
@@ -157,6 +162,8 @@ class CrowdInterfaceConfig:
             config.task_name = args.task_name
         if args.required_responses_per_critical_state is not None:
             config.required_responses_per_critical_state = args.required_responses_per_critical_state
+        if args.required_approvals_per_critical_state is not None:
+            config.required_approvals_per_critical_state = args.required_approvals_per_critical_state
         if args.autofill_critical_states:
             config.autofill_critical_states = True
         if args.num_autofill_actions is not None:
@@ -196,6 +203,7 @@ class CrowdInterfaceConfig:
             "task_name": self.task_name,
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
+            "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
             # Autofill
             "autofill_critical_states": self.autofill_critical_states,
             "num_autofill_actions": self.num_autofill_actions,

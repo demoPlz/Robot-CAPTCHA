@@ -130,6 +130,15 @@ class DatasetManager:
                     "names": None,
                 }
                 self.dataset.meta.features["executed_approvals"] = self.dataset.features["executed_approvals"]
+            
+            # Add final_executed_action field (the single action that was executed and approved)
+            if "final_executed_action" not in self.dataset.features:
+                self.dataset.features["final_executed_action"] = {
+                    "dtype": "float32",
+                    "shape": (original_action_dim,),  # Just 7 floats (one action)
+                    "names": None,
+                }
+                self.dataset.meta.features["final_executed_action"] = self.dataset.features["final_executed_action"]
 
             # Recreate the HF dataset with updated features
             if self.dataset.hf_dataset is not None:
@@ -258,6 +267,19 @@ class DatasetManager:
                 "executed_propensities": executed_propensities,
                 "executed_approvals": executed_approvals,
             }
+            
+            # Add final_executed_action if present (7 floats - the one executed action that was approved)
+            if state.get("final_executed_action") is not None:
+                final_action = state["final_executed_action"]
+                # Convert to numpy array if needed
+                if isinstance(final_action, list):
+                    final_action = np.array(final_action, dtype=np.float32)
+                elif hasattr(final_action, "numpy"):
+                    final_action = final_action.numpy()
+                frame["final_executed_action"] = final_action
+            else:
+                # Fill with NaN if not set (non-critical or end state)
+                frame["final_executed_action"] = np.full(action_dim, np.nan, dtype=np.float32)
 
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
