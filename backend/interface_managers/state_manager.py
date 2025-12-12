@@ -1468,10 +1468,19 @@ class StateManager:
                 print(f"⚠️  No more actions to review (reviewed {num_reviewed}, approved {num_approved})")
                 break
                 
-            # Sample next action
-            selected_action, propensity, selection_metadata = self.action_selector.select_action(
+            # Sample next action from remaining (deduplicated) actions
+            selected_action, selector_propensity, selection_metadata = self.action_selector.select_action(
                 remaining_actions, state_info
             )
+            
+            # Compute true propensity: P(select this action from remaining) × P(this action in submissions)
+            # Count how many times selected_action appears in original submissions
+            count_selected = sum(1 for a in available_actions if torch.equal(a, selected_action))
+            crowd_frequency = count_selected / len(available_actions)
+            
+            # True propensity = selector's probability × crowd frequency
+            # This accounts for both the selector's sampling behavior AND the crowd's submission distribution
+            true_propensity = selector_propensity * crowd_frequency
             
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:
@@ -1479,7 +1488,7 @@ class StateManager:
                     "episode_id": episode_id,
                     "state_id": state_id,
                     "action": selected_action.tolist(),
-                    "propensity": propensity,
+                    "propensity": true_propensity,
                     "selector_metadata": selection_metadata,
                     "obs_path": state_info.get("obs_path"),
                     "view_paths": state_info.get("view_paths"),
@@ -1505,7 +1514,7 @@ class StateManager:
             approval_value = 1 if approved else -1
             reviewed_actions.append({
                 "action": selected_action,
-                "propensity": propensity,
+                "propensity": true_propensity,  # Use propensity based on original submission counts
                 "selector_metadata": selection_metadata,
                 "approval": approval_value,
             })
