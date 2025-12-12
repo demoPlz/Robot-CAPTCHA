@@ -26,6 +26,8 @@ class CrowdInterfaceConfig:
         self.required_responses_per_state: int = 1  # Non-critical states
         self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
+        self.required_approvals_per_state: int = 2
+
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
         self.autofill_critical_states: bool = False
