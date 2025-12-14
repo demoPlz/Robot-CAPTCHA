@@ -304,9 +304,9 @@ class StateManager:
                     # Delete this state and its observations
                     self._delete_obs_from_disk(info.get("obs_path"))
                     del self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                    # Decrement next_state_id so get_latest_state() serves the correct state
-                    self.next_state_id -= 1
-                    print(f"🔄 Decremented next_state_id to {self.next_state_id} (jitter state removed)")
+                    # Note: We don't need to adjust next_state_id because get_latest_state()
+                    # now finds states by approval_status, not by next_state_id
+                    print(f"✅ Jitter state removed (serving logic unaffected)")
                     # The previous critical state continues to be served
                     return
 
