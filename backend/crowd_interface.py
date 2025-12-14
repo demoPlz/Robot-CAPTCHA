@@ -50,6 +50,7 @@ class CrowdInterface:
         required_responses_per_state: int = 1,
         required_responses_per_critical_state: int = 3,
         required_approvals_per_critical_state: int = 2,
+        jitter_threshold: float = 0.01,
         autofill_critical_states: bool = False,
         num_autofill_actions: int | None = None,
         use_manual_prompt: bool = False,
@@ -116,6 +117,7 @@ class CrowdInterface:
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_critical_state = required_responses_per_critical_state
         self.required_approvals_per_critical_state = required_approvals_per_critical_state
+        self.jitter_threshold = jitter_threshold
         self.autofill_critical_states = bool(autofill_critical_states)
         # If not specified, default to "complete on first submission"
         if num_autofill_actions is None:
@@ -242,6 +244,7 @@ class CrowdInterface:
             use_manual_prompt=self.use_manual_prompt,
             use_sim=self.use_sim,
             task_text=self.task_text,
+            jitter_threshold=self.jitter_threshold,
             obs_cache_root=self._obs_cache_root,
             state_lock=self.state_lock,
             pending_states_by_episode=self.pending_states_by_episode,

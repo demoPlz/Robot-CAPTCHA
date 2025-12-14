@@ -24,9 +24,14 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 1  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 2
+        self.required_approvals_per_critical_state: int = 1
+
+        # ========== Jitter Detection ==========
+        # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
+        # automatically discard it. Threshold is L2 distance in joint positions (radians).
+        self.jitter_threshold: float = 0.01  # radians - tune based on robot sensitivity
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
@@ -106,6 +111,11 @@ class CrowdInterfaceConfig:
             help="Number of pre-approved actions required per critical state",
         )
         parser.add_argument(
+            "--jitter-threshold",
+            type=float,
+            help="L2 distance threshold for automatic jitter detection in radians (default: 0.01)",
+        )
+        parser.add_argument(
             "--autofill-critical-states",
             action="store_true",
             help="Auto-complete critical states after partial responses",
@@ -174,6 +184,8 @@ class CrowdInterfaceConfig:
             config.required_responses_per_critical_state = args.required_responses_per_critical_state
         if args.required_approvals_per_critical_state is not None:
             config.required_approvals_per_critical_state = args.required_approvals_per_critical_state
+        if args.jitter_threshold is not None:
+            config.jitter_threshold = args.jitter_threshold
         if args.autofill_critical_states:
             config.autofill_critical_states = True
         if args.num_autofill_actions is not None:
@@ -216,6 +228,7 @@ class CrowdInterfaceConfig:
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
             "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
+            "jitter_threshold": self.jitter_threshold,
             # Autofill
             "autofill_critical_states": self.autofill_critical_states,
             "num_autofill_actions": self.num_autofill_actions,

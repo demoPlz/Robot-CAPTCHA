@@ -47,6 +47,7 @@ class StateManager:
         use_manual_prompt: bool,
         use_sim: bool,
         task_text: str | None,
+        jitter_threshold: float,
         obs_cache_root,
         state_lock: Lock,
         pending_states_by_episode: dict,
@@ -77,6 +78,7 @@ class StateManager:
             use_manual_prompt: Whether manual prompting is enabled
             use_sim: Whether sim is enabled
             task_text: Task text for state info
+            jitter_threshold: L2 distance threshold for automatic jitter detection (radians)
             obs_cache_root: Root directory for observation cache
             state_lock: Lock protecting shared state data structures
             pending_states_by_episode: Shared dict of pending states
@@ -98,6 +100,7 @@ class StateManager:
         """
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_critical_state = required_responses_per_critical_state
+        self.jitter_threshold = jitter_threshold
         self.required_approvals_per_critical_state = required_approvals_per_critical_state
         self.autofill_critical_states = autofill_critical_states
         self.num_autofill_actions = num_autofill_actions
@@ -270,6 +273,42 @@ class StateManager:
             if info["critical"]:
                 # Already set
                 return
+
+            # ---- Phase 0.5: Auto-detect jitter states ----
+            # If the immediate previous critical state is too similar in joint positions,
+            # treat this new state as jitter and discard it automatically
+            all_states = {
+                **self.pending_states_by_episode.get(latest_episode_id, {}),
+                **self.completed_states_by_episode.get(latest_episode_id, {}),
+            }
+            
+            # Find previous critical state
+            previous_critical_states = [
+                (sid, sinfo)
+                for sid, sinfo in sorted(all_states.items())
+                if sid < latest_state_id and sinfo.get("critical", False)
+            ]
+            
+            if previous_critical_states:
+                prev_state_id, prev_state_info = previous_critical_states[-1]
+                
+                # Check joint position similarity regardless of label status
+                is_jitter = self._is_jitter_state(
+                    info["joint_positions"],
+                    prev_state_info["joint_positions"],
+                    threshold=self.jitter_threshold
+                )
+                
+                if is_jitter:
+                    print(f"🗑️  Auto-detected jitter state {latest_state_id} (too similar to critical state {prev_state_id})")
+                    # Delete this state and its observations
+                    self._delete_obs_from_disk(info.get("obs_path"))
+                    del self.pending_states_by_episode[latest_episode_id][latest_state_id]
+                    # Decrement next_state_id so get_latest_state() serves the correct state
+                    self.next_state_id -= 1
+                    print(f"🔄 Decremented next_state_id to {self.next_state_id} (jitter state removed)")
+                    # The previous critical state continues to be served
+                    return
 
             info["critical"] = True
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
@@ -1065,7 +1104,10 @@ class StateManager:
             # Mark the state_id where undo motion begins - all states >= this will be deleted later
             self.undo_motion_start_state_id = previous_critical_state_id + 1
 
-            # Note: next_state_id continues incrementing normally - we'll clean up states during undo motion later
+            # Reset next_state_id to point after the previous critical state
+            # This ensures get_latest_state() will serve the previous critical state during undo motion
+            self.next_state_id = previous_critical_state_id + 1
+            print(f"🔄 Reset next_state_id to {self.next_state_id} (undo to previous critical state)")
 
             # Return the robot position to execute (revert to previous critical state)
             joint_positions = previous_critical_state_info["joint_positions"]
@@ -1394,6 +1436,52 @@ class StateManager:
 
             if deleted_count > 0:
                 print(f"🗑️  Deleted {deleted_count} states from state_id {from_state_id} onwards")
+                # Update next_state_id to point to from_state_id (the first deleted state)
+                # This ensures get_latest_state() will serve the state before from_state_id
+                if self.next_state_id > from_state_id:
+                    self.next_state_id = from_state_id
+                    print(f"🔄 Reset next_state_id to {self.next_state_id} (states deleted from {from_state_id} onwards)")
+
+    def _is_jitter_state(self, joint_positions_1: dict, joint_positions_2: dict, threshold: float = 0.01) -> bool:
+        """Check if two joint position states are too similar (likely jitter).
+        
+        Args:
+            joint_positions_1: First joint positions dict
+            joint_positions_2: Second joint positions dict
+            threshold: Maximum L2 distance to consider states as jitter (radians for joints)
+            
+        Returns:
+            True if states are too similar (jitter), False otherwise
+        """
+        try:
+            # Compare all joint positions
+            total_diff_sq = 0.0
+            num_joints = 0
+            
+            for joint_name in JOINT_NAMES:
+                if joint_name in joint_positions_1 and joint_name in joint_positions_2:
+                    val1 = float(joint_positions_1[joint_name])
+                    val2 = float(joint_positions_2[joint_name])
+                    diff = val1 - val2
+                    total_diff_sq += diff * diff
+                    num_joints += 1
+            
+            if num_joints == 0:
+                return False  # No joints to compare
+            
+            # Calculate L2 distance
+            import math
+            l2_distance = math.sqrt(total_diff_sq)
+            
+            is_similar = l2_distance < threshold
+            if is_similar:
+                print(f"  Joint position L2 distance: {l2_distance:.6f} < threshold {threshold} → JITTER")
+            
+            return is_similar
+            
+        except Exception as e:
+            print(f"⚠️  Error comparing joint positions: {e}")
+            return False  # On error, don't treat as jitter
 
     def _delete_obs_from_disk(self, obs_path: str | None):
         """Delete observation file from disk cache."""
