@@ -72,6 +72,51 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         total_states = sum(len(states) for states in crowd_interface.pending_states_by_episode.values())
         return jsonify({"message": "Flask server is working", "states_count": total_states})
 
+    @app.route("/api/cloudflared-url")
+    def get_cloudflared_url():
+        """Return the current cloudflared tunnel URL by reading from the log file.
+        
+        This endpoint allows the frontend to automatically discover the tunnel URL
+        without manual configuration.
+        """
+        try:
+            # Common locations for cloudflared log/config files
+            home = Path.home()
+            possible_paths = [
+                Path("/tmp/cloudflared.log"),
+                home / ".cloudflared" / "cloudflared.log",
+                Path("cloudflared.log"),
+            ]
+            
+            # Try to find and read the cloudflared URL from logs
+            for log_path in possible_paths:
+                if log_path.exists():
+                    try:
+                        with open(log_path, 'r') as f:
+                            content = f.read()
+                            # Look for trycloudflare.com URL in the logs
+                            match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
+                            if match:
+                                url = match.group(0)
+                                return jsonify({"url": url, "source": str(log_path)})
+                    except Exception as e:
+                        print(f"Error reading {log_path}: {e}")
+                        continue
+            
+            # If no URL found in logs, return localhost as fallback
+            return jsonify({
+                "url": "http://127.0.0.1:9000",
+                "source": "fallback",
+                "message": "No cloudflared tunnel detected, using localhost"
+            })
+            
+        except Exception as e:
+            return jsonify({
+                "url": "http://127.0.0.1:9000",
+                "source": "error",
+                "error": str(e)
+            }), 500
+
     @app.route("/api/demo-video-config", methods=["GET"])
     def demo_video_config():
         """Lightweight config endpoint so the new frontend can fetch once on load.

@@ -705,16 +705,19 @@
                     console.log('[DEV] Using localhost backend');
                     return 'http://127.0.0.1:9000';
                 }
-                // For production (Netlify), use Cloudflare Tunnel (publicly accessible)
-                console.log('[PROD] Using Cloudflare Tunnel backend (publicly accessible)');
-                return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
+                // For production (Netlify), fetch from deployed config file
+                console.log('[PROD] Fetching backend URL from config...');
+                const response = await fetch('/backend-config.json');
+                const data = await response.json();
+                console.log('[PROD] Got backend URL:', data.backendUrl, 'updated at', data.updatedAt);
+                return data.backendUrl;
             } catch (error) {
-                console.error('Error getting backend URL:', error);
-                // Fallback to Cloudflare Tunnel URL
-                return 'https://crossword-moses-vendor-shipping.trycloudflare.com';
+                console.error('Error getting backend URL from config:', error);
+                // Try localhost as fallback (for local dev without config)
+                return 'http://127.0.0.1:9000';
             }
         }
-        let API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com';
+        let API_BASE_URL = 'http://127.0.0.1:9000';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
@@ -724,8 +727,9 @@
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                API_BASE_URL = 'https://crossword-moses-vendor-shipping.trycloudflare.com';
-                console.log('[DEBUG] Monitor using Tailscale Funnel:', API_BASE_URL);
+                // Running on Netlify or other production host - get tunnel URL
+                API_BASE_URL = await getCurrentCloudflaredUrl();
+                console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
             }
         }
 
