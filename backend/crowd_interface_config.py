@@ -50,7 +50,9 @@ class CrowdInterfaceConfig:
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
         # Note: Keys must match USD prim names in Isaac Sim
-        self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
+        # self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
+
+        self.objects: dict[str, str] = {"Cube_Blue": "Blue cube"}
 
         # Resolve mesh paths for pose estimation (relative to repo root)
         repo_root = Path(__file__).resolve().parent.parent

@@ -210,10 +210,15 @@ class PoseEstimationManager:
         print("🔄 Starting pose estimation workers (one per object)...")
 
         # Track ready status for each worker (True=ready, False=pending, None=failed)
-        workers_status = {obj: False for obj in self.object_mesh_paths.keys()}
+        # Only spawn workers for objects in self.objects (filter by presence in objects dict)
+        workers_status = {obj: False for obj in self.object_mesh_paths.keys() if not self.objects or obj in self.objects}
         status_lock = Lock()
 
         for obj, mesh_path in self.object_mesh_paths.items():
+            # Skip objects not in self.objects
+            if self.objects and obj not in self.objects:
+                continue
+            
             lang_prompt = (self.objects or {}).get(obj, obj)
 
             cmd = [
@@ -422,11 +427,20 @@ class PoseEstimationManager:
             # Nothing to do; treat as ready.
             return True
 
-        expected_objs = list(self.object_mesh_paths.keys())
+        # Only process objects that are in self.objects (if objects dict is provided)
+        expected_objs = [obj for obj in self.object_mesh_paths.keys() if not self.objects or obj in self.objects]
+        
+        if not expected_objs:
+            # Nothing to do; treat as ready.
+            return True
 
         # ---------- Enqueue jobs (do not mark object_poses yet) ----------
         print(f"📬 Enqueueing pose jobs for episode={episode_id} state={state_id}")
         for obj, mesh_path in self.object_mesh_paths.items():
+            # Skip objects not in self.objects
+            if self.objects and obj not in self.objects:
+                continue
+                
             job_id = f"{episode_id}_{state_id}_{obj}_{uuid.uuid4().hex[:8]}"
             job = {
                 "job_id": job_id,
