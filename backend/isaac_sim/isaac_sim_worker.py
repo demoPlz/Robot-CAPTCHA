@@ -167,9 +167,10 @@ class IsaacSimWorker:
         # Configuration
         USD_PATH = config["usd_path"]
         ROBOT_PATH = "/World/wxai"
-        OBJ_Cube_Blue_PATH = "/World/Cube_Blue"
-        OBJ_Cube_Red_PATH = "/World/Cube_Red"
-        OBJ_TENNIS_PATH = "/World/Tennis"
+        
+        # Dynamic object configuration from config
+        configured_objects = config.get("objects", [])  # List of object names to load
+        print(f"✓ Configured objects: {configured_objects}")
 
         # Load the USD stage (only once)
         print(f"Loading environment from {USD_PATH}")
@@ -209,9 +210,29 @@ class IsaacSimWorker:
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
-        self.objects["Cube_Blue"] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Blue_PATH, name="Cube_Blue"))
-        self.objects["Cube_Red"] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Red_PATH, name="Cube_Red"))
-        self.objects["Tennis"] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="Tennis"))
+        
+        # Hide all potential objects first (they exist in USD but we only want configured ones visible)
+        all_possible_objects = ["Cube_Blue", "Cube_Red", "Tennis"]  # Known objects in USD
+        for obj_name in all_possible_objects:
+            obj_path = f"/World/{obj_name}"
+            obj_prim = get_prim_at_path(obj_path)
+            if obj_prim and obj_prim.IsValid():
+                set_prim_visibility(obj_prim, False)
+                print(f"✓ Hidden object {obj_name} (not in config)")
+        
+        # Dynamically load and show only configured objects
+        for obj_name in configured_objects:
+            obj_path = f"/World/{obj_name}"
+            try:
+                self.objects[obj_name] = self.world.scene.add(RigidPrim(prim_path=obj_path, name=obj_name))
+                # Make sure configured objects are visible
+                obj_prim = get_prim_at_path(obj_path)
+                if obj_prim and obj_prim.IsValid():
+                    set_prim_visibility(obj_prim, True)
+                print(f"✓ Loaded and showing object: {obj_name} from {obj_path}")
+            except Exception as e:
+                print(f"⚠️  Failed to load object {obj_name}: {e}")
+        
         # Store drawer reference for joint manipulation (don't load as Articulation if not properly set up)
         self.drawer_prim_path = "/World/drawer_shell"
         self.drawer_tray_base_pos = None  # Store base position of tray_02 for drawer control
@@ -590,40 +611,25 @@ class IsaacSimWorker:
         print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
 
         # STEP 3: Update object poses (no gravity = won't fall)
-        object_states = config.get(
-            "object_poses",
-            {
-                "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]},
-            },
-        )
+        object_states = config.get("object_poses", {})
 
         print(f"[Worker] 📦 Positioning objects (gravity OFF, won't fall):")
         for obj_name, pose in object_states.items():
             if pose:
                 print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
 
-        if self.objects["Cube_Blue"].is_valid():
-            state = object_states.get("Cube_Blue")
-            if state:
-                pos = np.array(state["pos"])
-                rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
-
-        if self.objects["Cube_Red"].is_valid():
-            state = object_states.get("Cube_Red")
-            if state:
-                pos = np.array(state["pos"])
-                rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
-
-        if self.objects["Tennis"].is_valid():
-            state = object_states.get("Tennis")
-            if state:
-                pos = np.array(state["pos"])
-                rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                self.objects["Tennis"].set_world_pose(position=pos, orientation=rot)
+        # Dynamically set poses for all configured objects
+        for obj_name, obj_prim in self.objects.items():
+            # Skip non-RigidPrim objects (like trays)
+            if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                continue
+                
+            if obj_prim and obj_prim.is_valid():
+                state = object_states.get(obj_name)
+                if state:
+                    pos = np.array(state["pos"])
+                    rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                    obj_prim.set_world_pose(position=pos, orientation=rot)
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -832,14 +838,32 @@ class IsaacSimWorker:
                         from omni.isaac.core.prims import RigidPrim, XFormPrim
 
                         try:
-                            Cube_Blue_path = f"{target_path}/Cube_Blue"
-                            Cube_Red_path = f"{target_path}/Cube_Red"
-                            tennis_path = f"{target_path}/Tennis"
-
-                            self.world.scene.add(RigidPrim(prim_path=Cube_Blue_path, name=f"Cube_Blue_user_{user_id}"))
-                            self.world.scene.add(RigidPrim(prim_path=Cube_Red_path, name=f"Cube_Red_user_{user_id}"))
-                            self.world.scene.add(XFormPrim(prim_path=tennis_path, name=f"tennis_user_{user_id}"))
-                            print(f"✅ Registered cloned objects for user {user_id}")
+                            # Dynamically register cloned objects based on config
+                            configured_objects = config.get("objects", [])
+                            
+                            # First, hide all possible objects in cloned environment
+                            all_possible_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
+                            for obj_name in all_possible_objects:
+                                obj_path = f"{target_path}/{obj_name}"
+                                obj_prim = get_prim_at_path(obj_path)
+                                if obj_prim and obj_prim.IsValid():
+                                    set_prim_visibility(obj_prim, False)
+                            
+                            # Then register and show only configured objects
+                            for obj_name in configured_objects:
+                                obj_path = f"{target_path}/{obj_name}"
+                                # Tennis ball uses XFormPrim, others use RigidPrim
+                                if obj_name == "Tennis":
+                                    self.world.scene.add(XFormPrim(prim_path=obj_path, name=f"{obj_name.lower()}_user_{user_id}"))
+                                else:
+                                    self.world.scene.add(RigidPrim(prim_path=obj_path, name=f"{obj_name}_user_{user_id}"))
+                                
+                                # Make sure configured objects are visible
+                                obj_prim = get_prim_at_path(obj_path)
+                                if obj_prim and obj_prim.IsValid():
+                                    set_prim_visibility(obj_prim, True)
+                                    
+                                print(f"✅ Registered and showing cloned object {obj_name} for user {user_id}")
                         except Exception as obj_e:
                             print(f"⚠️ Failed to register cloned objects for user {user_id}: {obj_e}")
 
@@ -896,14 +920,7 @@ class IsaacSimWorker:
 
         print("Synchronizing animation environments to new state...")
 
-        object_states = config.get(
-            "object_poses",
-            {
-                "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]},
-            },
-        )
+        object_states = config.get("object_poses", {})
 
         # Update each animation environment
         for user_id, env_data in self.user_environments.items():
@@ -915,33 +932,20 @@ class IsaacSimWorker:
                     # User 0: Use original object references - reset to absolute positions
                     print(f"🔧 Syncing objects for user 0 (original environment)")
 
-                    if "Cube_Blue" in object_states:
-                        state = object_states["Cube_Blue"]
-                        if state is not None:  # Skip if pose estimation failed
-                            pos = np.array(state["pos"])
-                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                            self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                            print(f"✅ Synced Cube_Blue to {pos} (physics cleared)")
-
-                    if "Cube_Red" in object_states:
-                        state = object_states["Cube_Red"]
-                        if state is not None:  # Skip if pose estimation failed
-                            pos = np.array(state["pos"])
-                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                            self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                            print(f"✅ Synced Cube_Red to {pos} (physics cleared)")
-
-                    if "Tennis" in object_states:
-                        state = object_states["Tennis"]
-                        if state is not None:  # Skip if pose estimation failed
-                            pos = np.array(state["pos"])
-                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                            self.objects["Tennis"].set_world_pose(position=pos, orientation=rot)
-                            print(f"✅ Synced Tennis to {pos} (physics cleared)")
+                    # Dynamically sync all configured objects
+                    for obj_name, state in object_states.items():
+                        # Skip non-RigidPrim objects
+                        if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                            continue
+                            
+                        if obj_name in self.objects and self.objects[obj_name]:
+                            if state is not None:  # Skip if pose estimation failed
+                                pos = np.array(state["pos"])
+                                rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                                self.objects[obj_name].set_world_pose(position=pos, orientation=rot)
+                                self.objects[obj_name].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                self.objects[obj_name].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                                print(f"✅ Synced {obj_name} to {pos} (physics cleared)")
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
@@ -953,41 +957,40 @@ class IsaacSimWorker:
                     # User environments are spaced diagonally: [user_id * 50, user_id * 50, 0]
                     environment_spacing = 50.0
                     spatial_offset = np.array([user_id * environment_spacing, user_id * environment_spacing, 0])
-                    print(f"📍 User {user_id} spatial offset: {spatial_offset}")
+                    print(f"📍 User {user_id} spatial offset: {spatial_offset}")                    # Sync each cloned object using scene registry with spatial offset applied
+                    # Dynamically build object mappings based on configured objects
+                    for obj_name in object_states.keys():
+                        # Skip non-RigidPrim objects
+                        if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                            continue
+                            
+                        state = object_states[obj_name]
+                        if state is None:  # Skip if pose estimation failed
+                            continue
 
-                    # Sync each cloned object using scene registry with spatial offset applied
-                    object_mappings = [
-                        ("Cube_Blue", f"Cube_Blue_user_{user_id}"),
-                        ("Cube_Red", f"Cube_Red_user_{user_id}"),
-                        ("Tennis", f"tennis_user_{user_id}"),
-                    ]
+                        # CRITICAL: Apply spatial offset to object position
+                        original_pos = np.array(state["pos"])
+                        offset_pos = original_pos + spatial_offset
+                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
 
-                    for config_key, scene_name in object_mappings:
-                        if config_key in object_states:
-                            state = object_states[config_key]
-                            if state is None:  # Skip if pose estimation failed
-                                continue
+                        print(
+                            f"🔄 {obj_name}: Original pos {original_pos} + offset {spatial_offset} = {offset_pos}"
+                        )
 
-                            # CRITICAL: Apply spatial offset to object position
-                            original_pos = np.array(state["pos"])
-                            offset_pos = original_pos + spatial_offset
-                            rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                        # For Tennis ball, use lowercase naming convention for scene registry
+                        scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
+                        # Set object position using scene registry with offset
+                        if self.world.scene.object_exists(scene_name):
+                            scene_obj = self.world.scene.get_object(scene_name)
+                            scene_obj.set_world_pose(position=offset_pos, orientation=rot)
+                            scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                             print(
-                                f"🔄 {config_key}: Original pos {original_pos} + offset {spatial_offset} = {offset_pos}"
+                                f"✅ Synced {obj_name} via scene registry to offset pos: {offset_pos} (physics cleared)"
                             )
-
-                            # Set object position using scene registry with offset
-                            if self.world.scene.object_exists(scene_name):
-                                scene_obj = self.world.scene.get_object(scene_name)
-                                scene_obj.set_world_pose(position=offset_pos, orientation=rot)
-                                scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                                scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                                print(
-                                    f"✅ Synced {config_key} via scene registry to offset pos: {offset_pos} (physics cleared)"
-                                )
-                            else:
-                                print(f"⚠️ Scene object {scene_name} not found for user {user_id} - skipping sync")
+                        else:
+                            print(f"⚠️ Scene object {scene_name} not found for user {user_id} - skipping sync")
 
                     print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
 

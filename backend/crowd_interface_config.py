@@ -46,6 +46,9 @@ class CrowdInterfaceConfig:
         # ========== Simulation ==========
         self.use_sim: bool = True  # Use Isaac Sim for state simulaion
         self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
+        
+        # USD file path for Isaac Sim (relative to repo root)
+        self.usd_path: str = f"public/assets/usd/{self.task_name}_flattened_tray.usd"
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
@@ -133,6 +136,11 @@ class CrowdInterfaceConfig:
             type=int,
             help="Maximum number of simultaneous users viewing animations (default: 2)",
         )
+        parser.add_argument(
+            "--usd-path",
+            type=str,
+            help="Path to USD file for Isaac Sim (relative to repo root)",
+        )
 
         # Action selection
         parser.add_argument(
@@ -184,6 +192,8 @@ class CrowdInterfaceConfig:
             config.use_sim = True
         if args.max_animation_users is not None:
             config.max_animation_users = args.max_animation_users
+        if args.usd_path is not None:
+            config.usd_path = args.usd_path
         if args.action_selector_mode is not None:
             config.action_selector_mode = args.action_selector_mode
         if args.action_selector_epsilon is not None:
@@ -215,6 +225,7 @@ class CrowdInterfaceConfig:
             # Simulation
             "use_sim": self.use_sim,
             "max_animation_users": self.max_animation_users,
+            "usd_path": self.usd_path,
             # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths,

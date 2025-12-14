@@ -24,34 +24,41 @@ class SimManager:
         self,
         use_sim: bool,
         task_name: str | None,
+        usd_path: str | None,
         obs_cache_root: Path,
         state_lock: Lock,
         pending_states_by_episode: dict,
         webcam_manager=None,
         calibration_manager=None,
         max_animation_users: int = 2,
+        objects: dict[str, str] | None = None,
     ):
         """Initialize SimManager.
 
         Args:
             use_sim: Whether to use simulation
-            task_name: Task name for USD file path
+            task_name: Task name for USD file path (fallback if usd_path not provided)
+            usd_path: Path to USD file for Isaac Sim (relative to repo root)
             obs_cache_root: Root directory for observation cache
             state_lock: Lock for thread-safe state updates
             pending_states_by_episode: Reference to pending states dict for atomic updates
             webcam_manager: WebcamManager instance for capturing real webcam views
             calibration_manager: CalibrationManager instance for camera calibration data
             max_animation_users: Maximum number of simultaneous users viewing animations
+            objects: Dict of object name -> language description for dynamic object loading
 
         """
         self.use_sim = use_sim
         self.task_name = task_name
+        # Use provided usd_path or fall back to task_name-based path
+        self.usd_path = usd_path or (f"public/assets/usd/{task_name}_flattened_tray.usd" if task_name else None)
         self.obs_cache_root = obs_cache_root
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
         self.webcam_manager = webcam_manager
         self.calibration_manager = calibration_manager
         self.max_animation_users = max_animation_users
+        self.objects = objects or {}
 
         # Sim capture queue and worker thread
         self.sim_capture_queue = queue.Queue()
@@ -91,10 +98,11 @@ class SimManager:
             )
 
             initial_config = {
-                "usd_path": f"public/assets/usd/{self.task_name}_flattened_tray.usd",
+                "usd_path": self.usd_path,
                 "robot_joints": [0.0] * 7,
                 "object_poses": {},  # Will be populated from pose estimation
                 "drawer_joint_positions": {},  # Will be populated from drawer tracking
+                "objects": list(self.objects.keys()) if self.objects else [],  # Dynamic object list
             }
 
             print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
