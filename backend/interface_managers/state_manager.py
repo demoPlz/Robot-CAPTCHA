@@ -467,32 +467,56 @@ class StateManager:
                     )
 
     def get_latest_state(self) -> dict:
-        """Get a pending state from current serving episode We only implement crowd mode, meaning that we serve the last
-        state of the last episode always."""
+        """Get a pending state from current serving episode. 
+        
+        Only serves states that have been approved by the monitor admin.
+        This ensures jitter states don't affect what users see.
+        """
 
         with self.state_lock:
             episode_id = self.current_serving_episode
-            state_id = self.next_state_id - 1
-
-            if (
-                episode_id not in self.pending_states_by_episode
-                or state_id not in self.pending_states_by_episode[episode_id]
-                or not self.pending_states_by_episode[episode_id][state_id]["critical"]
-            ):
+            
+            if episode_id not in self.pending_states_by_episode:
                 # No pending critical states left
                 return {"status": "no_pending_states", "blocked_critical_states": False}
-
-            state_info = self.pending_states_by_episode[episode_id][state_id]
-
+            
+            # Find the latest APPROVED critical state
+            pending_states = self.pending_states_by_episode[episode_id]
+            approved_critical_states = [
+                (state_id, state_info)
+                for state_id, state_info in pending_states.items()
+                if state_info.get("critical", False) and state_info.get("approval_status") == "approved"
+            ]
+            
+            if not approved_critical_states:
+                # No approved states yet - check if there are pending approval states
+                pending_approval_states = [
+                    state_id for state_id, state_info in pending_states.items()
+                    if state_info.get("critical", False) and state_info.get("approval_status") == "pending"
+                ]
+                
+                if pending_approval_states:
+                    # There are states awaiting approval
+                    return {
+                        "status": "no_ready_states",
+                        "blocked_critical_states": True,
+                    }
+                else:
+                    # No critical states at all
+                    return {"status": "no_pending_states", "blocked_critical_states": False}
+            
+            # Get the latest approved state (highest state_id)
+            latest_approved_state_id, state_info = max(approved_critical_states, key=lambda x: x[0])
+            
+            # Check if state is ready (prompt_ready and sim_ready)
             if state_info["critical"] and (not state_info["prompt_ready"] or not state_info["sim_ready"]):
-                # There are pending states but no ready states
-
+                # State is approved but not ready yet
                 return {
                     "status": "no_ready_states",
                     "blocked_critical_states": True,
                 }
 
-            # Return the latest state for labeling
+            # Return the latest approved state for labeling
             return state_info.copy()
 
     def record_response(self, response_data: dict):
