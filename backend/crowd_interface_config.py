@@ -20,7 +20,7 @@ class CrowdInterfaceConfig:
     def __init__(self):
         # ========== Task Settings ==========
         self.task_name: str = "drawer"  # Single-word identifier for the task
-        self.task_text: str = "Put the objects on the desk into the middle drawer."
+        self.task_text: str = "Put the cube on the desk into the middle drawer, and close the drawer."
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
@@ -48,7 +48,7 @@ class CrowdInterfaceConfig:
         self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
-        self.usd_path: str = f"public/assets/usd/{self.task_name}_flattened_tray.usd"
+        self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
