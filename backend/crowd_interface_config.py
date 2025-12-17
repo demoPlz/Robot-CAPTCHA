@@ -50,7 +50,7 @@ class CrowdInterfaceConfig:
 
         # ========== Simulation ==========
         self.use_sim: bool = True  # Use Isaac Sim for state simulaion
-        self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
+        self.max_animation_users: int = 2  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
         self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"

@@ -305,8 +305,8 @@ def main():
     with open(args.config, "r") as f:
         initial_config = json.load(f)
 
-    # Start Isaac Sim with MGPU-friendly settings
-    # Configuration to improve multi-GPU stability with RTX 5090s
+    # Start Isaac Sim with MGPU-friendly settings and aggressive VRAM optimization
+    # Configuration to improve multi-GPU stability with RTX 5090s and reduce memory usage
     global simulation_app
     simulation_app = SimulationApp({
         "headless": True,
@@ -315,6 +315,17 @@ def main():
         "/rtx/hydra/mdl/searchPaths/templates": "",
         "/app/asyncRendering": False,  # Disable async rendering for more predictable MGPU behavior
         "/app/asyncRenderingLowLatency": False,
+        
+        # VRAM optimization settings
+        "/rtx/hydra/maxFramesInFlight": 1,  # Reduce frame buffering (default is 2)
+        "/rtx/textureStreaming/enabled": True,  # Enable texture streaming to reduce VRAM
+        "/rtx/hydra/materialSyncLoads": True,  # Synchronous material loads (less VRAM)
+        "/renderer/resolution/width": 640,  # Lower default render resolution
+        "/renderer/resolution/height": 480,
+        "/rtx/raytracing/cached/enabled": False,  # Disable RT caching to save VRAM
+        "/rtx/post/dlss/execMode": 0,  # Disable DLSS to save VRAM
+        "/rtx/reflections/enabled": False,  # Disable reflections
+        "/rtx/translucency/enabled": False,  # Disable translucency
     })
 
     try:

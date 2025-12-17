@@ -148,6 +148,9 @@ class IsaacSimWorker:
 
         # === Chunked frame generation system ===
         self.chunked_generation_state = {}  # user_id -> generation state for async processing
+        
+        # === Environment spacing for cloned environments ===
+        self.environment_spacing = 100.0  # Spacing between cloned environments
 
     def initialize_simulation(self, config):
         """One-time simulation setup that can be reused across state updates."""
@@ -199,12 +202,20 @@ class IsaacSimWorker:
         if not phys_scene or not phys_scene.IsValid():
             raise RuntimeError("'/physicsScene' not found (open your USD before enabling GPU dynamics).")
 
-        # Apply PhysX scene schema and turn on GPU dynamics
+        # Use CPU physics instead of GPU to avoid VRAM explosion with cloned environments
+        # CPU physics is slower but uses minimal VRAM and supports multiple parallel simulations
         physx = PhysxSchema.PhysxSceneAPI.Apply(phys_scene)
+        
+        # DISABLE GPU dynamics (use CPU instead)
         attr = physx.GetEnableGPUDynamicsAttr() or physx.CreateEnableGPUDynamicsAttr()
-        attr.Set(True)
+        attr.Set(False)  # CPU physics
+        
+        # Optimize CPU physics settings for better performance
+        # Increase solver iterations for better stability
+        solver_type_attr = physx.GetSolverTypeAttr() or physx.CreateSolverTypeAttr()
+        solver_type_attr.Set("TGS")  # Temporal Gauss-Seidel solver (faster)
 
-        print("✓ Enabled GPU dynamics on /physicsScene")
+        print("✓ Enabled CPU physics on /physicsScene (supports parallel environments)")
         # ----------------------------------------------------------------------
 
         # Get handles to the prims (store for reuse)
@@ -411,6 +422,47 @@ class IsaacSimWorker:
         mag_attr.Set(9.81)  # cm/s^2 (Isaac Sim uses cm, not meters)
 
         print(f"[Worker] 🌍 Enabled gravity globally (direction=(0,0,-1), magnitude=981 cm/s^2)")
+
+    def _disable_physics_in_environment(self, environment_path: str):
+        """Disable physics in a cloned environment to save VRAM.
+        
+        Removes physics components from all prims in the environment, making them
+        purely visual. This drastically reduces GPU memory usage for cloned environments.
+        """
+        import omni.usd
+        from pxr import UsdPhysics, PhysxSchema, Usd
+        
+        stage = omni.usd.get_context().get_stage()
+        env_prim = stage.GetPrimAtPath(environment_path)
+        
+        if not env_prim or not env_prim.IsValid():
+            print(f"⚠️ Environment prim not found: {environment_path}")
+            return
+        
+        # Recursively remove physics from all descendants
+        disabled_count = 0
+        for prim in Usd.PrimRange(env_prim):
+            # Remove RigidBodyAPI
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
+                disabled_count += 1
+            
+            # Remove CollisionAPI
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                prim.RemoveAPI(UsdPhysics.CollisionAPI)
+                disabled_count += 1
+            
+            # Remove ArticulationRootAPI
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+                disabled_count += 1
+            
+            # Remove PhysX-specific APIs
+            if prim.HasAPI(PhysxSchema.PhysxRigidBodyAPI):
+                prim.RemoveAPI(PhysxSchema.PhysxRigidBodyAPI)
+                disabled_count += 1
+        
+        print(f"✅ Disabled {disabled_count} physics components in {environment_path} (VRAM saved!)")
 
     def set_drawer_joints(self, user_id=0):
         """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position.
@@ -786,6 +838,12 @@ class IsaacSimWorker:
                 self.hide_robot_funcs["show"]()
                 print("✅ Robot is visible and ready for animation mode")
 
+            # CRITICAL: Reinitialize original robot to rebuild ArticulationController
+            # This is needed because physics mode might have changed
+            print("🔄 Reinitializing original robot for animation mode...")
+            self.robot.initialize()
+            print("✅ Original robot reinitialized with current physics settings")
+
             # Let physics settle
             for step in range(10):
                 self.world.step(render=True)
@@ -794,7 +852,7 @@ class IsaacSimWorker:
 
             # Try minimal cloning approach - clone only the essentials
             cloner = Cloner()
-            environment_spacing = 50.0  # Larger spacing to avoid any interactions
+            environment_spacing = self.environment_spacing  # Use class variable for consistency
 
             for user_id in range(max_users):
                 if user_id == 0:
@@ -824,6 +882,9 @@ class IsaacSimWorker:
                             copy_from_source=True,
                         )
 
+                        # Physics enabled in all environments for parallel simulations
+                        print(f"✅ Cloned environment {target_path} with physics enabled")
+
                         # Let physics settle
                         for step in range(20):
                             self.world.step(render=True)
@@ -833,13 +894,27 @@ class IsaacSimWorker:
                         user_robot = self.world.scene.add(
                             Articulation(prim_path=robot_path, name=f"robot_user_{user_id}")
                         )
+                        
+                        # CRITICAL: Initialize the robot after adding to scene
+                        # This ensures ArticulationController has valid articulation_view
+                        user_robot.initialize()
+                        print(f"✅ Initialized robot for user {user_id}")
 
                         # Register cloned objects in scene registry for easy access
                         from omni.isaac.core.prims import RigidPrim, XFormPrim
 
                         try:
-                            # Dynamically register cloned objects based on config
-                            configured_objects = config.get("objects", [])
+                            # Get configured objects from last sync config
+                            configured_objects = []
+                            if self.last_sync_config:
+                                configured_objects = list(self.last_sync_config.get("object_poses", {}).keys())
+                            
+                            if not configured_objects:
+                                # Fallback: register all known objects
+                                configured_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
+                                print(f"⚠️ No config available, registering all objects for user {user_id}")
+                            
+                            print(f"📦 Registering objects for user {user_id}: {configured_objects}")
                             
                             # First, hide all possible objects in cloned environment
                             all_possible_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
@@ -852,22 +927,30 @@ class IsaacSimWorker:
                             # Then register and show only configured objects
                             for obj_name in configured_objects:
                                 obj_path = f"{target_path}/{obj_name}"
-                                # Tennis ball uses XFormPrim, others use RigidPrim
-                                if obj_name == "Tennis":
-                                    self.world.scene.add(XFormPrim(prim_path=obj_path, name=f"{obj_name.lower()}_user_{user_id}"))
-                                else:
-                                    self.world.scene.add(RigidPrim(prim_path=obj_path, name=f"{obj_name}_user_{user_id}"))
                                 
-                                # Make sure configured objects are visible
+                                # Check if object exists in cloned environment
                                 obj_prim = get_prim_at_path(obj_path)
-                                if obj_prim and obj_prim.IsValid():
-                                    set_prim_visibility(obj_prim, True)
+                                if not obj_prim or not obj_prim.IsValid():
+                                    print(f"⚠️ Object {obj_name} not found at {obj_path} - skipping")
+                                    continue
+                                
+                                # Register object in scene with user-specific name
+                                # Tennis ball uses XFormPrim, others use RigidPrim
+                                try:
+                                    if obj_name == "Tennis":
+                                        self.world.scene.add(XFormPrim(prim_path=obj_path, name=f"{obj_name.lower()}_user_{user_id}"))
+                                    else:
+                                        self.world.scene.add(RigidPrim(prim_path=obj_path, name=f"{obj_name}_user_{user_id}"))
                                     
-                                print(f"✅ Registered and showing cloned object {obj_name} for user {user_id}")
+                                    # Make sure configured objects are visible
+                                    set_prim_visibility(obj_prim, True)
+                                    print(f"✅ Registered cloned object '{obj_name}' as '{obj_name}_user_{user_id}' at {obj_path}")
+                                except Exception as e:
+                                    print(f"⚠️ Failed to register {obj_name} for user {user_id}: {e}")
                         except Exception as obj_e:
                             print(f"⚠️ Failed to register cloned objects for user {user_id}: {obj_e}")
 
-                        # Get cameras
+                        # Get cameras (LAZY INIT - don't allocate render buffers yet)
                         user_cameras = {}
                         from isaacsim.sensors.camera import get_all_camera_objects
 
@@ -875,10 +958,10 @@ class IsaacSimWorker:
                         for camera in all_user_cameras:
                             camera.initialize()
                             camera.set_resolution((640, 480))
-                            camera.add_rgb_to_frame()
+                            # DON'T call add_rgb_to_frame() here - allocate render buffers only when needed
                             user_cameras[camera.name] = camera
 
-                        print(f"✅ Successfully cloned environment for user {user_id}")
+                        print(f"✅ Successfully cloned environment for user {user_id} (cameras lazy-initialized)")
 
                     except Exception as e:
                         print(f"⚠️ Clone failed for user {user_id}: {e}")
@@ -954,9 +1037,8 @@ class IsaacSimWorker:
                     )
 
                     # Calculate the spatial offset for this environment
-                    # User environments are spaced diagonally: [user_id * 50, user_id * 50, 0]
-                    environment_spacing = 50.0
-                    spatial_offset = np.array([user_id * environment_spacing, user_id * environment_spacing, 0])
+                    # User environments are spaced diagonally: [user_id * spacing, user_id * spacing, 0]
+                    spatial_offset = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, 0])
                     print(f"📍 User {user_id} spatial offset: {spatial_offset}")                    # Sync each cloned object using scene registry with spatial offset applied
                     # Dynamically build object mappings based on configured objects
                     for obj_name in object_states.keys():
@@ -1494,6 +1576,10 @@ class IsaacSimWorker:
 
         for camera_name, camera in cameras.items():
             try:
+                # Ensure camera has render buffer allocated (lazy allocation)
+                if not hasattr(camera, '_render_product_path') or camera._render_product_path is None:
+                    camera.add_rgb_to_frame()
+                
                 rgb_data = camera.get_rgb()
                 if rgb_data is not None:
                     clean_name = camera_name.lower().replace("camera_", "")
@@ -1776,6 +1862,10 @@ class IsaacSimWorker:
         captured_files = {}
 
         for camera_name, camera in cameras.items():
+            # Ensure camera has render buffer allocated (lazy allocation)
+            if not hasattr(camera, '_render_product_path') or camera._render_product_path is None:
+                camera.add_rgb_to_frame()
+            
             rgb_data = camera.get_rgb()
             if rgb_data is not None:
                 clean_name = camera_name.lower().replace("camera_", "")
