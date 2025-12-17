@@ -51,7 +51,7 @@ class SimManager:
         self.use_sim = use_sim
         self.task_name = task_name
         # Use provided usd_path or fall back to task_name-based path
-        self.usd_path = usd_path or (f"public/assets/usd/{task_name}_flattened_tray.usd" if task_name else None)
+        self.usd_path = usd_path or (f"public/assets/usd/{task_name}.usd" if task_name else None)
         self.obs_cache_root = obs_cache_root
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
@@ -183,7 +183,7 @@ class SimManager:
             print(f"🗄️  [SimManager] drawer_joint_positions from state_info: {drawer_joint_positions}")
 
             config = {
-                "usd_path": f"public/assets/usd/{self.task_name}_flattened_tray.usd",
+                "usd_path": f"public/assets/usd/{self.task_name}.usd",
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": state_info.get("object_poses", {}),

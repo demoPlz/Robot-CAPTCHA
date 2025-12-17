@@ -48,7 +48,7 @@ class CrowdInterface:
     def __init__(
         self,
         required_responses_per_state: int = 1,
-        required_responses_per_critical_state: int = 3,
+        required_responses_per_critical_state: int = 2,
         required_approvals_per_critical_state: int = 2,
         jitter_threshold: float = 0.01,
         autofill_critical_states: bool = False,

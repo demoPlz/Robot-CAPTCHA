@@ -24,14 +24,14 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 1  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 1
+        self.required_approvals_per_critical_state: int = 2
 
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
         # automatically discard it. Threshold is L2 distance in joint positions (radians).
-        self.jitter_threshold: float = 0.01  # radians - tune based on robot sensitivity
+        self.jitter_threshold: float = 0.05  # radians - tune based on robot sensitivity
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response

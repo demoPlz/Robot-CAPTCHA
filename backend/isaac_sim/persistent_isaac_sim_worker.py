@@ -305,9 +305,17 @@ def main():
     with open(args.config, "r") as f:
         initial_config = json.load(f)
 
-    # Start Isaac Sim
+    # Start Isaac Sim with MGPU-friendly settings
+    # Configuration to improve multi-GPU stability with RTX 5090s
     global simulation_app
-    simulation_app = SimulationApp({"headless": True})
+    simulation_app = SimulationApp({
+        "headless": True,
+        # Carb settings for multi-GPU timeout handling
+        "/rtx/hydra/device/timeout": 120000,  # Increase GPU timeout to 120s (default is ~60s)
+        "/rtx/hydra/mdl/searchPaths/templates": "",
+        "/app/asyncRendering": False,  # Disable async rendering for more predictable MGPU behavior
+        "/app/asyncRenderingLowLatency": False,
+    })
 
     try:
         # Create and start persistent worker

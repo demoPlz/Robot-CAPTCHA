@@ -1485,6 +1485,11 @@ const HQ_REC = {
 
 /* ---------- stable per-browser session id + fetch helper ---------- */
 const SID_STORAGE_KEY = 'crowd_sid';
+
+// Cache static view images from backend (set once at initialization)
+// These are the original /api/get-state views, NOT animation frames
+const staticViewCache = new Map(); // viewName -> base64 data URL from backend
+
 function getStableSID() {
   try {
     const existing = localStorage.getItem(SID_STORAGE_KEY);
@@ -3111,6 +3116,9 @@ function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
   // Camera feed as CSS background, centered and cropped like the canvas
   if (imageSrc) {
     container.style.background = `center / cover no-repeat url("${imageSrc}")`;
+    // Cache the original backend static image for this view
+    staticViewCache.set(viewName, imageSrc);
+    console.log(`💾 Cached static image for ${viewName}: ${imageSrc.substring(0, 50)}...`);
   }
   
   // Add view label in top-left corner
@@ -4460,6 +4468,9 @@ loader.load(
         backendAnimState.user_id = null;
         stopFrameCapture(); // Stop timer-based frame capture
         
+        // IMMEDIATELY restore cached static images (prevents last animation frame from lingering)
+        restoreStaticViews();
+        
         console.log('✓ Animation state updated immediately');
         
         // Send stop request to backend WITHOUT waiting for response
@@ -4527,6 +4538,12 @@ loader.load(
     }
     
     function updateViewsWithAnimationFrames(frameData) {
+      // Safety check: don't update if streaming has been stopped
+      if (!backendAnimState.streaming) {
+        console.log('🛑 Ignoring animation frame - streaming already stopped');
+        return;
+      }
+      
       // frameData contains paths to animation frame images
       // Update the existing camera views with new images
       console.log('🖼️ Updating views with frame data:', frameData);
@@ -4588,6 +4605,39 @@ loader.load(
       }
     }
 
+    function cacheStaticViews() {
+      // This function is now deprecated - static views are cached at initialization
+      // when views are created in createView() and initializeWebcamViews()
+      console.log('💾 Static views already cached at initialization');
+    }
+
+    function restoreStaticViews() {
+      // Immediately restore cached static views from backend (prevents animation frame lingering)
+      console.log(`🔄 Restoring static views. Cache size: ${staticViewCache.size}`);
+      for (const [viewName, cachedImageSrc] of staticViewCache.entries()) {
+        console.log(`  Checking view: ${viewName}`);
+        if (views.has(viewName)) {
+          const view = views.get(viewName);
+          if (view.container) {
+            view.container.style.background = `center / cover no-repeat url("${cachedImageSrc}")`;
+            console.log(`✅ Restored static view: ${viewName}`);
+          } else {
+            console.warn(`⚠️ View ${viewName} has no container`);
+          }
+        } else {
+          console.warn(`⚠️ View ${viewName} not found in views Map`);
+        }
+        // Also restore webcam views in MR mode
+        if (MR_MODE_ENABLED && webcamViews.has(viewName)) {
+          const view = webcamViews.get(viewName);
+          if (view.container) {
+            view.container.style.background = `center / cover no-repeat url("${cachedImageSrc}")`;
+            console.log(`✅ Restored static webcam view: ${viewName}`);
+          }
+        }
+      }
+    }
+
     // Toggle animation ON/OFF - now uses backend
     // Toggle animation ON/OFF - now uses backend
     async function toggleAnimation() {
@@ -4615,6 +4665,9 @@ loader.load(
         backendAnimState.streaming = false;
         stopFrameCapture(); // Stop timer-based frame capture
         
+        // IMMEDIATELY restore cached static images (prevents last animation frame from lingering)
+        restoreStaticViews();
+        
         // Restore UI elements immediately  
         setPoseGizmosVisible(true);
         applyPostAnimationVisibility();
@@ -4634,17 +4687,16 @@ loader.load(
           console.error('❌ Backend animation cleanup failed:', error);
         });
         
-        // Refresh views in background for updated static images (don't await)
-        refreshViews().then(() => {
-          console.log('✅ Static views refreshed');
-        }).catch(error => {
-          console.error('❌ Static views refresh failed:', error);
-        });
+        // Note: We don't call refreshViews() here anymore!
+        // The static images are already cached and restored via restoreStaticViews()
+        // Calling refreshViews() would cause a flash/delay as it fetches from backend
         
       } else {
         // Show rendering state immediately
         animateBtn.textContent = 'Rendering...';
         animateBtn.classList.add('rendering');
+        
+        // Static views are already cached at initialization, no need to cache here
         
         try {
           // Start backend animation
@@ -5676,6 +5728,8 @@ loader.load(
         const imageSrc = state.views[viewName];
         if (imageSrc) {
           container.style.background = `center / cover no-repeat url("${imageSrc}")`;
+          // Cache the original backend static image for webcam views too
+          staticViewCache.set(viewName, imageSrc);
         }
         
         // Add view label in top-left corner
