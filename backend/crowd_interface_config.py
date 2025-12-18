@@ -20,7 +20,7 @@ class CrowdInterfaceConfig:
     def __init__(self):
         # ========== Task Settings ==========
         self.task_name: str = "drawer"  # Single-word identifier for the task
-        self.task_text: str = "Put the cube on the desk into the middle drawer, and close the drawer."
+        self.task_text: str = "Put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
@@ -229,6 +229,7 @@ class CrowdInterfaceConfig:
         kwargs = {
             # Core settings
             "task_name": self.task_name,
+            "task_text": self.task_text,
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
             "required_approvals_per_critical_state": self.required_approvals_per_critical_state,

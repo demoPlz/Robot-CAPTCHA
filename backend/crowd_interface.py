@@ -58,6 +58,8 @@ class CrowdInterface:
         save_maincam_sequence: bool = False,
         prompt_sequence_dir: str | None = None,
         prompt_sequence_clear: bool = False,
+        # task text displayed to users and stored in dataset
+        task_text: str | None = None,
         # used ONLY for prompt substitution and demo assets
         task_name: str | None = None,
         # --- demo video recording ---
@@ -140,8 +142,8 @@ class CrowdInterface:
 
         self.state_lock = Lock()  # Protects all episode-based state management
 
-        # Task used for UI fallback and dataset frames -> always cfg.single_task (set in init_dataset)
-        self.task_text = None
+        # Task text used for UI prompt and dataset frames
+        self.task_text = task_text
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
 
@@ -490,9 +492,14 @@ class CrowdInterface:
         Delegates to DatasetManager.
 
         """
-        self.task_text = self.dataset_manager.init_dataset(cfg, robot)
-
-        # Update state manager's task_text since it was None during initialization
+        # Initialize dataset (may set single_task from cfg, but we use config task_text for UI)
+        dataset_task = self.dataset_manager.init_dataset(cfg, robot)
+        
+        # Use task_text from config if provided, otherwise fall back to dataset's single_task
+        if not self.task_text:
+            self.task_text = dataset_task
+        
+        # Update state manager's task_text
         self.state_manager.task_text = self.task_text
 
     # =========================

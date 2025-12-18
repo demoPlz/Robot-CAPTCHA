@@ -275,48 +275,56 @@ class StateManager:
                 return
 
             # ---- Phase 0.5: Auto-detect jitter states ----
-            # If the state we want to mark critical is too similar to the previous critical state,
-            # it's jitter. Delete it AND all intermediate states in one batch.
-            all_states = {
-                **self.pending_states_by_episode.get(latest_episode_id, {}),
-                **self.completed_states_by_episode.get(latest_episode_id, {}),
-            }
+            # Skip jitter detection if we're in an undo motion (robot returning to previous state)
+            # because we EXPECT the robot to be at the same position as a previous critical state
+            in_undo_motion = False
+            with self.undo_lock:
+                if self.pending_undo_classification is not None and self.pending_undo_classification.get("awaiting_robot_arrival", False):
+                    in_undo_motion = True
             
-            # Find previous critical state
-            previous_critical_states = [
-                (sid, sinfo)
-                for sid, sinfo in sorted(all_states.items())
-                if sid < latest_state_id and sinfo.get("critical", False)
-            ]
-            
-            if previous_critical_states:
-                prev_state_id, prev_state_info = previous_critical_states[-1]
+            if not in_undo_motion:
+                # If the state we want to mark critical is too similar to the previous critical state,
+                # it's jitter. Delete it AND all intermediate states in one batch.
+                all_states = {
+                    **self.pending_states_by_episode.get(latest_episode_id, {}),
+                    **self.completed_states_by_episode.get(latest_episode_id, {}),
+                }
                 
-                # Check if the state we want to mark critical is jitter
-                is_jitter = self._is_jitter_state(
-                    info["joint_positions"],
-                    prev_state_info["joint_positions"],
-                    threshold=self.jitter_threshold
-                )
+                # Find previous critical state
+                previous_critical_states = [
+                    (sid, sinfo)
+                    for sid, sinfo in sorted(all_states.items())
+                    if sid < latest_state_id and sinfo.get("critical", False)
+                ]
                 
-                if is_jitter:
-                    # Delete this state AND all states between prev_state_id and latest_state_id
-                    states_to_delete = [
-                        sid for sid in self.pending_states_by_episode[latest_episode_id].keys()
-                        if prev_state_id < sid <= latest_state_id
-                    ]
+                if previous_critical_states:
+                    prev_state_id, prev_state_info = previous_critical_states[-1]
                     
-                    print(f"🗑️  Auto-detected jitter: state {latest_state_id} too similar to critical state {prev_state_id}")
-                    print(f"🗑️  Batch-deleting {len(states_to_delete)} states ({min(states_to_delete)}-{max(states_to_delete)})")
+                    # Check if the state we want to mark critical is jitter
+                    is_jitter = self._is_jitter_state(
+                        info["joint_positions"],
+                        prev_state_info["joint_positions"],
+                        threshold=self.jitter_threshold
+                    )
                     
-                    for sid in states_to_delete:
-                        sinfo = self.pending_states_by_episode[latest_episode_id][sid]
-                        self._delete_obs_from_disk(sinfo.get("obs_path"))
-                        del self.pending_states_by_episode[latest_episode_id][sid]
-                    
-                    print(f"✅ Jitter states removed (serving logic unaffected)")
-                    # The previous critical state continues to be served
-                    return
+                    if is_jitter:
+                        # Delete this state AND all states between prev_state_id and latest_state_id
+                        states_to_delete = [
+                            sid for sid in self.pending_states_by_episode[latest_episode_id].keys()
+                            if prev_state_id < sid <= latest_state_id
+                        ]
+                        
+                        print(f"🗑️  Auto-detected jitter: state {latest_state_id} too similar to critical state {prev_state_id}")
+                        print(f"🗑️  Batch-deleting {len(states_to_delete)} states ({min(states_to_delete)}-{max(states_to_delete)})")
+                        
+                        for sid in states_to_delete:
+                            sinfo = self.pending_states_by_episode[latest_episode_id][sid]
+                            self._delete_obs_from_disk(sinfo.get("obs_path"))
+                            del self.pending_states_by_episode[latest_episode_id][sid]
+                        
+                        print(f"✅ Jitter states removed (serving logic unaffected)")
+                        # The previous critical state continues to be served
+                        return
 
             info["critical"] = True
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
@@ -1181,7 +1189,7 @@ class StateManager:
             }
 
         print(f"↩️  Robot will move to previous state {previous_critical_state_id}...")
-        print(f"⏸️  Administrator must classify after arrival: new state or old state?")
+        print(f"⏳ Waiting for robot to arrive before classification...")
 
         return {
             "episode_id": latest_episode_id,

@@ -2903,8 +2903,8 @@ hintsPanel.innerHTML = `
     <li>Use the UI to suggest the <b>immediate next goal</b> pose for the robot to travel to.</li>
     <li>You are only asked to suggest the immediate next goal! <b>You can either choose to move the arm, or open/close the gripper.</b>
       Other users will take care of what to do afterwards.</li>
-    <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Play" button to see this in action.</li>
-    <li>After specifying a goal and before submitting, <b>use the "Play" button to check if your suggestion causes unwanted collisions</b>, and
+    <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
+    <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and
       adjust accordingly if necessary.</li>
     <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
   </ol>
@@ -3581,7 +3581,7 @@ loader.load(
     const promptFromServer = state.prompt;
     
     // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `Task: ${promptFromServer}. What should the robot do next?`;
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}.<br><b>Toward completing this task, where should the robot travel to next?</b>`;
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state
@@ -4651,7 +4651,7 @@ loader.load(
         // OPTIMIZATION: Immediately update UI for instant visual feedback
         // Don't wait for backend confirmation to make transition feel instant
         animateBtn.classList.remove('active', 'rendering');
-        animateBtn.textContent = '▶ Play'; // Reset to Play
+        animateBtn.textContent = '▶ Simulate'; // Reset to Simulate
         animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
@@ -4736,12 +4736,12 @@ loader.load(
             console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
           } else {
             // Reset button state on failure
-            animateBtn.textContent = '▶ Play';
+            animateBtn.textContent = '▶ Simulate';
             animateBtn.classList.remove('rendering');
           }
         } catch (error) {
           // Reset button state on error
-          animateBtn.textContent = '▶ Play';
+          animateBtn.textContent = '▶ Simulate';
           animateBtn.classList.remove('rendering');
           console.error('❌ Animation start error:', error);
         }
@@ -5985,7 +5985,7 @@ loader.load(
         updateGripArrowVisibility();
         if (animateBtn) {
           animateBtn.classList.remove('active', 'rendering');
-          animateBtn.textContent = '▶ Play';
+          animateBtn.textContent = '▶ Simulate';
         }
         setPoseGizmosVisible(true);
         setGhostMode(false);
@@ -6093,7 +6093,7 @@ loader.load(
     // Animate toggle button (now sits to the LEFT of Confirm, same style but red)
     const animateBtn = document.createElement('button');
     animateBtn.className = 'animate-button';
-    animateBtn.textContent = '▶ Play';
+    animateBtn.textContent = '▶ Simulate';
     animateBtn.onclick = toggleAnimation;
 
     // Animation status indicator - use external container
@@ -6182,7 +6182,7 @@ loader.load(
       // Turn OFF animation (same as clicking "Animate" again to stop)
       animState.enabled = false;
       animateBtn.classList.remove('active', 'rendering');
-      animateBtn.textContent = '▶ Play'; // Reset text in case it was showing "Rendering..."
+      animateBtn.textContent = '▶ Simulate'; // Reset text in case it was showing "Rendering..."
 
       animating = false;
       updateGripArrowVisibility();
@@ -6515,7 +6515,7 @@ loader.load(
         animateBtn.disabled = tacOn;         // disable Animate when TAC is on
         if (tacOn) {
           animateBtn.classList.remove('active', 'rendering');
-          animateBtn.textContent = '▶ Play';
+          animateBtn.textContent = '▶ Simulate';
         }
       }
       // Reset stays enabled
