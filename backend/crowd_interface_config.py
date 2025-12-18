@@ -50,7 +50,8 @@ class CrowdInterfaceConfig:
 
         # ========== Simulation ==========
         self.use_sim: bool = True  # Use Isaac Sim for state simulaion
-        self.max_animation_users: int = 3  # Maximum simultaneous users viewing animations
+        self.use_gpu_physics: bool = True  # Use GPU physics (faster but uses more VRAM) vs CPU physics
+        self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
         self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
@@ -98,6 +99,9 @@ class CrowdInterfaceConfig:
 
         # Task settings
         parser.add_argument("--task-name", type=str, help="Single-word task identifier (e.g., 'drawer', 'pick_place')")
+        
+        # Simulation settings
+        parser.add_argument("--use-gpu-physics", action="store_true", help="Use GPU physics in Isaac Sim (faster but uses more VRAM)")
 
         # Labeling settings
         parser.add_argument(

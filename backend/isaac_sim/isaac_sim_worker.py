@@ -170,6 +170,7 @@ class IsaacSimWorker:
         # Configuration
         USD_PATH = config["usd_path"]
         ROBOT_PATH = "/World/wxai"
+        USE_GPU_PHYSICS = config.get("use_gpu_physics", False)  # Default to CPU physics
         
         # Dynamic object configuration from config
         configured_objects = config.get("objects", [])  # List of object names to load
@@ -209,16 +210,18 @@ class IsaacSimWorker:
         # CPU physics is slower but uses minimal VRAM and supports multiple parallel simulations
         physx = PhysxSchema.PhysxSceneAPI.Apply(phys_scene)
         
-        # DISABLE GPU dynamics (use CPU instead)
+        # Configure GPU vs CPU physics based on config
         attr = physx.GetEnableGPUDynamicsAttr() or physx.CreateEnableGPUDynamicsAttr()
-        attr.Set(False)  # CPU physics
+        attr.Set(USE_GPU_PHYSICS)
         
-        # Optimize CPU physics settings for better performance
-        # Increase solver iterations for better stability
-        solver_type_attr = physx.GetSolverTypeAttr() or physx.CreateSolverTypeAttr()
-        solver_type_attr.Set("TGS")  # Temporal Gauss-Seidel solver (faster)
-
-        print("✓ Enabled CPU physics on /physicsScene (supports parallel environments)")
+        if USE_GPU_PHYSICS:
+            print("✓ Enabled GPU physics on /physicsScene (faster but uses more VRAM)")
+        else:
+            # Optimize CPU physics settings for better performance
+            # Increase solver iterations for better stability
+            solver_type_attr = physx.GetSolverTypeAttr() or physx.CreateSolverTypeAttr()
+            solver_type_attr.Set("TGS")  # Temporal Gauss-Seidel solver (faster)
+            print("✓ Enabled CPU physics on /physicsScene (supports parallel environments)")
         # ----------------------------------------------------------------------
 
         # Get handles to the prims (store for reuse)
@@ -1856,6 +1859,10 @@ class IsaacSimWorker:
         ):
 
             cache = self.frame_caches[user_id]
+            
+            # CRITICAL: Check if generation just completed BEFORE getting frame
+            generation_just_completed = cache.is_complete and not cache.slot_released
+            
             current_frame_data = cache.get_current_replay_frame()
 
             if current_frame_data:
@@ -1873,15 +1880,13 @@ class IsaacSimWorker:
                         print(f"⚠️ Error accessing cached frame {cached_filepath}: {e}")
 
                 if captured_files:
-                    # Check if this is the first frame after generation completed
-                    generation_just_completed = cache.is_complete and not cache.slot_released
-
                     # Return cached frame data directly (no file copying)
                     result = captured_files
                     if generation_just_completed:
                         # Signal that generation is complete so slot can be released
                         result["_generation_complete"] = True
                         cache.slot_released = True  # Mark to prevent duplicate releases
+                        print(f"🎉 Generation complete signal sent for user {user_id}")
                     return result
                 else:
                     print(f"⚠️ Failed to serve cached frames for user {user_id}, falling back to live capture")
