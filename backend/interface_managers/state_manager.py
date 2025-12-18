@@ -275,8 +275,8 @@ class StateManager:
                 return
 
             # ---- Phase 0.5: Auto-detect jitter states ----
-            # If the immediate previous critical state is too similar in joint positions,
-            # treat this new state as jitter and discard it automatically
+            # If the state we want to mark critical is too similar to the previous critical state,
+            # it's jitter. Delete it AND all intermediate states in one batch.
             all_states = {
                 **self.pending_states_by_episode.get(latest_episode_id, {}),
                 **self.completed_states_by_episode.get(latest_episode_id, {}),
@@ -292,7 +292,7 @@ class StateManager:
             if previous_critical_states:
                 prev_state_id, prev_state_info = previous_critical_states[-1]
                 
-                # Check joint position similarity regardless of label status
+                # Check if the state we want to mark critical is jitter
                 is_jitter = self._is_jitter_state(
                     info["joint_positions"],
                     prev_state_info["joint_positions"],
@@ -300,13 +300,21 @@ class StateManager:
                 )
                 
                 if is_jitter:
-                    print(f"🗑️  Auto-detected jitter state {latest_state_id} (too similar to critical state {prev_state_id})")
-                    # Delete this state and its observations
-                    self._delete_obs_from_disk(info.get("obs_path"))
-                    del self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                    # Note: We don't need to adjust next_state_id because get_latest_state()
-                    # now finds states by approval_status, not by next_state_id
-                    print(f"✅ Jitter state removed (serving logic unaffected)")
+                    # Delete this state AND all states between prev_state_id and latest_state_id
+                    states_to_delete = [
+                        sid for sid in self.pending_states_by_episode[latest_episode_id].keys()
+                        if prev_state_id < sid <= latest_state_id
+                    ]
+                    
+                    print(f"🗑️  Auto-detected jitter: state {latest_state_id} too similar to critical state {prev_state_id}")
+                    print(f"🗑️  Batch-deleting {len(states_to_delete)} states ({min(states_to_delete)}-{max(states_to_delete)})")
+                    
+                    for sid in states_to_delete:
+                        sinfo = self.pending_states_by_episode[latest_episode_id][sid]
+                        self._delete_obs_from_disk(sinfo.get("obs_path"))
+                        del self.pending_states_by_episode[latest_episode_id][sid]
+                    
+                    print(f"✅ Jitter states removed (serving logic unaffected)")
                     # The previous critical state continues to be served
                     return
 
@@ -1478,11 +1486,21 @@ class StateManager:
             True if states are too similar (jitter), False otherwise
         """
         try:
-            # Compare all joint positions
+            # First check if gripper moved significantly - if so, NOT jitter
+            gripper_joint = JOINT_NAMES[-1]  # left_carriage_joint
+            if gripper_joint in joint_positions_1 and gripper_joint in joint_positions_2:
+                gripper_diff = abs(float(joint_positions_1[gripper_joint]) - float(joint_positions_2[gripper_joint]))
+                if gripper_diff > 0.01:
+                    # Gripper moved significantly, this is intentional motion, not jitter
+                    return False
+            
+            # Compare arm joint positions (excluding gripper)
             total_diff_sq = 0.0
             num_joints = 0
             
-            for joint_name in JOINT_NAMES:
+            joints_to_check = JOINT_NAMES[:-1]  # Exclude gripper
+            
+            for joint_name in joints_to_check:
                 if joint_name in joint_positions_1 and joint_name in joint_positions_2:
                     val1 = float(joint_positions_1[joint_name])
                     val2 = float(joint_positions_2[joint_name])
@@ -1493,13 +1511,13 @@ class StateManager:
             if num_joints == 0:
                 return False  # No joints to compare
             
-            # Calculate L2 distance
+            # Calculate L2 distance for arm joints
             import math
             l2_distance = math.sqrt(total_diff_sq)
             
             is_similar = l2_distance < threshold
             if is_similar:
-                print(f"  Joint position L2 distance: {l2_distance:.6f} < threshold {threshold} → JITTER")
+                print(f"  Arm joint L2 distance: {l2_distance:.6f} < threshold {threshold} → JITTER")
             
             return is_similar
             
