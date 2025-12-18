@@ -173,7 +173,10 @@ class IsaacSimWorker:
         
         # Dynamic object configuration from config
         configured_objects = config.get("objects", [])  # List of object names to load
-        print(f"✓ Configured objects: {configured_objects}")
+        print(f"✓ Configured objects from config: {configured_objects}")
+        
+        # Store configured object names for later use (e.g., during animation cloning)
+        self.configured_object_names = configured_objects
 
         # Load the USD stage (only once)
         print(f"Loading environment from {USD_PATH}")
@@ -499,63 +502,52 @@ class IsaacSimWorker:
         # Get the tray prim and modify its Y position
         stage = omni.usd.get_context().get_stage()
 
-        # DEBUG: Print what we're actually trying to access
-        print(f"[Worker] 🔍 DEBUG: Attempting to access prim at: {world_path}/Drawer/tray_02/node_")
-        print(f"[Worker] 🔍 DEBUG: self.objects['tray_02'] = {self.objects.get('tray_02')}")
-        if self.objects.get("tray_02") is not None:
-            print(f"[Worker] 🔍 DEBUG: tray_02 prim_path = {self.objects['tray_02'].prim_path}")
-
-        tray_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02/node_")
-
-        if not tray_prim or not tray_prim.IsValid():
-            print(f"⚠️ Could not find drawer_movable at {world_path}/Drawer/tray_02/node_")
-            # Try to list what's available
-            world_prim = stage.GetPrimAtPath(world_path)
-            if world_prim and world_prim.IsValid():
-                children = [child.GetName() for child in world_prim.GetChildren()]
-                print(f"Available children under {world_path}: {children}")
-                # Also check if Drawer/tray_02 exists
-                tray_02_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02")
-                if tray_02_prim and tray_02_prim.IsValid():
-                    tray_02_children = [child.GetName() for child in tray_02_prim.GetChildren()]
-                    print(f"Available children under {world_path}/Drawer/tray_02: {tray_02_children}")
-            return
-
-        print(f"[Worker] ✓ Found drawer_movable prim at {world_path}/Drawer/tray_02/node_")
+        # Get the tray object from scene registry
+        # User 0 uses "tray_02", other users use "tray_02_user_{user_id}"
+        tray_scene_name = "tray_02" if user_id == 0 else f"tray_02_user_{user_id}"
+        
+        if self.world.scene.object_exists(tray_scene_name):
+            tray_obj = self.world.scene.get_object(tray_scene_name)
+            print(f"[Worker] ✓ Found tray object '{tray_scene_name}' in scene registry")
+        else:
+            print(f"[Worker] ⚠️ tray_02 object not found in scene registry (user_id={user_id})")
+            print(f"[Worker]    Looked for: '{tray_scene_name}'")
+            # Fallback to USD-only update
+            tray_obj = None
 
         # Use the registered XFormPrim object to set position (updates both USD and physics)
-        try:
-            # Get the tray object from scene registry
-            if user_id == 0 and self.objects.get("tray_02") is not None:
-                tray_obj = self.objects["tray_02"]
-
+        if tray_obj is not None:
+            try:
                 # Get current rotation (keep it unchanged)
                 _, current_rot = tray_obj.get_world_pose()
 
-                # Verify base world position was stored during initialization
-                if self.drawer_tray_base_pos is None:
-                    raise RuntimeError(
-                        "[Worker] ❌ ERROR: drawer_tray_base_pos not initialized! Check initialization code."
-                    )
+                # Get or initialize base world position per user_id
+                if user_id not in self.drawer_tray_base_positions:
+                    # First time for this user - store current position as base
+                    current_world_pos, _ = tray_obj.get_world_pose()
+                    self.drawer_tray_base_positions[user_id] = current_world_pos
+                    print(f"[Worker] Stored base drawer position for user {user_id}: {current_world_pos}")
 
-                print(f"[Worker] Base WORLD position (closed drawer): {self.drawer_tray_base_pos}")
+                base_pos = self.drawer_tray_base_positions[user_id]
+                print(f"[Worker] Base WORLD position (closed drawer) for user {user_id}: {base_pos}")
 
                 # Calculate new WORLD position: base world position + joint offset along Y axis
                 # The drawer slides along Y, so we only modify the Y component
-                new_world_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
+                new_world_y = float(base_pos[1]) + float(drawer_joint_pos)
                 new_world_pos = np.array(
                     [
-                        self.drawer_tray_base_pos[0],  # X stays same
+                        float(base_pos[0]),  # X stays same
                         new_world_y,  # Y = base + offset
-                        self.drawer_tray_base_pos[2],  # Z stays same
-                    ]
+                        float(base_pos[2]),  # Z stays same
+                    ],
+                    dtype=np.float64
                 )
 
                 print(
                     f"[Worker] Setting WORLD position: X={new_world_pos[0]:.4f}, Y={new_world_pos[1]:.4f}, Z={new_world_pos[2]:.4f}"
                 )
                 print(
-                    f"[Worker]   (base_Y={self.drawer_tray_base_pos[1]:.4f} + joint_offset={drawer_joint_pos:.4f} = {new_world_y:.4f})"
+                    f"[Worker]   (base_Y={base_pos[1]:.4f} + joint_offset={drawer_joint_pos:.4f} = {new_world_y:.4f})"
                 )
 
                 # CRITICAL: Use set_world_pose to update BOTH USD and physics state
@@ -576,14 +568,24 @@ class IsaacSimWorker:
                 # Verify the position was actually set
                 readback_pos, _ = tray_obj.get_world_pose()
                 print(
-                    f"[Worker] ✓ Set tray_02 position: base Y {self.drawer_tray_base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_world_y:.4f}"
+                    f"[Worker] ✓ Set tray_02 position: base Y {base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_world_y:.4f}"
                 )
                 print(f"[Worker] ✓ Readback verification: Y = {readback_pos[1]:.4f} (expected: {new_world_y:.4f})")
-            else:
-                print(f"[Worker] ⚠️ tray_02 object not found in scene registry (user_id={user_id})")
-                # Fallback to USD-only method (won't update physics immediately)
-                from pxr import UsdGeom
+            except Exception as e:
+                print(f"[Worker] ⚠️ Failed to set tray position via scene object: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            # Fallback to USD-only method (won't update physics immediately)
+            print(f"[Worker] ⚠️ Using USD-only fallback for user {user_id}")
+            try:
+                from pxr import Gf, UsdGeom
 
+                tray_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02/node_")
+                if not tray_prim or not tray_prim.IsValid():
+                    print(f"[Worker] ⚠️ Tray prim not found at {world_path}/Drawer/tray_02/node_")
+                    return
+                
                 xformable = UsdGeom.Xformable(tray_prim)
                 current_translate_op = None
                 for op in xformable.GetOrderedXformOps():
@@ -592,18 +594,22 @@ class IsaacSimWorker:
                         break
                 if current_translate_op:
                     current_pos = current_translate_op.Get()
-                    if self.drawer_tray_base_pos is None:
-                        self.drawer_tray_base_pos = current_pos
-                    new_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
-                    new_pos = Gf.Vec3d(self.drawer_tray_base_pos[0], new_y, self.drawer_tray_base_pos[2])
+                    
+                    # Store base position per user_id
+                    if user_id not in self.drawer_tray_base_positions:
+                        self.drawer_tray_base_positions[user_id] = current_pos
+                    
+                    base_pos = self.drawer_tray_base_positions[user_id]
+                    new_y = float(base_pos[1]) + float(drawer_joint_pos)  # Convert to Python float
+                    new_pos = Gf.Vec3d(float(base_pos[0]), new_y, float(base_pos[2]))
                     current_translate_op.Set(new_pos)
-                    print(f"[Worker] ⚠️ Using USD-only update (physics may not update immediately)")
+                    print(f"[Worker] ⚠️ Using USD-only update for user {user_id} (physics may not update immediately)")
 
-        except Exception as e:
-            import traceback
+            except Exception as e:
+                import traceback
 
-            print(f"[Worker] ⚠️ Failed to set tray position: {e}")
-            traceback.print_exc()
+                print(f"[Worker] ⚠️ Failed to set tray position: {e}")
+                traceback.print_exc()
 
     def update_state(self, config):
         """Update robot joints and object poses without recreating simulation.
@@ -901,16 +907,25 @@ class IsaacSimWorker:
                         print(f"✅ Initialized robot for user {user_id}")
 
                         # Register cloned objects in scene registry for easy access
+                        from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
                         from omni.isaac.core.prims import RigidPrim, XFormPrim
 
                         try:
-                            # Get configured objects from last sync config
-                            configured_objects = []
-                            if self.last_sync_config:
-                                configured_objects = list(self.last_sync_config.get("object_poses", {}).keys())
+                            # Get configured objects from initialization config
+                            # Priority: self.configured_object_names (from init) > self.objects.keys() > last_sync_config
+                            configured_objects = getattr(self, 'configured_object_names', None) or []
                             
                             if not configured_objects:
-                                # Fallback: register all known objects
+                                # Fallback: check self.objects keys (object references registered during init)
+                                configured_objects = list(self.objects.keys()) if self.objects else []
+                            
+                            if not configured_objects:
+                                # Fallback: check last_sync_config
+                                if self.last_sync_config:
+                                    configured_objects = list(self.last_sync_config.get("object_poses", {}).keys())
+                            
+                            if not configured_objects:
+                                # Last resort: register all known objects
                                 configured_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
                                 print(f"⚠️ No config available, registering all objects for user {user_id}")
                             
@@ -947,6 +962,25 @@ class IsaacSimWorker:
                                     print(f"✅ Registered cloned object '{obj_name}' as '{obj_name}_user_{user_id}' at {obj_path}")
                                 except Exception as e:
                                     print(f"⚠️ Failed to register {obj_name} for user {user_id}: {e}")
+                            
+                            # Register tray objects for drawer control
+                            print(f"📦 Registering tray objects for user {user_id}...")
+                            for tray_path, tray_key in [
+                                (f"{target_path}/tray_01", "tray_01"),
+                                (f"{target_path}/Drawer/tray_02/node_", "tray_02"),
+                                (f"{target_path}/tray_03", "tray_03"),
+                            ]:
+                                tray_prim = get_prim_at_path(tray_path)
+                                if tray_prim and tray_prim.IsValid():
+                                    try:
+                                        scene_name = f"{tray_key}_user_{user_id}"
+                                        self.world.scene.add(XFormPrim(prim_path=tray_path, name=scene_name))
+                                        print(f"✅ Registered tray '{tray_key}' as '{scene_name}' at {tray_path}")
+                                    except Exception as e:
+                                        print(f"⚠️ Failed to register {tray_key} for user {user_id}: {e}")
+                                else:
+                                    print(f"⚠️ Tray not found at {tray_path}")
+                            
                         except Exception as obj_e:
                             print(f"⚠️ Failed to register cloned objects for user {user_id}: {obj_e}")
 
@@ -1289,36 +1323,33 @@ class IsaacSimWorker:
             self.frame_generation_in_progress.discard(user_id)
 
     def stop_user_animation(self, user_id):
-        """Stop animation for specific user and reset to fresh synchronized state Also cleans up frame cache to prevent
-        memory leaks."""
-        print(f"[Worker] 🛑 Starting stop_user_animation for user {user_id}")
-        start_time = time.time()
+        """Stop animation for specific user - clear cache and stop generation."""
+        print(f"[Worker] 🛑 Stopping animation for user {user_id}")
 
-        # CRITICAL: If this user is currently generating frames, signal immediate stop
+        # Signal stop to any active frame generation
         if user_id in self.frame_generation_in_progress or user_id in self.chunked_generation_state:
             self.animation_stop_requested.add(user_id)
+            
+        # Clear chunked generation state immediately
+        if user_id in self.chunked_generation_state:
+            del self.chunked_generation_state[user_id]
 
-        # Reset the user environment (always do this for clean state)
-        reset_start = time.time()
-
+        # Mark animation as inactive
         if user_id in self.active_animations:
             self.active_animations[user_id]["active"] = False
             del self.active_animations[user_id]
 
-        # Reset this user's environment back to the fresh synchronized state
-        self._reset_user_environment_to_sync_state(user_id)  # ATTENTION
-
-        # Clean up frame cache when animation stops
+        # CRITICAL: Clear frame cache so next animation doesn't replay old frames
         if user_id in self.frame_caches:
             self.frame_caches[user_id].clear_cache()
             del self.frame_caches[user_id]
 
-        # Remove from frame generation tracking
+        # Remove from tracking
         self.frame_generation_in_progress.discard(user_id)
-        # Clear any pending stop requests
         self.animation_stop_requested.discard(user_id)
 
-        return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True, "cache_cleared": True}
+        print(f"[Worker] ✅ Animation stopped, cache cleared for user {user_id}")
+        return {"status": "animation_stopped", "user_id": user_id}
 
     def set_joint_positions_physics_inspector(self, target_positions):
         """Set joint positions using UsdPhysics.DriveAPI (direct drive targets)
