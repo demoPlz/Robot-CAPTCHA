@@ -136,19 +136,14 @@
 </head>
 <body>
     <div class="mturk-header">
-        <h1>🤖 Robot Control Task</h1>
+        <h1>🤖 Robot Arm Control Task</h1>
     </div>
     
     <div class="content-wrapper">
         <div class="instructions">
             <h2>Instructions</h2>
-            <ul>
-                <li><strong>Goal:</strong> Help control a robot arm to complete a manipulation task</li>
-                <li><strong>Task:</strong> You'll see a robot simulation. Your job is to specify the next position for the robot to move to</li>
-                <li><strong>Controls:</strong> Use the interface controls to adjust the robot's position and gripper</li>
-                <li><strong>Verification:</strong> Use the "Simulate" button to preview your action before submitting</li>
-                <li><strong>Submit:</strong> Once you're satisfied with your choice, click "Confirm" to submit</li>
-                <li><strong>Important:</strong> After submitting, you'll see a completion message. Click "Submit HIT" to finalize your work</li>
+            <ul id="instructions-list">
+                <li>Loading instructions...</li>
             </ul>
         </div>
         
@@ -169,6 +164,47 @@
     </div>
 
     <script>
+        // Load instructions from file
+        async function loadInstructions() {
+            try {
+                const response = await fetch('/api/mturk/instructions');
+                const instructions = await response.json();
+                
+                const instructionsList = document.getElementById('instructions-list');
+                instructionsList.innerHTML = '';
+                
+                instructions.forEach((line) => {
+                    if (line.trim()) {
+                        const li = document.createElement('li');
+                        // Check if line has "Label: text" format
+                        const colonIndex = line.indexOf(':');
+                        if (colonIndex > 0) {
+                            const label = line.substring(0, colonIndex).trim();
+                            const text = line.substring(colonIndex + 1).trim();
+                            li.innerHTML = `<strong>${label}:</strong> ${text}`;
+                        } else {
+                            // No label, just show the text
+                            li.textContent = line;
+                        }
+                        instructionsList.appendChild(li);
+                    }
+                });
+            } catch (error) {
+                console.error('Failed to load instructions:', error);
+                // Fallback to default
+                document.getElementById('instructions-list').innerHTML = 
+                    '<li><strong>Goal:</strong> Help control a robot arm to complete a manipulation task</li>' +
+                    '<li><strong>Task:</strong> You\'ll see a robot simulation. Your job is to specify the next position for the robot to move to</li>' +
+                    '<li><strong>Controls:</strong> Use the interface controls to adjust the robot\'s position and gripper</li>' +
+                    '<li><strong>Verification:</strong> Use the "Simulate" button to preview your action before submitting</li>' +
+                    '<li><strong>Submit:</strong> Once you\'re satisfied with your choice, click "Confirm" to submit</li>' +
+                    '<li><strong>Important:</strong> After submitting, you\'ll see a completion message. Click "Submit HIT" to finalize your work</li>';
+            }
+        }
+        
+        // Load instructions on page load
+        loadInstructions();
+        
         // Get episode_id and state_id from URL parameters
         const urlParams = new URLSearchParams(window.location.search);
         const episodeId = urlParams.get('episode_id');
@@ -179,8 +215,21 @@
         
         // Check if we have required parameters
         if (!episodeId || !stateId) {
-            document.getElementById('task-iframe-wrapper').innerHTML = 
-                '<div class="error">Error: Missing required parameters (episode_id and state_id)</div>';
+            // For testing: load sim.html without mturk parameters
+            console.warn('Missing episode_id/state_id parameters - loading sim.html for testing');
+            const iframe = document.createElement('iframe');
+            iframe.id = 'task-iframe';
+            iframe.src = `sim.html`;
+            document.getElementById('task-iframe-wrapper').innerHTML = '';
+            document.getElementById('task-iframe-wrapper').appendChild(iframe);
+            
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'submission_complete') {
+                    console.log('✅ Submission complete, showing overlay');
+                    submissionCompleted = true;
+                    document.getElementById('completion-overlay').classList.add('active');
+                }
+            });
         } else {
             // Load the actual task interface in an iframe
             const iframe = document.createElement('iframe');

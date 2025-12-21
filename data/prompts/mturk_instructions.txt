@@ -1,0 +1,6 @@
+Goal: Help control a robot arm to complete a manipulation task
+Task: You'll see a robot simulation. Your job is to specify the next position for the robot to move to
+Controls: Use the interface controls to adjust the robot's position and gripper
+Verification: Use the "Simulate" button to preview your action before submitting
+Submit: Once you're satisfied with your choice, click "Confirm" to submit
+Important: After submitting, you'll see a completion message. Click "Submit HIT" to finalize your work

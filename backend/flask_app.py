@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 
 from crowd_interface import CrowdInterface
-from flask import Flask, Response, jsonify, make_response, request
+from flask import Flask, Response, jsonify, make_response, request, send_from_directory
 from flask_cors import CORS
 
 
@@ -1462,6 +1462,37 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     # MTurk Endpoints
     # =========================
 
+    @app.route("/api/mturk/instructions", methods=["GET"])
+    def mturk_instructions():
+        """Get MTurk instructions from file.
+        
+        Returns:
+            JSON array of instruction lines (format: "Label: instruction text")
+        """
+        try:
+            project_root = Path(__file__).parent.parent
+            instructions_path = project_root / "data" / "prompts" / "mturk_instructions.txt"
+            
+            if not instructions_path.exists():
+                # Return default instructions
+                return jsonify([
+                    "Goal: Help control a robot arm to complete a manipulation task",
+                    "Task: You'll see a robot simulation. Your job is to specify the next position for the robot to move to",
+                    "Controls: Use the interface controls to adjust the robot's position and gripper",
+                    "Verification: Use the \"Simulate\" button to preview your action before submitting",
+                    "Submit: Once you're satisfied with your choice, click \"Confirm\" to submit",
+                    "Important: After submitting, you'll see a completion message. Click \"Submit HIT\" to finalize your work"
+                ])
+            
+            with open(instructions_path, 'r') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            return jsonify(lines)
+            
+        except Exception as e:
+            print(f"Error loading MTurk instructions: {e}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/api/mturk/create-hit", methods=["POST"])
     def mturk_create_hit():
         """Create MTurk HIT for a critical state.
@@ -1557,5 +1588,66 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             print(f"❌ Error deleting MTurk HIT: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
+
+    # Serve static files from src/ directory (for MTurk workers)
+    # This MUST be last to avoid catching API routes
+    @app.route("/<path:filepath>")
+    def serve_static(filepath):
+        """Serve static files from dist/ (built) or src/ directory."""
+        print(f"📂 Serving static file: {filepath}")
+        # Get the project root (one level up from backend/)
+        project_root = Path(__file__).parent.parent
+        dist_dir = project_root / "dist"
+        src_dir = project_root / "src"
+        public_dir = project_root / "public"
+        
+        # Try to serve from dist/ (Vite build output) first, then fall back to src/
+        try:
+            # Check public directory first for any file
+            public_file = public_dir / filepath
+            if public_file.exists() and public_file.is_file():
+                print(f"  → Serving from public: {public_file}")
+                return send_from_directory(public_dir, filepath)
+            
+            # For HTML files, try dist first
+            if filepath.startswith("pages/") or filepath.endswith(".html"):
+                # HTML files are in dist/src/pages/ after build
+                if not filepath.startswith("pages/"):
+                    filepath = f"pages/{filepath}"
+                
+                dist_file = dist_dir / "src" / filepath
+                if dist_file.exists():
+                    print(f"  → Serving HTML from dist: {dist_file}")
+                    return send_from_directory(dist_dir / "src", filepath)
+                else:
+                    print(f"  → Serving HTML from src: {src_dir / filepath}")
+                    return send_from_directory(src_dir, filepath)
+            
+            # For assets, check dist/assets
+            elif filepath.startswith("assets/"):
+                dist_file = dist_dir / filepath
+                if dist_file.exists():
+                    print(f"  → Serving asset from dist: {dist_file}")
+                    return send_from_directory(dist_dir, filepath)
+            
+            # For CSS/JS, check dist then src
+            elif filepath.startswith("css/") or filepath.startswith("js/"):
+                dist_file = dist_dir / filepath
+                if dist_file.exists():
+                    print(f"  → Serving from dist: {dist_file}")
+                    return send_from_directory(dist_dir, filepath)
+                
+                src_file = src_dir / filepath
+                if src_file.exists():
+                    print(f"  → Serving from src: {src_file}")
+                    return send_from_directory(src_dir, filepath)
+            
+            print(f"  → Not found: {filepath}")
+            return "Not Found", 404
+        except Exception as e:
+            print(f"❌ Error serving {filepath}: {e}")
+            import traceback
+            traceback.print_exc()
+            return "Not Found", 404
 
     return app

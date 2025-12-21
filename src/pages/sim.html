@@ -1441,7 +1441,11 @@
     "three":               "https://cdn.jsdelivr.net/npm/three@0.165/build/three.module.js",
     "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.165/examples/jsm/",
     "urdf-loader":         "https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/src/URDFLoader.js?module",
-    "closed-chain-ik":     "https://cdn.jsdelivr.net/npm/closed-chain-ik@0.18.0/dist/index.module.js"
+    "closed-chain-ik":     "/js/vendor/closed-chain-ik/index.js",
+    "gl-matrix":           "/js/vendor/gl-matrix/index.js",
+    "linear-solve":        "/js/vendor/linear-solve/gauss-jordan.esm.js",
+    "svd-js":              "/js/vendor/svd-js/index.js",
+    "three-mesh-bvh":      "/js/vendor/three-mesh-bvh/index.module.js"
   }
 }
 </script></head><body>
@@ -2894,9 +2898,16 @@ const recordRegion = document.createElement('div');
 recordRegion.id = 'recordRegion';
 mount.appendChild(recordRegion);
 
-// Add hints panel on the right side of the main UI
+// Check if we're in MTurk mode
+const urlParams = new URLSearchParams(window.location.search);
+const isMTurkMode = urlParams.get('mturk') === '1';
+
+// Add hints panel on the right side of the main UI (hidden in MTurk mode)
 const hintsPanel = document.createElement('div');
 hintsPanel.className = 'hints-panel';
+if (isMTurkMode) {
+  hintsPanel.style.display = 'none'; // Hide in MTurk mode
+}
 hintsPanel.innerHTML = `
   <h3>Hints</h3>
   <ol>
