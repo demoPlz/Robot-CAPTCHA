@@ -81,6 +81,21 @@ class CrowdInterfaceConfig:
         self.action_selector_epsilon: float = 0.1  # Exploration rate for epsilon_greedy mode
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
+        # ========== MTurk Integration ==========
+        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
+        self.mturk_sandbox: bool = True  # Use MTurk sandbox (False for production)
+        self.mturk_reward: float = 0.00  # Payment per assignment in USD
+        self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment (3 minutes)
+        self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
+        self.mturk_auto_approval_delay_seconds: int = 60  # Auto-approve after 1 minute
+        self.mturk_title: str = "Control a robot arm"
+        self.mturk_description: str = "View a task environment and specify the next position for the robot to move to"
+        self.mturk_keywords: str = "robot, manipulation, annotation"
+        # External URL where your frontend is hosted (for MTurk ExternalQuestion)
+        # If not set, will auto-detect from /tmp/cloudflared.log (created by start_tunnel.sh)
+        # Manual override: set to your public URL (ngrok/cloudflare tunnel)
+        self.mturk_external_url: str | None = None  # Auto-detected if using start_tunnel.sh
+
     @classmethod
     def from_cli_args(cls, argv=None):
         """Create a CrowdInterfaceConfig instance with CLI overrides.
@@ -174,6 +189,63 @@ class CrowdInterfaceConfig:
             help="Path to learned selector model weights",
         )
 
+        # MTurk integration
+        parser.add_argument(
+            "--use-mturk",
+            action="store_true",
+            help="Enable MTurk HIT creation for critical states",
+        )
+        parser.add_argument(
+            "--mturk-sandbox",
+            action="store_true",
+            help="Use MTurk sandbox environment (default: True)",
+        )
+        parser.add_argument(
+            "--mturk-production",
+            action="store_true",
+            help="Use MTurk production environment (overrides --mturk-sandbox)",
+        )
+        parser.add_argument(
+            "--mturk-reward",
+            type=float,
+            help="Payment per MTurk assignment in USD (default: 0.50)",
+        )
+        parser.add_argument(
+            "--mturk-assignment-duration",
+            type=int,
+            help="Time allowed per MTurk assignment in seconds (default: 600)",
+        )
+        parser.add_argument(
+            "--mturk-lifetime",
+            type=int,
+            help="How long HIT remains available in seconds (default: 3600)",
+        )
+        parser.add_argument(
+            "--mturk-auto-approval-delay",
+            type=int,
+            help="Auto-approve delay in seconds (default: 60, minimum: 60)",
+        )
+        parser.add_argument(
+            "--mturk-title",
+            type=str,
+            help="MTurk HIT title",
+        )
+        parser.add_argument(
+            "--mturk-description",
+            type=str,
+            help="MTurk HIT description",
+        )
+        parser.add_argument(
+            "--mturk-keywords",
+            type=str,
+            help="MTurk HIT keywords (comma-separated)",
+        )
+        parser.add_argument(
+            "--mturk-external-url",
+            type=str,
+            help="Public URL for MTurk workers (e.g., https://abc123.trycloudflare.com)",
+        )
+
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
         # Remove crowd-specific args from sys.argv for downstream parsers
@@ -216,6 +288,28 @@ class CrowdInterfaceConfig:
             config.action_selector_epsilon = args.action_selector_epsilon
         if args.action_selector_model_path is not None:
             config.action_selector_model_path = args.action_selector_model_path
+        if args.use_mturk:
+            config.use_mturk = True
+        if args.mturk_production:
+            config.mturk_sandbox = False
+        elif args.mturk_sandbox:
+            config.mturk_sandbox = True
+        if args.mturk_reward is not None:
+            config.mturk_reward = args.mturk_reward
+        if args.mturk_assignment_duration is not None:
+            config.mturk_assignment_duration_seconds = args.mturk_assignment_duration
+        if args.mturk_lifetime is not None:
+            config.mturk_lifetime_seconds = args.mturk_lifetime
+        if args.mturk_auto_approval_delay is not None:
+            config.mturk_auto_approval_delay_seconds = args.mturk_auto_approval_delay
+        if args.mturk_title is not None:
+            config.mturk_title = args.mturk_title
+        if args.mturk_description is not None:
+            config.mturk_description = args.mturk_description
+        if args.mturk_keywords is not None:
+            config.mturk_keywords = args.mturk_keywords
+        if args.mturk_external_url is not None:
+            config.mturk_external_url = args.mturk_external_url
 
         return config
 
@@ -251,6 +345,17 @@ class CrowdInterfaceConfig:
             "action_selector_mode": self.action_selector_mode,
             "action_selector_epsilon": self.action_selector_epsilon,
             "action_selector_model_path": self.action_selector_model_path,
+            # MTurk integration
+            "use_mturk": self.use_mturk,
+            "mturk_sandbox": self.mturk_sandbox,
+            "mturk_reward": self.mturk_reward,
+            "mturk_assignment_duration_seconds": self.mturk_assignment_duration_seconds,
+            "mturk_lifetime_seconds": self.mturk_lifetime_seconds,
+            "mturk_auto_approval_delay_seconds": self.mturk_auto_approval_delay_seconds,
+            "mturk_title": self.mturk_title,
+            "mturk_description": self.mturk_description,
+            "mturk_keywords": self.mturk_keywords,
+            "mturk_external_url": self.mturk_external_url,
         }
 
         # Optional: demo video recording (only include if enabled)

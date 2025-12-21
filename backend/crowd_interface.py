@@ -19,6 +19,7 @@ from interface_managers.calibration_manager import CalibrationManager
 from interface_managers.dataset_manager import DatasetManager
 from interface_managers.demo_video_manager import DemoVideoManager
 from interface_managers.drawer_position_manager import DrawerPositionManager
+from interface_managers.mturk_manager import MTurkManager
 from interface_managers.observation_stream_manager import ObservationStreamManager
 from interface_managers.pose_estimation_manager import PoseEstimationManager
 from interface_managers.sim_manager import SimManager
@@ -80,6 +81,17 @@ class CrowdInterface:
         action_selector_mode: str = "random",
         action_selector_epsilon: float = 0.1,
         action_selector_model_path: str | None = None,
+        # --- mturk integration ---
+        use_mturk: bool = False,
+        mturk_sandbox: bool = True,
+        mturk_reward: float = 0.50,
+        mturk_assignment_duration_seconds: int = 600,
+        mturk_lifetime_seconds: int = 3600,
+        mturk_auto_approval_delay_seconds: int = 60,
+        mturk_title: str = "Control a robot arm to complete a manipulation task",
+        mturk_description: str = "View a robot simulation and specify the next position for the robot to move to",
+        mturk_keywords: str = "robot, manipulation, annotation, simulation",
+        mturk_external_url: str | None = None,
     ):
 
         # --- UI prompt mode (simple vs MANUAL) ---
@@ -192,6 +204,7 @@ class CrowdInterface:
             calibration_manager=self.calibration,
             max_animation_users=self.max_animation_users,
             objects=objects,
+            state_ready_callback=self._on_critical_state_ready,  # NEW: MTurk HIT creation
         )
 
         # Debounced episode finalization
@@ -235,6 +248,37 @@ class CrowdInterface:
             learned_model_path=action_selector_model_path,
             device="cpu",  # Can be made configurable if GPU is needed
         )
+
+        # MTurk manager (optional)
+        self.mturk_manager = None
+        if use_mturk:
+            try:
+                # Auto-detect cloudflare tunnel URL if not explicitly provided
+                effective_external_url = mturk_external_url
+                if not effective_external_url:
+                    effective_external_url = self._detect_cloudflare_tunnel_url()
+                    if effective_external_url:
+                        print(f"🔗 Auto-detected cloudflare tunnel URL: {effective_external_url}")
+                    else:
+                        print(f"⚠️  No cloudflare tunnel URL detected. MTurk HITs will fail to create.")
+                        print(f"   Run './start_tunnel.sh' or set --mturk-external-url manually")
+                
+                self.mturk_manager = MTurkManager(
+                    sandbox=mturk_sandbox,
+                    reward=mturk_reward,
+                    assignment_duration_seconds=mturk_assignment_duration_seconds,
+                    lifetime_seconds=mturk_lifetime_seconds,
+                    auto_approval_delay_seconds=mturk_auto_approval_delay_seconds,
+                    title=mturk_title,
+                    description=mturk_description,
+                    keywords=mturk_keywords,
+                    external_url=effective_external_url,
+                )
+                print(f"✅ MTurk integration enabled ({'sandbox' if mturk_sandbox else 'production'})")
+            except Exception as e:
+                print(f"⚠️  Failed to initialize MTurk manager: {e}")
+                print(f"   Continuing without MTurk integration")
+                self.mturk_manager = None
 
         # State manager (handles episode-based state lifecycle)
         self.state_manager = StateManager(
@@ -699,8 +743,155 @@ class CrowdInterface:
         return self.sim_manager.release_animation_session(session_id)
 
     # =========================
+    # MTurk Integration (Delegated to MTurkManager)
+    # =========================
+
+    def create_mturk_hit(self, episode_id: int, state_id: int, state_info: dict = None) -> str | None:
+        """Create MTurk HIT for a critical state.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            state_info: State information dict (optional, will fetch if not provided)
+
+        Returns:
+            HIT ID if successful, None otherwise
+
+        """
+        if not self.mturk_manager:
+            print(f"❌ Cannot create HIT: MTurk manager not initialized")
+            return None
+
+        # Get state data if not provided (avoid deadlock when called from callback)
+        if state_info is None:
+            with self.state_lock:
+                if episode_id in self.pending_states_by_episode:
+                    state_info = self.pending_states_by_episode[episode_id].get(state_id)
+
+        if not state_info:
+            print(f"⚠️  Cannot create HIT: state not found (episode={episode_id}, state={state_id})")
+            return None
+
+        # Create HIT
+        return self.mturk_manager.create_hit_for_state(
+            episode_id=episode_id,
+            state_id=state_id,
+            max_assignments=self.required_responses_per_critical_state,
+            state_data=state_info,
+        )
+
+    def update_mturk_assignment_count(self, episode_id: int, state_id: int):
+        """Notify MTurk manager of a new assignment submission.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+
+        """
+        if self.mturk_manager:
+            self.mturk_manager.update_hit_assignment_count(episode_id, state_id)
+
+    def get_mturk_hit_status(self, episode_id: int, state_id: int) -> dict | None:
+        """Get MTurk HIT status for a state.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+
+        Returns:
+            HIT metadata dict or None
+
+        """
+        if not self.mturk_manager:
+            return None
+        return self.mturk_manager.get_hit_status(episode_id, state_id)
+
+    def get_all_mturk_hits(self) -> dict:
+        """Get status of all MTurk HITs.
+
+        Returns:
+            Dict of all HIT metadata
+
+        """
+        if not self.mturk_manager:
+            return {}
+        return self.mturk_manager.get_all_hits_status()
+
+    def delete_mturk_hit(self, episode_id: int, state_id: int) -> bool:
+        """Delete MTurk HIT.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+
+        Returns:
+            True if successful, False otherwise
+
+        """
+        if not self.mturk_manager:
+            return False
+        return self.mturk_manager.delete_hit(episode_id, state_id)
+
+    def _on_critical_state_ready(self, episode_id: int, state_id: int, state_info: dict):
+        """Callback when a critical state becomes fully ready for labeling.
+        
+        Auto-creates MTurk HIT if MTurk is enabled.
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            state_info: State information dict
+        """
+        print(f"🎯 Critical state ready for labeling: episode={episode_id}, state={state_id}", flush=True)
+        
+        # Auto-create MTurk HIT if enabled
+        if self.mturk_manager:
+            print(f"🚀 Attempting to create MTurk HIT for episode={episode_id}, state={state_id}", flush=True)
+            try:
+                # Pass state_info directly to avoid deadlock (callback already holds state_lock)
+                hit_id = self.create_mturk_hit(episode_id, state_id, state_info)
+                if hit_id:
+                    print(f"✅ Auto-created MTurk HIT: {hit_id}", flush=True)
+                else:
+                    print(f"⚠️  Failed to auto-create MTurk HIT for episode={episode_id}, state={state_id}", flush=True)
+            except Exception as e:
+                print(f"❌ Exception while creating MTurk HIT: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"⚠️  MTurk manager not initialized - skipping HIT creation", flush=True)
+
+    # =========================
     # Utility Methods
     # =========================
+    
+    def _detect_cloudflare_tunnel_url(self) -> str | None:
+        """Auto-detect cloudflare tunnel URL from log file.
+        
+        Returns:
+            Tunnel URL if found, None otherwise
+        """
+        import re
+        
+        possible_paths = [
+            Path("/tmp/cloudflared.log"),
+            Path.home() / ".cloudflared" / "cloudflared.log",
+            Path("cloudflared.log"),
+        ]
+        
+        for log_path in possible_paths:
+            if log_path.exists():
+                try:
+                    with open(log_path, 'r') as f:
+                        content = f.read()
+                        match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
+                        if match:
+                            return match.group(0)
+                except Exception:
+                    continue
+        
+        return None
+    
     def _repo_root(self) -> Path:
         """Root of the repo (backend assumes this file lives under <repo>/scripts or similar)."""
         return (Path(__file__).resolve().parent / "..").resolve()

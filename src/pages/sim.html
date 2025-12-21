@@ -6078,8 +6078,24 @@ loader.load(
 
         if (response.ok) {
           console.log('✅ goal sent (final goal joints)');
-          // Immediate refresh to load next task
-          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+          
+          // Check if we're in MTurk mode (via URL parameter)
+          const urlParams = new URLSearchParams(window.location.search);
+          const isMTurkMode = urlParams.get('mturk') === '1';
+          
+          if (isMTurkMode) {
+            // MTurk mode: notify parent window instead of redirecting
+            if (window.parent !== window) {
+              window.parent.postMessage({ type: 'submission_complete' }, '*');
+            }
+            // Update button to show completion
+            confirmBtn.textContent = '✅ Submitted';
+            confirmBtn.disabled = true;
+            confirmBtn.style.background = '#22c55e';
+          } else {
+            // Normal mode: refresh to load next task
+            window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+          }
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
         }

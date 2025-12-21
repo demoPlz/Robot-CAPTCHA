@@ -150,6 +150,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Record this as a response to the correct state for this session
             # The frontend now includes state_id in the request data
             crowd_interface.record_response(data)
+            
+            # Notify MTurk manager of assignment submission (if MTurk enabled)
+            episode_id = data["episode_id"]
+            state_id = data["state_id"]
+            crowd_interface.update_mturk_assignment_count(episode_id, state_id)
+            
             return jsonify({"status": "ok"})
 
         except KeyError as e:
@@ -1451,5 +1457,105 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             print(f"❌ Error getting simulation status: {e}")
             return jsonify({"error": str(e)}), 500
+
+    # =========================
+    # MTurk Endpoints
+    # =========================
+
+    @app.route("/api/mturk/create-hit", methods=["POST"])
+    def mturk_create_hit():
+        """Create MTurk HIT for a critical state.
+        
+        Request body:
+            {
+                "episode_id": int,
+                "state_id": int
+            }
+        """
+        try:
+            data = request.get_json()
+            if not data or "episode_id" not in data or "state_id" not in data:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            episode_id = data["episode_id"]
+            state_id = data["state_id"]
+
+            hit_id = crowd_interface.create_mturk_hit(episode_id, state_id)
+
+            if hit_id:
+                return jsonify({"status": "success", "hit_id": hit_id})
+            else:
+                return jsonify({"status": "error", "message": "Failed to create HIT"}), 500
+
+        except Exception as e:
+            print(f"❌ Error creating MTurk HIT: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/mturk/hit-status", methods=["GET"])
+    def mturk_hit_status():
+        """Get MTurk HIT status for a specific state.
+        
+        Query params:
+            episode_id: int
+            state_id: int
+        """
+        try:
+            episode_id = request.args.get("episode_id", type=int)
+            state_id = request.args.get("state_id", type=int)
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            hit_status = crowd_interface.get_mturk_hit_status(episode_id, state_id)
+
+            if hit_status:
+                return jsonify({"status": "success", "hit": hit_status})
+            else:
+                return jsonify({"status": "not_found", "message": "No HIT found for this state"}), 404
+
+        except Exception as e:
+            print(f"❌ Error getting MTurk HIT status: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/mturk/all-hits", methods=["GET"])
+    def mturk_all_hits():
+        """Get status of all MTurk HITs."""
+        try:
+            hits = crowd_interface.get_all_mturk_hits()
+            return jsonify({"status": "success", "hits": hits})
+
+        except Exception as e:
+            print(f"❌ Error getting all MTurk HITs: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/mturk/delete-hit", methods=["POST"])
+    def mturk_delete_hit():
+        """Delete MTurk HIT.
+        
+        Request body:
+            {
+                "episode_id": int,
+                "state_id": int
+            }
+        """
+        try:
+            data = request.get_json()
+            if not data or "episode_id" not in data or "state_id" not in data:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            episode_id = data["episode_id"]
+            state_id = data["state_id"]
+
+            success = crowd_interface.delete_mturk_hit(episode_id, state_id)
+
+            if success:
+                return jsonify({"status": "success", "message": "HIT deleted"})
+            else:
+                return jsonify({"status": "error", "message": "Failed to delete HIT"}), 500
+
+        except Exception as e:
+            print(f"❌ Error deleting MTurk HIT: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     return app

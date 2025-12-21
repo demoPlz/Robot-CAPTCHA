@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control Task - MTurk</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+        }
+        
+        .mturk-header {
+            background: #232f3e;
+            color: white;
+            padding: 15px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .mturk-header h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 600;
+        }
+        
+        .content-wrapper {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .instructions {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .instructions h2 {
+            margin-top: 0;
+            color: #232f3e;
+        }
+        
+        .instructions ul {
+            line-height: 1.6;
+        }
+        
+        .instructions li {
+            margin-bottom: 8px;
+        }
+        
+        .task-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        
+        #task-iframe {
+            width: 100%;
+            height: 900px;
+            border: none;
+            border-radius: 4px;
+        }
+        
+        .completion-overlay {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 8px;
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+        
+        .completion-overlay.active {
+            display: flex;
+        }
+        
+        .completion-message {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .completion-message h2 {
+            color: #22c55e;
+            font-size: 32px;
+            margin-bottom: 20px;
+        }
+        
+        .completion-message p {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        
+        .submit-button {
+            background: #ff9900;
+            color: white;
+            border: none;
+            padding: 12px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        
+        .submit-button:hover {
+            background: #ec7211;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="mturk-header">
+        <h1>🤖 Robot Control Task</h1>
+    </div>
+    
+    <div class="content-wrapper">
+        <div class="instructions">
+            <h2>Instructions</h2>
+            <ul>
+                <li><strong>Goal:</strong> Help control a robot arm to complete a manipulation task</li>
+                <li><strong>Task:</strong> You'll see a robot simulation. Your job is to specify the next position for the robot to move to</li>
+                <li><strong>Controls:</strong> Use the interface controls to adjust the robot's position and gripper</li>
+                <li><strong>Verification:</strong> Use the "Simulate" button to preview your action before submitting</li>
+                <li><strong>Submit:</strong> Once you're satisfied with your choice, click "Confirm" to submit</li>
+                <li><strong>Important:</strong> After submitting, you'll see a completion message. Click "Submit HIT" to finalize your work</li>
+            </ul>
+        </div>
+        
+        <div class="task-container">
+            <div id="task-iframe-wrapper">
+                <div class="loading">Loading task...</div>
+            </div>
+            
+            <div id="completion-overlay" class="completion-overlay">
+                <div class="completion-message">
+                    <h2>✅ Task Completed!</h2>
+                    <p>Thank you for your submission.</p>
+                    <p>Your response has been recorded successfully.</p>
+                    <button class="submit-button" onclick="submitHIT()">Submit HIT to MTurk</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Get episode_id and state_id from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const episodeId = urlParams.get('episode_id');
+        const stateId = urlParams.get('state_id');
+        
+        // Track submission state
+        let submissionCompleted = false;
+        
+        // Check if we have required parameters
+        if (!episodeId || !stateId) {
+            document.getElementById('task-iframe-wrapper').innerHTML = 
+                '<div class="error">Error: Missing required parameters (episode_id and state_id)</div>';
+        } else {
+            // Load the actual task interface in an iframe
+            const iframe = document.createElement('iframe');
+            iframe.id = 'task-iframe';
+            iframe.src = `sim.html?mturk=1&episode_id=${episodeId}&state_id=${stateId}`;
+            
+            // Replace loading message with iframe
+            document.getElementById('task-iframe-wrapper').innerHTML = '';
+            document.getElementById('task-iframe-wrapper').appendChild(iframe);
+            
+            // Listen for submission completion from the iframe
+            window.addEventListener('message', function(event) {
+                // Verify message origin for security
+                if (event.data && event.data.type === 'submission_complete') {
+                    console.log('✅ Submission complete, showing overlay');
+                    submissionCompleted = true;
+                    document.getElementById('completion-overlay').classList.add('active');
+                }
+            });
+        }
+        
+        function submitHIT() {
+            if (!submissionCompleted) {
+                alert('Please complete the task first');
+                return;
+            }
+            
+            // In MTurk, we would submit the form here
+            // For now, just show a message
+            if (window.opener || window.parent !== window) {
+                // If in MTurk iframe, close window
+                alert('Task submitted successfully! You can close this window.');
+            } else {
+                alert('Task submitted successfully!\n\nIn production MTurk, this would submit your HIT automatically.');
+            }
+            
+            // Optionally, could call MTurk's ExternalQuestion submit
+            // document.getElementById('submitButton').click();
+        }
+        
+        // Prevent accidental navigation away
+        window.addEventListener('beforeunload', function(e) {
+            if (!submissionCompleted) {
+                e.preventDefault();
+                e.returnValue = 'Are you sure you want to leave? Your work may not be saved.';
+                return e.returnValue;
+            }
+        });
+    </script>
+</body>
+</html>

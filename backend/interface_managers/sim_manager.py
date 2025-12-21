@@ -32,6 +32,7 @@ class SimManager:
         calibration_manager=None,
         max_animation_users: int = 2,
         objects: dict[str, str] | None = None,
+        state_ready_callback=None,  # NEW: Callback when state becomes ready
     ):
         """Initialize SimManager.
 
@@ -58,6 +59,7 @@ class SimManager:
         self.webcam_manager = webcam_manager
         self.calibration_manager = calibration_manager
         self.max_animation_users = max_animation_users
+        self.state_ready_callback = state_ready_callback  # NEW
         self.objects = objects or {}
 
         # Sim capture queue and worker thread
@@ -137,10 +139,23 @@ class SimManager:
                     episode_id in self.pending_states_by_episode
                     and state_id in self.pending_states_by_episode[episode_id]
                 ):
-                    self.pending_states_by_episode[episode_id][state_id]["sim_ready"] = sim_success
+                    state_info = self.pending_states_by_episode[episode_id][state_id]
+                    state_info["sim_ready"] = sim_success
                     print(
                         f"🎥 Sim capture {'completed' if sim_success else 'failed'} for episode {episode_id}, state {state_id}"
                     )
+                    
+                    # Check if state is now fully ready (approved, prompt_ready, sim_ready)
+                    if (sim_success and 
+                        state_info.get("critical") and
+                        state_info.get("approval_status") == "approved" and 
+                        state_info.get("prompt_ready")):
+                        # State is now fully ready for labeling - trigger callback (e.g., MTurk HIT creation)
+                        if self.state_ready_callback:
+                            try:
+                                self.state_ready_callback(episode_id, state_id, state_info)
+                            except Exception as e:
+                                print(f"⚠️  State ready callback failed: {e}")
 
     def enqueue_sim_capture(self, episode_id: str, state_id: int, state_info: dict):
         """Enqueue a sim capture job for background processing.

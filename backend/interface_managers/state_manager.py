@@ -67,6 +67,7 @@ class StateManager:
         persist_obs_callback,
         snapshot_views_callback,
         save_episode_callback,
+        state_ready_callback=None,  # NEW: Called when critical state becomes ready for labeling
     ):
         """Initialize state manager.
 
@@ -145,6 +146,7 @@ class StateManager:
         self._persist_obs_callback = persist_obs_callback
         self._snapshot_views_callback = snapshot_views_callback
         self._save_episode_callback = save_episode_callback
+        self._state_ready_callback = state_ready_callback  # NEW: MTurk HIT creation callback
 
         # Goal management
         self.latest_goal = None
