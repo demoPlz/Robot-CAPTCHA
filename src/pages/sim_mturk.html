@@ -173,19 +173,11 @@
                 const instructionsList = document.getElementById('instructions-list');
                 instructionsList.innerHTML = '';
                 
-                instructions.forEach((line) => {
-                    if (line.trim()) {
+                instructions.forEach((section) => {
+                    if (section.trim()) {
                         const li = document.createElement('li');
-                        // Check if line has "Label: text" format
-                        const colonIndex = line.indexOf(':');
-                        if (colonIndex > 0) {
-                            const label = line.substring(0, colonIndex).trim();
-                            const text = line.substring(colonIndex + 1).trim();
-                            li.innerHTML = `<strong>${label}:</strong> ${text}`;
-                        } else {
-                            // No label, just show the text
-                            li.textContent = line;
-                        }
+                        // Render HTML content directly (preserves formatting, numbered lists, etc.)
+                        li.innerHTML = section;
                         instructionsList.appendChild(li);
                     }
                 });

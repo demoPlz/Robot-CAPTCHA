@@ -49,8 +49,9 @@ class CrowdInterface:
     def __init__(
         self,
         required_responses_per_state: int = 1,
-        required_responses_per_critical_state: int = 2,
-        required_approvals_per_critical_state: int = 2,
+        required_responses_per_critical_state: int = 3,
+        required_approvals_per_critical_state: int = 3,
+        num_expert_workers: int = 2,
         jitter_threshold: float = 0.01,
         autofill_critical_states: bool = False,
         num_autofill_actions: int | None = None,
@@ -273,6 +274,8 @@ class CrowdInterface:
                     description=mturk_description,
                     keywords=mturk_keywords,
                     external_url=effective_external_url,
+                    num_expert_workers=num_expert_workers,
+                    required_responses_per_critical_state=required_responses_per_critical_state,
                 )
                 print(f"✅ MTurk integration enabled ({'sandbox' if mturk_sandbox else 'production'})")
             except Exception as e:
@@ -776,7 +779,6 @@ class CrowdInterface:
         return self.mturk_manager.create_hit_for_state(
             episode_id=episode_id,
             state_id=state_id,
-            max_assignments=self.required_responses_per_critical_state,
             state_data=state_info,
         )
 

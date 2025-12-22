@@ -24,9 +24,14 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 2
+        self.required_approvals_per_critical_state: int = 3
+        
+        # ========== Expert Worker Integration ==========
+        # Number of expert workers who will label via localhost
+        # MTurk max_assignments will be: required_responses_per_critical_state - num_expert_workers
+        self.num_expert_workers: int = 1  # Set to 0 for no experts, or >= 1 to reserve slots
 
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
@@ -82,7 +87,7 @@ class CrowdInterfaceConfig:
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
         # ========== MTurk Integration ==========
-        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
+        self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
         self.mturk_sandbox: bool = True  # Use MTurk sandbox (False for production)
         self.mturk_reward: float = 0.00  # Payment per assignment in USD
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment (3 minutes)
@@ -113,11 +118,12 @@ class CrowdInterfaceConfig:
         parser = argparse.ArgumentParser(add_help=False)
 
         # Task settings
-        parser.add_argument("--task-name", type=str, help="Single-word task identifier (e.g., 'drawer', 'pick_place')")
+        parser.add_argument(
+            "--task-name",
+            type=str,
+            help="Single-word identifier for the task (default: drawer)",
+        )
         
-        # Simulation settings
-        parser.add_argument("--use-gpu-physics", action="store_true", help="Use GPU physics in Isaac Sim (faster but uses more VRAM)")
-
         # Labeling settings
         parser.add_argument(
             "--required-responses-per-critical-state",
@@ -128,6 +134,11 @@ class CrowdInterfaceConfig:
             "--required-approvals-per-critical-state",
             type=int,
             help="Number of pre-approved actions required per critical state",
+        )
+        parser.add_argument(
+            "--num-expert-workers",
+            type=int,
+            help="Number of expert workers labeling via localhost (reserves slots from MTurk)",
         )
         parser.add_argument(
             "--jitter-threshold",
@@ -160,6 +171,7 @@ class CrowdInterfaceConfig:
 
         # Simulation
         parser.add_argument("--use-sim", action="store_true", help="Enable Isaac Sim integration")
+        parser.add_argument("--use-gpu-physics", action="store_true", help="Use GPU physics in Isaac Sim (faster but uses more VRAM)")
         parser.add_argument(
             "--max-animation-users",
             type=int,
@@ -260,6 +272,8 @@ class CrowdInterfaceConfig:
             config.required_responses_per_critical_state = args.required_responses_per_critical_state
         if args.required_approvals_per_critical_state is not None:
             config.required_approvals_per_critical_state = args.required_approvals_per_critical_state
+        if args.num_expert_workers is not None:
+            config.num_expert_workers = args.num_expert_workers
         if args.jitter_threshold is not None:
             config.jitter_threshold = args.jitter_threshold
         if args.autofill_critical_states:
@@ -278,6 +292,8 @@ class CrowdInterfaceConfig:
             config.clear_ui_demo_videos_dir = True
         if args.use_sim:
             config.use_sim = True
+        if args.use_gpu_physics:
+            config.use_gpu_physics = True
         if args.max_animation_users is not None:
             config.max_animation_users = args.max_animation_users
         if args.usd_path is not None:
@@ -327,6 +343,7 @@ class CrowdInterfaceConfig:
             "required_responses_per_state": self.required_responses_per_state,
             "required_responses_per_critical_state": self.required_responses_per_critical_state,
             "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
+            "num_expert_workers": self.num_expert_workers,
             "jitter_threshold": self.jitter_threshold,
             # Autofill
             "autofill_critical_states": self.autofill_critical_states,

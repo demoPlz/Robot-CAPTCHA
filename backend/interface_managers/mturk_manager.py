@@ -42,6 +42,8 @@ class MTurkManager:
         description: str = "View a robot simulation and specify the next position for the robot to move to",
         keywords: str = "robot, manipulation, annotation, simulation",
         external_url: Optional[str] = None,
+        num_expert_workers: int = 0,
+        required_responses_per_critical_state: int = 2,
     ):
         """Initialize MTurk manager.
 
@@ -55,6 +57,8 @@ class MTurkManager:
             description: HIT description
             keywords: Search keywords
             external_url: Public URL where frontend is hosted (e.g., cloudflare tunnel)
+            num_expert_workers: Number of expert workers labeling via localhost (reduces MTurk assignments)
+            required_responses_per_critical_state: Total responses needed per critical state
 
         """
         self.sandbox = sandbox
@@ -64,6 +68,10 @@ class MTurkManager:
         self.auto_approval_delay_seconds = max(60, auto_approval_delay_seconds)  # Minimum 60s
         self.title = title
         self.description = description
+        self.keywords = keywords
+        self.external_url = external_url
+        self.num_expert_workers = num_expert_workers
+        self.required_responses_per_critical_state = required_responses_per_critical_state
         self.keywords = keywords
         self.external_url = external_url
 
@@ -102,7 +110,6 @@ class MTurkManager:
         self,
         episode_id: int,
         state_id: int,
-        max_assignments: int,
         state_data: dict,
     ) -> Optional[str]:
         """Create an MTurk HIT for a critical state.
@@ -110,13 +117,18 @@ class MTurkManager:
         Args:
             episode_id: Episode ID
             state_id: State ID
-            max_assignments: Number of responses needed (required_responses_per_critical_state)
             state_data: State information to embed in HIT (images, task, etc.)
 
         Returns:
             HIT ID if successful, None otherwise
 
         """
+        # Calculate max_assignments: leave slots for expert workers
+        max_assignments = max(1, self.required_responses_per_critical_state - self.num_expert_workers)
+        
+        if self.num_expert_workers > 0:
+            print(f"📊 Creating HIT with {max_assignments} MTurk assignments (reserving {self.num_expert_workers} slots for expert workers)")
+        
         if not self.external_url:
             print("❌ Cannot create HIT: mturk_external_url not configured")
             return None

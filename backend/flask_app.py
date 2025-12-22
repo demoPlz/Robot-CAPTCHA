@@ -1485,9 +1485,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 ])
             
             with open(instructions_path, 'r') as f:
-                lines = [line.strip() for line in f.readlines() if line.strip()]
+                # Read entire file and split only on <br> tags
+                content = f.read()
+                # Split by <br> and strip only leading/trailing whitespace from each section
+                sections = [section.strip() for section in content.split('<br>') if section.strip()]
             
-            return jsonify(lines)
+            return jsonify(sections)
             
         except Exception as e:
             print(f"Error loading MTurk instructions: {e}")
@@ -1594,7 +1597,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/<path:filepath>")
     def serve_static(filepath):
         """Serve static files from dist/ (built) or src/ directory."""
-        print(f"📂 Serving static file: {filepath}")
         # Get the project root (one level up from backend/)
         project_root = Path(__file__).parent.parent
         dist_dir = project_root / "dist"
@@ -1606,7 +1608,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Check public directory first for any file
             public_file = public_dir / filepath
             if public_file.exists() and public_file.is_file():
-                print(f"  → Serving from public: {public_file}")
                 return send_from_directory(public_dir, filepath)
             
             # For HTML files, try dist first
@@ -1617,32 +1618,26 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 
                 dist_file = dist_dir / "src" / filepath
                 if dist_file.exists():
-                    print(f"  → Serving HTML from dist: {dist_file}")
                     return send_from_directory(dist_dir / "src", filepath)
                 else:
-                    print(f"  → Serving HTML from src: {src_dir / filepath}")
                     return send_from_directory(src_dir, filepath)
             
             # For assets, check dist/assets
             elif filepath.startswith("assets/"):
                 dist_file = dist_dir / filepath
                 if dist_file.exists():
-                    print(f"  → Serving asset from dist: {dist_file}")
                     return send_from_directory(dist_dir, filepath)
             
             # For CSS/JS, check dist then src
             elif filepath.startswith("css/") or filepath.startswith("js/"):
                 dist_file = dist_dir / filepath
                 if dist_file.exists():
-                    print(f"  → Serving from dist: {dist_file}")
                     return send_from_directory(dist_dir, filepath)
                 
                 src_file = src_dir / filepath
                 if src_file.exists():
-                    print(f"  → Serving from src: {src_file}")
                     return send_from_directory(src_dir, filepath)
             
-            print(f"  → Not found: {filepath}")
             return "Not Found", 404
         except Exception as e:
             print(f"❌ Error serving {filepath}: {e}")
