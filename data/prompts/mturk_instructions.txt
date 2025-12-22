@@ -3,6 +3,7 @@
         <li>is safe i.e. does not cause hardware damaging collisions, and</li>
         <li>advances the progress of the manipulation task.</li>
     </ol>
+    <b>Only one step forward needed.</b>
 <br>
 <strong>Controls:</strong> You can <em>either</em> specify a movement or a gripper action:
     <ul style="margin: 5px 0 5px 20px; list-style-type: none; padding-left: 20px;">

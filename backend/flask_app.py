@@ -1464,7 +1464,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
     @app.route("/api/mturk/instructions", methods=["GET"])
     def mturk_instructions():
-        """Get MTurk instructions from file.
+        """Get MTurk general instructions from file.
         
         Returns:
             JSON array of instruction lines (format: "Label: instruction text")
@@ -1494,6 +1494,44 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
         except Exception as e:
             print(f"Error loading MTurk instructions: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/mturk/task-instructions", methods=["GET"])
+    def mturk_task_instructions():
+        """Get task-specific MTurk instructions from file.
+        
+        Returns:
+            JSON object with 'title' and 'sections' array
+            Format: {"title": "Task Instructions", "sections": ["section1", "section2", ...]}
+        """
+        try:
+            task_name = crowd_interface.task_name if crowd_interface else "drawer"
+            project_root = Path(__file__).parent.parent
+            instructions_path = project_root / "data" / "prompts" / f"{task_name}_instructions.txt"
+            
+            if not instructions_path.exists():
+                # Return empty if no task-specific instructions
+                return jsonify({"title": None, "sections": []})
+            
+            with open(instructions_path, 'r') as f:
+                content = f.read()
+            
+            # First line is the title if it starts with TITLE:
+            lines = content.split('\n', 1)
+            title = None
+            sections_content = content
+            
+            if lines[0].startswith('TITLE:'):
+                title = lines[0][6:].strip()  # Remove 'TITLE:' prefix
+                sections_content = lines[1] if len(lines) > 1 else ''
+            
+            # Split remaining content by <br> tags
+            sections = [s.strip() for s in sections_content.split('<br>') if s.strip()]
+            
+            return jsonify({"title": title, "sections": sections})
+            
+        except Exception as e:
+            print(f"Error loading task-specific MTurk instructions: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/mturk/create-hit", methods=["POST"])

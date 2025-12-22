@@ -147,6 +147,12 @@
             </ul>
         </div>
         
+        <div class="instructions" id="task-instructions-container" style="display: none;">
+            <h2 id="task-instructions-title">Task Instructions</h2>
+            <ul id="task-instructions-list">
+            </ul>
+        </div>
+        
         <div class="task-container">
             <div id="task-iframe-wrapper">
                 <div class="loading">Loading task...</div>
@@ -194,8 +200,40 @@
             }
         }
         
+        // Load task-specific instructions
+        async function loadTaskInstructions() {
+            try {
+                const response = await fetch('/api/mturk/task-instructions');
+                const data = await response.json();
+                
+                if (data.title && data.sections && data.sections.length > 0) {
+                    // Show the container
+                    document.getElementById('task-instructions-container').style.display = 'block';
+                    
+                    // Set custom title
+                    document.getElementById('task-instructions-title').textContent = data.title;
+                    
+                    // Populate sections
+                    const taskList = document.getElementById('task-instructions-list');
+                    taskList.innerHTML = '';
+                    
+                    data.sections.forEach((section) => {
+                        if (section.trim()) {
+                            const li = document.createElement('li');
+                            li.innerHTML = section;
+                            taskList.appendChild(li);
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load task-specific instructions:', error);
+                // Silently fail - task instructions are optional
+            }
+        }
+        
         // Load instructions on page load
         loadInstructions();
+        loadTaskInstructions();
         
         // Get episode_id and state_id from URL parameters
         const urlParams = new URLSearchParams(window.location.search);

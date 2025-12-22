@@ -1,0 +1,3 @@
+TITLE: "Drawer" Task Hints
+The plastic plate sticking out is the handle for the robot to grasp.
+<br>
