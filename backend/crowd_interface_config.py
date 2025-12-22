@@ -20,13 +20,13 @@ class CrowdInterfaceConfig:
     def __init__(self):
         # ========== Task Settings ==========
         self.task_name: str = "drawer"  # Single-word identifier for the task
-        self.task_text: str = "Put the cube on the desk into the middle drawer, and close the drawer"
+        self.task_text: str = "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 3
+        self.required_approvals_per_critical_state: int = 2
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost

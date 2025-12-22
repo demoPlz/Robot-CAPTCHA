@@ -6,6 +6,7 @@ Creates HITs when critical states need labeling, tracks HIT status, and auto-app
 
 import json
 import time
+from pathlib import Path
 from threading import Lock, Thread
 from typing import Optional
 
@@ -44,6 +45,7 @@ class MTurkManager:
         external_url: Optional[str] = None,
         num_expert_workers: int = 0,
         required_responses_per_critical_state: int = 2,
+        output_dir: str = "output/mturk_stats",
     ):
         """Initialize MTurk manager.
 
@@ -59,6 +61,7 @@ class MTurkManager:
             external_url: Public URL where frontend is hosted (e.g., cloudflare tunnel)
             num_expert_workers: Number of expert workers labeling via localhost (reduces MTurk assignments)
             required_responses_per_critical_state: Total responses needed per critical state
+            output_dir: Directory to save timing statistics
 
         """
         self.sandbox = sandbox
@@ -74,6 +77,13 @@ class MTurkManager:
         self.required_responses_per_critical_state = required_responses_per_critical_state
         self.keywords = keywords
         self.external_url = external_url
+        
+        # Setup output directory and timing file
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        env_suffix = "sandbox" if sandbox else "production"
+        self.timing_file = self.output_dir / f"hit_timing_{env_suffix}_{timestamp}.json"
 
         # Initialize MTurk client
         endpoint_url = (
@@ -100,11 +110,67 @@ class MTurkManager:
         # Track HITs: (episode_id, state_id) -> HIT metadata
         self.hit_tracking: dict[tuple[int, int], dict] = {}
         self.hit_lock = Lock()
+        
+        # Track HIT completion times: episode_id -> state_id -> {created_at, completed_at, max_assignments, duration_seconds}
+        self.hit_timing_stats: dict[int, dict[int, dict]] = {}
+        self.timing_lock = Lock()
+        
+        # Initialize timing file
+        self._save_timing_stats()
 
         # Start background thread for auto-approval
         self.running = True
         self.approval_thread = Thread(target=self._approval_worker, daemon=True)
         self.approval_thread.start()
+    
+    def _save_timing_stats(self):
+        """Save timing statistics to JSON file."""
+        with self.timing_lock:
+            # Convert to serializable format with computed statistics
+            output_data = {
+                "metadata": {
+                    "sandbox": self.sandbox,
+                    "reward": self.reward,
+                    "num_expert_workers": self.num_expert_workers,
+                    "required_responses_per_critical_state": self.required_responses_per_critical_state,
+                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+                },
+                "hits": {},
+                "summary": {}
+            }
+            
+            all_durations = []
+            
+            for episode_id, states in self.hit_timing_stats.items():
+                ep_key = f"episode_{episode_id}"
+                output_data["hits"][ep_key] = {}
+                
+                for state_id, timing in states.items():
+                    state_key = f"state_{state_id}"
+                    output_data["hits"][ep_key][state_key] = {
+                        "max_assignments": timing["max_assignments"],
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timing["created_at"])),
+                        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timing["completed_at"])) if timing["completed_at"] else None,
+                        "duration_seconds": round(timing["duration_seconds"], 1) if timing["duration_seconds"] else None,
+                        "status": "complete" if timing["completed_at"] else "pending"
+                    }
+                    
+                    if timing["duration_seconds"] is not None:
+                        all_durations.append(timing["duration_seconds"])
+            
+            # Compute summary statistics
+            if all_durations:
+                output_data["summary"] = {
+                    "total_hits_completed": len(all_durations),
+                    "average_duration_seconds": round(sum(all_durations) / len(all_durations), 1),
+                    "average_duration_minutes": round(sum(all_durations) / len(all_durations) / 60, 1),
+                    "min_duration_seconds": round(min(all_durations), 1),
+                    "max_duration_seconds": round(max(all_durations), 1)
+                }
+            
+            # Write to file
+            with open(self.timing_file, 'w') as f:
+                json.dump(output_data, f, indent=2)
 
     def create_hit_for_state(
         self,
@@ -163,6 +229,7 @@ class MTurkManager:
             hit_type_id = response["HIT"]["HITTypeId"]
 
             # Track HIT
+            created_at = time.time()
             with self.hit_lock:
                 self.hit_tracking[(episode_id, state_id)] = {
                     "hit_id": hit_id,
@@ -170,9 +237,23 @@ class MTurkManager:
                     "max_assignments": max_assignments,
                     "assignments_submitted": 0,
                     "assignments_approved": 0,
-                    "created_at": time.time(),
+                    "created_at": created_at,
                     "status": "active",
                 }
+            
+            # Track timing for statistics
+            with self.timing_lock:
+                if episode_id not in self.hit_timing_stats:
+                    self.hit_timing_stats[episode_id] = {}
+                self.hit_timing_stats[episode_id][state_id] = {
+                    "created_at": created_at,
+                    "completed_at": None,
+                    "max_assignments": max_assignments,
+                    "duration_seconds": None,
+                }
+            
+            # Save timing stats to file
+            self._save_timing_stats()
 
             env = "sandbox" if self.sandbox else "production"
             base_url = "workersandbox.mturk.com" if self.sandbox else "worker.mturk.com"
@@ -228,6 +309,9 @@ class MTurkManager:
                     self.hit_tracking[key]["status"] = "complete"
                     hit_id = self.hit_tracking[key]["hit_id"]
                     
+                    # Mark HIT as completed in timing stats
+                    self._mark_hit_completed(episode_id, state_id)
+                    
                     # Expire the HIT immediately to prevent more workers from accepting
                     try:
                         self.mturk_client.update_expiration_for_hit(
@@ -238,6 +322,22 @@ class MTurkManager:
                     except ClientError as e:
                         print(f"⚠️  Failed to expire HIT {hit_id}: {e}")
 
+    def _mark_hit_completed(self, episode_id: int, state_id: int):
+        """Mark HIT as completed and compute duration."""
+        with self.timing_lock:
+            if episode_id in self.hit_timing_stats and state_id in self.hit_timing_stats[episode_id]:
+                timing = self.hit_timing_stats[episode_id][state_id]
+                if timing["completed_at"] is None:  # Only mark once
+                    timing["completed_at"] = time.time()
+                    timing["duration_seconds"] = timing["completed_at"] - timing["created_at"]
+                    
+                    # Log completion
+                    print(f"HIT completed: Episode {episode_id}, State {state_id} - "
+                          f"{timing['duration_seconds']:.1f}s for {timing['max_assignments']} assignments")
+        
+        # Save updated timing stats to file
+        self._save_timing_stats()
+    
     def _approval_worker(self):
         """Background thread that auto-approves all submitted assignments."""
         while self.running:
@@ -380,9 +480,37 @@ class MTurkManager:
             print(f"🧹 Cleaning up old HIT: episode={episode_id}, state={state_id}")
             self.delete_hit(episode_id, state_id)
 
+    def print_timing_summary(self):
+        """Print location of timing statistics file."""
+        print(f"\nMTurk HIT timing statistics saved to: {self.timing_file}")
+        
+        with self.timing_lock:
+            if not self.hit_timing_stats:
+                print("No HIT timing data available.")
+                return
+            
+            # Count completed HITs
+            completed_count = sum(
+                1 for states in self.hit_timing_stats.values()
+                for timing in states.values()
+                if timing["completed_at"] is not None
+            )
+            total_count = sum(
+                len(states) for states in self.hit_timing_stats.values()
+            )
+            
+            print(f"Total HITs: {total_count} ({completed_count} completed, {total_count - completed_count} pending)")
+    
     def shutdown(self):
         """Shutdown MTurk manager and stop approval worker."""
+        print("Shutting down MTurk manager...")
+        
+        # Save final timing stats and print summary
+        self._save_timing_stats()
+        self.print_timing_summary()
+        
         self.running = False
         if self.approval_thread.is_alive():
             self.approval_thread.join(timeout=5)
-        print("🛑 MTurk manager shutdown")
+        print("MTurk manager shutdown")
+
