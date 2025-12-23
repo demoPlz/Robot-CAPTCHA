@@ -189,6 +189,9 @@ def control_robot(cfg: ControlPipelineConfig):
     # Use the crowd interface config to create CrowdInterface
     crowd_interface = CrowdInterface(**_CROWD_CONFIG.to_crowd_interface_kwargs())
     crowd_interface.init_cameras()
+    
+    # Register cleanup handlers to ensure workers are killed on exit
+    crowd_interface.register_cleanup_handlers()
 
     app = create_flask_app(crowd_interface)
     # Use a controllable WSGI server instead of app.run() in a daemon thread.
@@ -204,6 +207,9 @@ def control_robot(cfg: ControlPipelineConfig):
 
     if robot.is_connected:
         robot.disconnect()
+    
+    # Explicitly shutdown crowd_interface
+    crowd_interface.shutdown()
 
     print("Data Collection Completed")
 

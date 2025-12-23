@@ -578,6 +578,11 @@ class StateManager:
             goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
             state_info["actions"].append(goal_positions)
+            
+            # Track actual number of unique worker submissions (not including autofill)
+            if "actual_num_submissions" not in state_info:
+                state_info["actual_num_submissions"] = 0
+            state_info["actual_num_submissions"] += 1
 
             # Autofill
             if state_info["critical"] and self.autofill_critical_states:
@@ -1276,51 +1281,38 @@ class StateManager:
                     print(f"⚠️  No actions available to resample from")
                     return None
 
-                # Filter out already executed actions
-                remaining_actions = [
+                # Filter out already executed actions (keep duplicates for now)
+                remaining_actions_with_dupes = [
                     action
                     for action in available_actions
                     if not any(torch.equal(action, executed) for executed in already_executed)
                 ]
 
-                if not remaining_actions:
+                if not remaining_actions_with_dupes:
                     print(f"⚠️  All actions have been executed, cannot resample")
                     print(f"    Consider classifying as new state instead")
                     return None
 
+                # Deduplicate remaining actions for selection
+                remaining_unique = []
+                for action in remaining_actions_with_dupes:
+                    if not any(torch.equal(action, unique_a) for unique_a in remaining_unique):
+                        remaining_unique.append(action)
+
                 print(
-                    f"🎲 Resampling from {len(remaining_actions)} remaining actions (out of {len(available_actions)} total)"
+                    f"🎲 Resampling from {len(remaining_unique)} unique actions (out of {len(remaining_actions_with_dupes)} remaining submissions)"
                 )
 
-                # Use action selector to pick from remaining actions
-                # Need to compute propensity accounting for the filtering
+                # Use action selector to pick from deduplicated remaining actions
                 selected_action, base_propensity, selection_metadata = self.action_selector.select_action(
-                    remaining_actions, state_info
+                    remaining_unique, state_info
                 )
 
-                # Adjust propensity to account for filtering out already-executed actions
-                # P(a|s, not executed before) = P(a|s) / P(not executed before | s)
-                # where P(not executed before | s) = sum over remaining actions of P(a|s)
-
-                # For proper importance weighting, we need to compute the conditional propensity
-                # This requires getting propensities for all remaining actions
-                remaining_propensities = self._get_propensities_for_actions(remaining_actions, state_info)
-
-                # The conditional propensity given we're sampling from remaining actions
-                total_remaining_propensity = sum(remaining_propensities)
-
-                # Find the propensity of the selected action among remaining actions
-                selected_idx = None
-                for idx, action in enumerate(remaining_actions):
-                    if torch.equal(action, selected_action):
-                        selected_idx = idx
-                        break
-
-                if selected_idx is None:
-                    print(f"⚠️  Selected action not found in remaining actions")
-                    return None
-
-                conditional_propensity = remaining_propensities[selected_idx] / total_remaining_propensity
+                # Compute propensity as submission frequency among actual worker submissions
+                # This is the correct importance weight for learning (not counting autofilled clones)
+                actual_total_submissions = state_info.get("actual_num_submissions", len(available_actions))
+                count_selected = sum(1 for a in available_actions if torch.equal(a, selected_action))
+                conditional_propensity = count_selected / actual_total_submissions
 
                 # Update state info with new selection
                 # Move selected action to front
@@ -1370,8 +1362,9 @@ class StateManager:
                 )
 
                 print(f"🎯 Resampled action using {selection_metadata['selector_used']} selector")
-                print(f"   Conditional propensity: {conditional_propensity:.4f}")
-                print(f"   (Base propensity: {base_propensity:.4f}, Remaining mass: {total_remaining_propensity:.4f})")
+                print(f"   Propensity (submission frequency): {conditional_propensity:.4f}")
+                actual_total = state_info.get("actual_num_submissions", len(available_actions))
+                print(f"   (Selector propensity from {len(remaining_unique)} unique: {base_propensity:.4f}, appears {count_selected}/{actual_total} times in actual submissions)")
 
             return {
                 "classified_as_new_state": False,
@@ -1603,24 +1596,28 @@ class StateManager:
                 break
                 
             # Check if we have more actions to sample
-            remaining_actions = [a for a in available_actions if not any(torch.equal(a, r["action"]) for r in reviewed_actions)]
-            if not remaining_actions:
+            remaining_actions_with_dupes = [a for a in available_actions if not any(torch.equal(a, r["action"]) for r in reviewed_actions)]
+            if not remaining_actions_with_dupes:
                 print(f"⚠️  No more actions to review (reviewed {num_reviewed}, approved {num_approved})")
                 break
+            
+            # Deduplicate remaining actions for selection
+            remaining_unique = []
+            for action in remaining_actions_with_dupes:
+                if not any(torch.equal(action, unique_a) for unique_a in remaining_unique):
+                    remaining_unique.append(action)
                 
-            # Sample next action from remaining (deduplicated) actions
+            # Sample next action from deduplicated remaining actions
             selected_action, selector_propensity, selection_metadata = self.action_selector.select_action(
-                remaining_actions, state_info
+                remaining_unique, state_info
             )
             
-            # Compute true propensity: P(select this action from remaining) × P(this action in submissions)
-            # Count how many times selected_action appears in original submissions
+            # Compute true propensity as submission frequency
+            # Propensity = (number of times this action appears) / (total number of actual submissions)
+            # This is the correct importance weight for learning from crowd data
+            actual_total_submissions = state_info.get("actual_num_submissions", len(available_actions))
             count_selected = sum(1 for a in available_actions if torch.equal(a, selected_action))
-            crowd_frequency = count_selected / len(available_actions)
-            
-            # True propensity = selector's probability × crowd frequency
-            # This accounts for both the selector's sampling behavior AND the crowd's submission distribution
-            true_propensity = selector_propensity * crowd_frequency
+            true_propensity = count_selected / actual_total_submissions
             
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:

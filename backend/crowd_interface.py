@@ -1,11 +1,14 @@
-"""
+"""      
 CrowdInterface - Main Backend Interface
 
 Coordinates all subsystem managers to provide an API for crowd-sourced robot data collection.
 """
 
+import atexit
 import base64
 import os
+import signal
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -13,6 +16,14 @@ from threading import Lock
 
 import numpy as np
 import torch
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("⚠️  psutil not available - process cleanup will be limited")
+
 from hardware_config import CAM_IDS, REAL_CALIB_PATHS, SIM_CALIB_PATHS
 from interface_managers.action_selector_manager import ActionSelectorManager
 from interface_managers.calibration_manager import CalibrationManager
@@ -94,6 +105,10 @@ class CrowdInterface:
         mturk_keywords: str = "robot, manipulation, annotation, simulation",
         mturk_external_url: str | None = None,
     ):
+
+        # --- Shutdown tracking ---
+        self._shutdown_complete = False
+        self._cleanup_registered = False
 
         # --- UI prompt mode (simple vs MANUAL) ---
         self.use_manual_prompt = bool(use_manual_prompt or int(os.getenv("USE_MANUAL_PROMPT", "0")))
@@ -907,6 +922,197 @@ class CrowdInterface:
         except Exception:
             # If not inside the repo root, return the basename as a safe hint.
             return os.path.basename(str(p))
+
+    # =========================
+    # Cleanup and Shutdown
+    # =========================
+
+    def _find_orphaned_workers(self) -> list[tuple[int, str]]:
+        """Find orphaned worker processes (Isaac Sim, pose workers) that may have been left running.
+        
+        Returns:
+            List of (pid, cmdline) tuples for orphaned workers
+        """
+        if not HAS_PSUTIL:
+            print("⚠️  psutil not available - cannot scan for orphaned workers")
+            return []
+        
+        orphaned = []
+        current_pid = os.getpid()
+        
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'ppid']):
+                try:
+                    cmdline = proc.info.get('cmdline', [])
+                    if not cmdline:
+                        continue
+                    
+                    cmdline_str = ' '.join(cmdline)
+                    
+                    # Look for Isaac Sim workers
+                    if 'isaac_sim_worker.py' in cmdline_str or 'persistent_isaac_sim_worker.py' in cmdline_str:
+                        # Check if it's a zombie (parent is init or doesn't exist)
+                        ppid = proc.info.get('ppid', 0)
+                        if ppid == 1 or ppid == current_pid:
+                            orphaned.append((proc.info['pid'], cmdline_str))
+                            continue
+                        
+                        # Check if parent still exists
+                        try:
+                            psutil.Process(ppid)
+                        except psutil.NoSuchProcess:
+                            orphaned.append((proc.info['pid'], cmdline_str))
+                    
+                    # Look for pose workers (any6d environment)
+                    if 'pose_worker.py' in cmdline_str and 'any6d' in cmdline_str:
+                        ppid = proc.info.get('ppid', 0)
+                        if ppid == 1 or ppid == current_pid:
+                            orphaned.append((proc.info['pid'], cmdline_str))
+                            continue
+                        
+                        try:
+                            psutil.Process(ppid)
+                        except psutil.NoSuchProcess:
+                            orphaned.append((proc.info['pid'], cmdline_str))
+                
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        
+        except Exception as e:
+            print(f"⚠️  Error scanning for orphaned workers: {e}")
+        
+        return orphaned
+
+    def _kill_orphaned_workers(self):
+        """Find and kill any orphaned worker processes."""
+        orphaned = self._find_orphaned_workers()
+        
+        if not orphaned:
+            print("✓ No orphaned worker processes found")
+            return
+        
+        print(f"🧹 Found {len(orphaned)} orphaned worker process(es)")
+        for pid, cmdline in orphaned:
+            # Truncate long command lines for display
+            short_cmd = cmdline[:100] + '...' if len(cmdline) > 100 else cmdline
+            print(f"   PID {pid}: {short_cmd}")
+        
+        # Kill them
+        for pid, cmdline in orphaned:
+            try:
+                if HAS_PSUTIL:
+                    proc = psutil.Process(pid)
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                        print(f"✓ Terminated orphaned worker PID {pid}")
+                    except psutil.TimeoutExpired:
+                        proc.kill()
+                        print(f"✓ Force killed orphaned worker PID {pid}")
+                else:
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(0.5)
+                    try:
+                        os.kill(pid, 0)  # Check if still alive
+                        os.kill(pid, signal.SIGKILL)
+                        print(f"✓ Force killed orphaned worker PID {pid}")
+                    except ProcessLookupError:
+                        print(f"✓ Terminated orphaned worker PID {pid}")
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                print(f"✓ Worker PID {pid} already gone")
+            except Exception as e:
+                print(f"⚠️  Failed to kill worker PID {pid}: {e}")
+
+    def shutdown(self):
+        """Gracefully shutdown all managers and worker processes.
+        
+        This method:
+        1. Stops all managed workers (pose estimation, webcam, observation stream)
+        2. Shuts down Isaac Sim simulation
+        3. Closes MTurk connection
+        4. Scans for and kills any orphaned worker processes
+        """
+        if self._shutdown_complete:
+            return
+        
+        print("\\n🛑 Starting CrowdInterface shutdown...")
+        
+        # Stop pose estimation workers
+        if hasattr(self, 'pose_estimation_manager') and self.pose_estimation_manager:
+            try:
+                print("Stopping pose estimation workers...")
+                self.pose_estimation_manager.stop()
+            except Exception as e:
+                print(f"⚠️  Error stopping pose estimation manager: {e}")
+        
+        # Stop webcam manager
+        if hasattr(self, 'webcam_manager') and self.webcam_manager:
+            try:
+                print("Stopping webcam manager...")
+                self.webcam_manager.stop()
+            except Exception as e:
+                print(f"⚠️  Error stopping webcam manager: {e}")
+        
+        # Stop observation stream manager
+        if hasattr(self, 'obs_stream') and self.obs_stream:
+            try:
+                print("Stopping observation stream manager...")
+                self.obs_stream.stop()
+            except Exception as e:
+                print(f"⚠️  Error stopping observation stream manager: {e}")
+        
+        # Shutdown simulation
+        if hasattr(self, 'sim_manager') and self.sim_manager:
+            try:
+                print("Shutting down simulation...")
+                self.sim_manager.shutdown()
+            except Exception as e:
+                print(f"⚠️  Error shutting down sim manager: {e}")
+        
+        # Shutdown MTurk connection
+        if hasattr(self, 'mturk_manager') and self.mturk_manager:
+            try:
+                print("Shutting down MTurk connection...")
+                self.mturk_manager.shutdown()
+            except Exception as e:
+                print(f"⚠️  Error shutting down MTurk manager: {e}")
+        
+        # Kill any orphaned workers that might have been missed
+        print("Scanning for orphaned worker processes...")
+        self._kill_orphaned_workers()
+        
+        self._shutdown_complete = True
+        print("✅ CrowdInterface shutdown complete\\n")
+
+    def register_cleanup_handlers(self):
+        """Register cleanup handlers for graceful shutdown on exit/interrupt.
+        
+        This should be called once after CrowdInterface initialization to ensure
+        workers are cleaned up even on unexpected exits.
+        """
+        if self._cleanup_registered:
+            return
+        
+        def cleanup_handler():
+            """Cleanup handler for atexit."""
+            if not self._shutdown_complete:
+                self.shutdown()
+        
+        def signal_handler(signum, frame):
+            """Signal handler for SIGINT/SIGTERM."""
+            print(f"\\n⚠️  Received signal {signum}, shutting down...")
+            self.shutdown()
+            sys.exit(0)
+        
+        # Register atexit handler
+        atexit.register(cleanup_handler)
+        
+        # Register signal handlers
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        self._cleanup_registered = True
+        print("✓ Cleanup handlers registered (atexit, SIGINT, SIGTERM)")
 
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality."""

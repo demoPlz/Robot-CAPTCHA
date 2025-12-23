@@ -209,7 +209,7 @@ class PoseEstimationManager:
         # Spawn ONE persistent worker per object (parallel processing)
         print("🔄 Starting pose estimation workers (one per object)...")
 
-        # Track ready status for each worker (True=ready, False=pending, None=failed)
+        # Track ready status for each worker (True=ready, False=pending, None=failed)   
         # Only spawn workers for objects in self.objects (filter by presence in objects dict)
         workers_status = {obj: False for obj in self.object_mesh_paths.keys() if not self.objects or obj in self.objects}
         status_lock = Lock()
@@ -502,12 +502,40 @@ class PoseEstimationManager:
             time.sleep(0.02)
 
     def stop(self):
-        """Stop all pose worker processes."""
+        """Stop all pose worker processes.
+        
+        Attempts graceful termination first (SIGTERM), then force kills (SIGKILL) if needed.
+        """
+        if not self._pose_worker_procs:
+            return
+        
+        print(f"🛑 Stopping {len(self._pose_worker_procs)} pose worker(s)...")
+        
         for obj, proc in self._pose_worker_procs.items():
             try:
+                # Check if already dead
+                if proc.poll() is not None:
+                    print(f"✓ Pose worker for '{obj}' already terminated")
+                    continue
+                
+                # Try graceful termination
                 proc.terminate()
-                proc.wait(timeout=2.0)
-                print(f"✓ Pose worker for '{obj}' stopped")
+                try:
+                    proc.wait(timeout=2.0)
+                    print(f"✓ Pose worker for '{obj}' stopped gracefully")
+                except subprocess.TimeoutExpired:
+                    # Force kill if termination times out
+                    print(f"⚠️  Pose worker for '{obj}' didn't respond to SIGTERM, force killing...")
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+                    print(f"✓ Pose worker for '{obj}' force killed")
             except Exception as e:
-                print(f"⚠️  Failed to stop pose worker for '{obj}': {e}")
+                print(f"⚠️  Error stopping pose worker for '{obj}': {e}")
+                # Try to force kill anyway
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        
         self._pose_worker_procs.clear()
+        print("✅ All pose workers stopped")

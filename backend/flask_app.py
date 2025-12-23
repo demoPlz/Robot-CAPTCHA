@@ -813,6 +813,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/set-critical", methods=["POST"])
+    def set_last_state_critical():
+        """Manually mark the last state as critical."""
+        try:
+            crowd_interface.set_last_state_to_critical()
+            return jsonify({"status": "success", "message": "Last state marked as critical"})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/control/mark-state-as-end", methods=["POST"])
     def mark_state_as_end():
         """Mark a specific critical state with 'End.' prompt, auto-filling it with current position.

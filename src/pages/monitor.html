@@ -78,6 +78,8 @@
         .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
         .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
         .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
+        .mark-critical-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
+        .mark-critical-btn:hover { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
         .control-icon { font-size:20px; }
 
         /* Episode charts */
@@ -479,6 +481,7 @@
                 </div>
                 <div class="control-section">
                     <div class="control-buttons">
+                        <button class="control-button mark-critical-btn" id="mark-critical-btn"><span class="control-icon">⭐</span>Mark as Critical</button>
                         <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
                         <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
@@ -754,6 +757,7 @@
         const fastForwardBtn = document.getElementById('fast-forward-btn');
         const rerecordBtn    = document.getElementById('rerecord-btn');
         const stopBtn        = document.getElementById('stop-btn');
+        const markCriticalBtn = document.getElementById('mark-critical-btn');
 
         // Approval modal elements
         const approvalModal = document.getElementById('approval-modal');
@@ -2246,9 +2250,23 @@
             } catch (e) { console.error(e); }
             finally { b.classList.remove('loading'); b.disabled = false; }
         }
+        async function handleMarkCritical() {
+            const b = markCriticalBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/set-critical`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const j = await r.json();
+                if (j.status === 'success') {
+                    console.log('✓ Last state marked as critical');
+                } else {
+                    console.error('Failed:', j.message);
+                }
+            } catch (e) { console.error(e); }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
         fastForwardBtn.addEventListener('click', handleFastForward);
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
+        markCriticalBtn.addEventListener('click', handleMarkCritical);
 
         // === NEW: Critical-only toggle logic ===
         let criticalOnlyMode = true; // Default to Critical only

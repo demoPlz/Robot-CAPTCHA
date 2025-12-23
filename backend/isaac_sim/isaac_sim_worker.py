@@ -12,6 +12,23 @@ import traceback
 from PIL import Image
 
 
+def safe_print(*args, **kwargs):
+    """Print with BrokenPipeError protection for long-running Isaac Sim workers.
+    
+    When the parent process closes stdout pipe, print() will fail. This wrapper
+    catches the error and tries stderr as fallback, preventing worker crashes.
+    """
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        # Parent closed stdout - try stderr
+        import sys
+        try:
+            print(*args, **kwargs, file=sys.stderr)
+        except:
+            pass  # Silently continue if both fail
+
+
 class AnimationFrameCache:
     """Cache system for storing and replaying animation frames efficiently."""
 
@@ -303,17 +320,17 @@ class IsaacSimWorker:
             # CRITICAL: We only hide visually, NOT disable physics
             # Disabling physics invalidates the simulation view and breaks set_joint_positions()
             set_prim_visibility(self.robot_prim, False)
-            print("[Worker] ✓ Hidden robot (visually only, physics still active)")
+            safe_print("[Worker] ✓ Hidden robot (visually only, physics still active)")
 
         def show_robot():
             """Show robot visually."""
             set_prim_visibility(self.robot_prim, True)
-            print("[Worker] ✓ Restored robot visibility")
+            safe_print("[Worker] ✓ Restored robot visibility")
 
         self.hide_robot_funcs = {"hide": hide_robot, "show": show_robot}
 
         self.simulation_initialized = True
-        print("Simulation initialized successfully - ready for state updates")
+        safe_print("Simulation initialized successfully - ready for state updates")
 
     def set_robot_joints(self):
         import numpy as np
