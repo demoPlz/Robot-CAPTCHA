@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 3
+        self.required_approvals_per_critical_state: int = 2
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
@@ -87,9 +87,9 @@ class CrowdInterfaceConfig:
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
         # ========== MTurk Integration ==========
-        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
-        self.mturk_sandbox: bool = True  # Use MTurk sandbox (False for production)
-        self.mturk_reward: float = 0.00  # Payment per assignment in USD
+        self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
+        self.mturk_sandbox: bool = False  # Use MTurk sandbox (False for production)
+        self.mturk_reward: float = 0.25  # Payment per assignment in USD
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment (3 minutes)
         self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
         self.mturk_auto_approval_delay_seconds: int = 60  # Auto-approve after 1 minute
