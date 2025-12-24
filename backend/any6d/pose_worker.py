@@ -490,8 +490,8 @@ def main():
                 K=K,
                 pose_out=out,
                 axis_scale=0.05,
-                depth_min=0.1,
-                depth_max=1.0,
+                depth_min=100.0,  # Depth is in millimeters, so 100mm = 0.1m
+                depth_max=1000.0,  # 1000mm = 1.0m
                 overlay_mask=True,
             )
 
