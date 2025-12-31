@@ -86,6 +86,7 @@ class CrowdInterface:
         enable_tutorial_state_capture: bool = False,
         # --- sim ---
         use_sim: bool = True,
+        use_gpu_physics: bool = False,
         max_animation_users: int = 2,
         usd_path: str | None = None,
         # --- objects ---
@@ -126,6 +127,7 @@ class CrowdInterface:
 
         # --- Sim ---
         self.use_sim = use_sim
+        self.use_gpu_physics = use_gpu_physics
         self.max_animation_users = max_animation_users
         self.usd_path = usd_path
 
@@ -222,6 +224,7 @@ class CrowdInterface:
         # Sim manager
         self.sim_manager = SimManager(
             use_sim=self.use_sim,
+            use_gpu_physics=self.use_gpu_physics,
             task_name=task_name,
             usd_path=self.usd_path,
             obs_cache_root=self._obs_cache_root,
@@ -672,7 +675,7 @@ class CrowdInterface:
         return (Path(__file__).resolve().parent / ".." / "data" / "prompts").resolve()
 
     def _task_dir(self, task_name: str | None = None) -> Path:
-        tn = task_name or self.task_name()
+        tn = task_name or self.task_name
         return (self._prompts_root_dir() / tn).resolve()
 
     def _parse_description_bank_entries(self, file_path: str) -> list[dict]:
@@ -704,7 +707,7 @@ class CrowdInterface:
         video number.
 
         """
-        task_name = self.task_name
+        task_name = self.task_name  # task_name is an attribute, not a method
         if not task_name:
             print("Warning: No task name set, cannot load description bank")
             return {"raw_text": "", "entries": []}
@@ -964,19 +967,16 @@ class CrowdInterface:
                     
                     cmdline_str = ' '.join(cmdline)
                     
-                    # Look for Isaac Sim workers
-                    if 'isaac_sim_worker.py' in cmdline_str or 'persistent_isaac_sim_worker.py' in cmdline_str:
-                        # Check if it's a zombie (parent is init or doesn't exist)
-                        ppid = proc.info.get('ppid', 0)
-                        if ppid == 1 or ppid == current_pid:
-                            orphaned.append((proc.info['pid'], cmdline_str))
-                            continue
-                        
-                        # Check if parent still exists
-                        try:
-                            psutil.Process(ppid)
-                        except psutil.NoSuchProcess:
-                            orphaned.append((proc.info['pid'], cmdline_str))
+                    # Look for Isaac Sim workers and related processes
+                    is_isaac_worker = (
+                        'isaac_sim_worker.py' in cmdline_str or 
+                        'persistent_isaac_sim_worker.py' in cmdline_str or
+                        ('python' in cmdline_str and 'isaac' in cmdline_str.lower())
+                    )
+                    
+                    if is_isaac_worker:
+                        # Add all Isaac Sim workers - we'll clean them up
+                        orphaned.append((proc.info['pid'], cmdline_str))
                     
                     # Look for pose workers (any6d environment)
                     if 'pose_worker.py' in cmdline_str and 'any6d' in cmdline_str:

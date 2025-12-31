@@ -690,6 +690,40 @@
                         </div>
                     </div>
                 </div>
+                
+                <!-- Prompt Selection (inline) -->
+                <div style="margin-top: 20px; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+                    <div class="field-label" style="font-weight: 600; margin-bottom: 12px;">📝 Select Prompt & Demo Video:</div>
+                    
+                    <!-- Source toggle -->
+                    <div style="margin-bottom: 12px;">
+                        <div class="segmented small" id="approval-source-toggle">
+                            <button id="approval-src-bank" type="button" class="active">Pick from bank</button>
+                            <button id="approval-src-manual" type="button">Manual entry</button>
+                        </div>
+                    </div>
+
+                    <!-- BANK MODE -->
+                    <div id="approval-bank-fields">
+                        <div class="select-wrap" style="margin-bottom: 8px;">
+                            <select id="approval-description-select" class="select-el"></select>
+                        </div>
+                        <div>
+                            <div class="field-label" style="font-size: 12px; color: #64748b;">Preview:</div>
+                            <div id="approval-prompt-text" class="prompt-box" style="font-size: 13px; padding: 8px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- MANUAL MODE -->
+                    <div id="approval-manual-fields" style="display:none;">
+                        <textarea id="approval-manual-text" class="textarea" placeholder="Type the description..." style="min-height: 60px; margin-bottom: 8px;"></textarea>
+                        <input id="approval-manual-video" class="input" type="number" placeholder="Video ID (optional)" style="font-size: 13px;" />
+                    </div>
+                    
+                    <div class="kv-line" style="margin-top: 8px; font-size: 12px;">
+                        <span class="muted">Video ID:</span> <span id="approval-kv-video">-</span>
+                    </div>
+                </div>
             </div>
             <div class="approval-modal-footer">
                 <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
@@ -700,7 +734,7 @@
                         <span class="control-icon">🗑️</span> Discard Jitter States
                     </button>
                     <button class="approval-btn approval-btn-proceed" id="approval-proceed-btn">
-                        <span class="control-icon">✅</span> Proceed
+                        <span class="control-icon">✅</span> Approve & Set Prompt
                     </button>
                 </div>
                 <button class="approval-btn" id="approval-mark-end-btn" style="background: linear-gradient(135deg, #8b5cf6, #6d28d9); font-size: 13px; padding: 10px 20px; min-width: auto;">
@@ -929,7 +963,20 @@
         const manualTextEl    = document.getElementById('modal-manual-text');
         const manualVideoEl   = document.getElementById('modal-manual-video');
 
+        // Approval modal prompt selection elements
+        const approvalSrcToggleEl = document.getElementById('approval-source-toggle');
+        const approvalSrcBankBtn = document.getElementById('approval-src-bank');
+        const approvalSrcManualBtn = document.getElementById('approval-src-manual');
+        const approvalBankFieldsEl = document.getElementById('approval-bank-fields');
+        const approvalManualFieldsEl = document.getElementById('approval-manual-fields');
+        const approvalDescriptionSelect = document.getElementById('approval-description-select');
+        const approvalPromptText = document.getElementById('approval-prompt-text');
+        const approvalManualText = document.getElementById('approval-manual-text');
+        const approvalManualVideo = document.getElementById('approval-manual-video');
+        const approvalKvVideo = document.getElementById('approval-kv-video');
+
         let modalContext = { episodeId:null, stateId:null, selectedVideoId:null, selectedText:null, bank:[] };
+        let approvalPromptContext = { selectedVideoId:null, selectedText:null, bank:[] };
 
         let isManualMode = false;
         function setSourceMode(manual) {
@@ -941,6 +988,36 @@
         }
         srcBankBtn.addEventListener('click',  () => setSourceMode(false));
         srcManualBtn.addEventListener('click', () => setSourceMode(true));
+
+        // Approval modal source toggle
+        let isApprovalManualMode = false;
+        function setApprovalSourceMode(manual) {
+            isApprovalManualMode = !!manual;
+            approvalSrcBankBtn.classList.toggle('active', !manual);
+            approvalSrcManualBtn.classList.toggle('active', manual);
+            approvalBankFieldsEl.style.display = manual ? 'none' : '';
+            approvalManualFieldsEl.style.display = manual ? '' : 'none';
+        }
+        approvalSrcBankBtn.addEventListener('click', () => setApprovalSourceMode(false));
+        approvalSrcManualBtn.addEventListener('click', () => setApprovalSourceMode(true));
+
+        // Approval dropdown change handler
+        approvalDescriptionSelect.addEventListener('change', () => {
+            const selId = Number(approvalDescriptionSelect.value);
+            const item = approvalPromptContext.bank.find(x => x.id === selId);
+            if (item) {
+                approvalPromptContext.selectedVideoId = item.id;
+                approvalPromptContext.selectedText = item.thus_text;
+                approvalPromptText.textContent = item.thus_text;
+                approvalKvVideo.textContent = String(item.id);
+            }
+        });
+
+        // Approval manual video input handler
+        approvalManualVideo.addEventListener('input', () => {
+            const v = approvalManualVideo.value.trim();
+            approvalKvVideo.textContent = v === '' ? '-' : v;
+        });
 
         // Keep kv video id in sync in manual mode
         if (manualVideoEl) {
@@ -1512,6 +1589,39 @@
                 approvalPrevImage.alt = 'No previous critical state';
             }
             
+            // Load description bank for prompt selection
+            try {
+                const bank = await fetchDescriptionBank();
+                approvalPromptContext.bank = bank || [];
+                
+                // Populate dropdown
+                approvalDescriptionSelect.innerHTML = '';
+                for (const item of approvalPromptContext.bank) {
+                    const opt = document.createElement('option');
+                    opt.value = String(item.id);
+                    opt.textContent = `${item.id} - ${item.thus_text}`;
+                    approvalDescriptionSelect.appendChild(opt);
+                }
+                
+                // Default to first item
+                if (approvalPromptContext.bank.length > 0) {
+                    const firstItem = approvalPromptContext.bank[0];
+                    approvalPromptContext.selectedVideoId = firstItem.id;
+                    approvalPromptContext.selectedText = firstItem.thus_text;
+                    approvalPromptText.textContent = firstItem.thus_text;
+                    approvalKvVideo.textContent = String(firstItem.id);
+                    approvalDescriptionSelect.value = String(firstItem.id);
+                }
+                
+                // Reset to bank mode
+                setApprovalSourceMode(false);
+                approvalManualText.value = '';
+                approvalManualVideo.value = '';
+            } catch (e) {
+                console.error('Error loading description bank for approval:', e);
+                // Continue showing modal even if bank fails to load
+            }
+            
             approvalModal.classList.add('show');
         }
 
@@ -1528,7 +1638,42 @@
                 approvalDiscardBtn.disabled = true;
                 approvalMarkEndBtn.disabled = true;
                 
-                const response = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
+                // Get selected prompt/video
+                let textPrompt, videoId;
+                if (isApprovalManualMode) {
+                    textPrompt = approvalManualText.value.trim();
+                    const videoInput = approvalManualVideo.value.trim();
+                    videoId = videoInput ? parseInt(videoInput, 10) : null;
+                } else {
+                    textPrompt = approvalPromptContext.selectedText;
+                    videoId = approvalPromptContext.selectedVideoId;
+                }
+                
+                // Validate
+                if (!textPrompt || videoId === null || isNaN(videoId)) {
+                    showToast('❌ Please select a prompt and video ID', 2000);
+                    return;
+                }
+                
+                // First, set the prompt
+                const promptResponse = await fetch(`${API_BASE_URL}/api/update-flex-selection`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentApprovalState.episode_id,
+                        state_id: currentApprovalState.state_id,
+                        text_prompt: textPrompt,
+                        video_prompt: videoId
+                    })
+                });
+                
+                if (!promptResponse.ok) {
+                    showToast('❌ Failed to set prompt', 2000);
+                    return;
+                }
+                
+                // Then approve the state
+                const approvalResponse = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1537,8 +1682,8 @@
                     })
                 });
                 
-                if (response.ok) {
-                    showToast('✅ Critical state approved');
+                if (approvalResponse.ok) {
+                    showToast('✅ State approved with prompt');
                     currentApprovalState = null;
                     hideApprovalModal();
                 } else {

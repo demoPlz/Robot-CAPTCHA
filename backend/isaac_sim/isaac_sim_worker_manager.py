@@ -512,23 +512,41 @@ class PersistentWorkerManager:
         try:
             # Try graceful shutdown first
             command = {"action": "shutdown"}
-            self._send_command(command)
+            try:
+                self._send_command(command)
+            except Exception as e:
+                print(f"Failed to send shutdown command: {e}")
 
-            # Wait a bit for graceful shutdown
-            self.worker_process.wait(timeout=10)
-        except (TimeoutError, subprocess.TimeoutExpired):
-            print("Graceful shutdown failed, terminating...")
-            self.worker_process.terminate()
+            # Wait a bit for graceful shutdown (reduced timeout)
             try:
                 self.worker_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Force killing worker...")
-                self.worker_process.kill()
+                print("✓ Worker stopped gracefully")
+            except (TimeoutError, subprocess.TimeoutExpired):
+                print("Graceful shutdown timed out, terminating...")
+                self.worker_process.terminate()
+                try:
+                    self.worker_process.wait(timeout=3)
+                    print("✓ Worker terminated")
+                except subprocess.TimeoutExpired:
+                    print("Terminate timed out, force killing...")
+                    self.worker_process.kill()
+                    try:
+                        self.worker_process.wait(timeout=2)
+                        print("✓ Worker killed")
+                    except subprocess.TimeoutExpired:
+                        print("⚠️ Worker process may still be running")
+        except Exception as e:
+            print(f"Error during worker shutdown: {e}")
+            # Try to kill as last resort
+            try:
+                if self.worker_process:
+                    self.worker_process.kill()
+            except:
+                pass
 
         self.worker_process = None
         self.worker_ready = False
         self.simulation_initialized = False
-        print("✓ Worker stopped")
 
     def __enter__(self):
         return self

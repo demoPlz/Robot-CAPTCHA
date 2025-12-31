@@ -233,7 +233,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify(
                 {
                     "ok": True,
-                    "task_name": (crowd_interface.task_name() or "default"),
+                    "task_name": (crowd_interface.task_name or "default"),
                     "entries": bank["entries"],
                     "raw_text": bank["raw_text"],
                 }
@@ -1305,7 +1305,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         try:
             data = request.get_json() or {}
             recording_id = data.get("recording_id")
-            task_name = data.get("task_name") or crowd_interface.task_name() or "default"
+            task_name = data.get("task_name") or crowd_interface.task_name or "default"
             ext = "webm"  # VP9-only
 
             if not recording_id:

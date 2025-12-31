@@ -185,7 +185,9 @@ class DemoVideoManager:
         return (max_idx + 1) if max_idx > 0 else 1
 
     def next_video_filename(self, ext: str) -> tuple[str, int]:
-        """Return ('{index}{ext}', index) and atomically increment the counter.
+        """Return ('{index}{ext}', index) by scanning directory for next available number.
+
+        This allows manual deletion of videos and continuing from that slot.
 
         Args:
             ext: File extension (e.g., ".webm" or "webm")
@@ -196,10 +198,12 @@ class DemoVideoManager:
         """
         if not ext.startswith("."):
             ext = "." + ext
+        
         with self._video_index_lock:
-            idx = self._video_index
-            self._video_index += 1
-        return f"{idx}{ext}", idx
+            # Always compute the next available index by scanning the directory
+            # This allows users to delete videos and continue from that number
+            idx = self._compute_next_video_index()
+            return f"{idx}{ext}", idx
 
     def find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
         """

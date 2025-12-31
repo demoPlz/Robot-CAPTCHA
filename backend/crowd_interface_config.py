@@ -44,8 +44,8 @@ class CrowdInterfaceConfig:
         self.num_autofill_actions: int | None = 3
 
         # ========== UI Prompting ==========
-        self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state
-        self.show_demo_videos: bool = False  # Display reference videos to users
+        self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state (require monitor.html approval before serving)
+        self.show_demo_videos: bool = True  # Display reference videos to users
 
         # ========== Tutorial State Capture ==========
         self.enable_tutorial_state_capture: bool = True  # Show UI to save states for tutorial HITs
@@ -400,6 +400,7 @@ class CrowdInterfaceConfig:
             "enable_tutorial_state_capture": self.enable_tutorial_state_capture,
             # Simulation
             "use_sim": self.use_sim,
+            "use_gpu_physics": self.use_gpu_physics,
             "max_animation_users": self.max_animation_users,
             "usd_path": self.usd_path,
             # Object tracking

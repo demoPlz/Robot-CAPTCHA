@@ -2000,15 +2000,39 @@ const CanvasRecording = (() => {
                         : (n===2) ? {rows:1,cols:2}
                         :           {rows:2,cols:2};
 
-    const W = cols * cellW, H = rows * cellH;
+    const mainW = cols * cellW, mainH = rows * cellH;
 
-    // row-major placement
+    // row-major placement for main sim views
     const cells = [];
     for (let i=0;i<n;i++){
       const r = Math.floor(i/cols), c = i%cols;
       cells.push({ x: c*cellW, y: r*cellH, w: cellW, h: cellH, view: vs[i] });
     }
-    return { W, H, cells };
+
+    // Add webcam views if in MR mode
+    const webcamVs = Array.from(webcamViews.values());
+    const nWebcam = webcamVs.length;
+    
+    if (MR_MODE_ENABLED && nWebcam > 0) {
+      // Webcam column on the right side
+      const webcamColW = 375; // same as sim cell width
+      const webcamCellH = mainH / nWebcam; // divide height evenly
+      
+      for (let i = 0; i < nWebcam; i++) {
+        cells.push({
+          x: mainW,
+          y: i * webcamCellH,
+          w: webcamColW,
+          h: webcamCellH,
+          view: webcamVs[i]
+        });
+      }
+      
+      // Total width includes webcam column
+      return { W: mainW + webcamColW, H: mainH, cells };
+    }
+
+    return { W: mainW, H: mainH, cells };
   }
 
   function ensureCanvas(){
@@ -2035,17 +2059,17 @@ const CanvasRecording = (() => {
     ctx.drawImage(img, sx, sy, tw, th);
   }
 
-  // pointer → compositor coordinates (relative to the views grid only)
+  // pointer → compositor coordinates (relative to the entire content area including webcams)
   function setupPointerTracking(){
-    const grid = viewsGrid; // your element that visually holds the 4 views
-    grid.addEventListener('pointermove', (e) => {
-      const r = grid.getBoundingClientRect();
+    const container = contentContainer; // holds both viewsGrid and webcamColumn
+    container.addEventListener('pointermove', (e) => {
+      const r = container.getBoundingClientRect();
       cursor.x = (e.clientX - r.left);
       cursor.y = (e.clientY - r.top);
     }, { passive: true });
-    grid.addEventListener('pointerleave', () => { cursor.x = -1; cursor.y = -1; });
-    grid.addEventListener('pointerdown', () => { cursor.down = true; });
-    grid.addEventListener('pointerup',   () => { cursor.down = false; });
+    container.addEventListener('pointerleave', () => { cursor.x = -1; cursor.y = -1; });
+    container.addEventListener('pointerdown', () => { cursor.down = true; });
+    container.addEventListener('pointerup',   () => { cursor.down = false; });
   }
 
   function drawCursor(){
@@ -2093,6 +2117,12 @@ const CanvasRecording = (() => {
   function ensureSnapshotImg(view, dataUrl){
     if (view._snapshotImg) return;
     const img = new Image();
+    img.onload = () => {
+      console.log(`📸 Snapshot image loaded for ${view.name || 'unnamed view'}: ${img.width}x${img.height}`);
+    };
+    img.onerror = (e) => {
+      console.error(`❌ Failed to load snapshot image for ${view.name || 'unnamed view'}:`, e);
+    };
     img.src = dataUrl;
     view._snapshotImg = img;
   }
@@ -2229,7 +2259,10 @@ const CanvasRecording = (() => {
       if (!v || !v.container) continue;
 
       // Gripper HUD (status pill + toggle) - skip if disabled
-      const gripDisabled = taskCompletedSelected || !slidersAtDefault();
+      // Use window scope to access variables defined later in the page
+      const taskCompleted = (typeof window.taskCompletedSelected !== 'undefined') ? window.taskCompletedSelected : false;
+      const atDefaults = (typeof window.slidersAtDefault === 'function') ? window.slidersAtDefault() : true;
+      const gripDisabled = taskCompleted || !atDefaults;
       if (v.hudGrip && !gripDisabled) drawGripHUD(ctx, v, cell.x, cell.y);
 
       // Reset icon (24x24 viewBox)
@@ -2308,8 +2341,17 @@ const CanvasRecording = (() => {
 
     // Make sure each view has a snapshot <img>
     // We have the dataURL in the state; your code passed it into createViewRenderer as imageSrc
+    console.log('[CanvasRecording] Setting up snapshots. views.size:', views.size, 'webcamViews.size:', webcamViews.size);
     views.forEach((v, name) => {
       const url = window.__INIT_STATE?.views?.[name];
+      console.log(`[CanvasRecording] Sim view ${name}: has URL=${!!url}`);
+      if (url) ensureSnapshotImg(v, url);
+    });
+
+    // Also set up webcam view snapshots
+    webcamViews.forEach((v, name) => {
+      const url = window.__INIT_STATE?.views?.[name];
+      console.log(`[CanvasRecording] Webcam view ${name}: has URL=${!!url}`);
       if (url) ensureSnapshotImg(v, url);
     });
 
@@ -3089,6 +3131,8 @@ function calculateGridLayout(numViews) {
   if (numViews === 2) return { rows: 1, cols: 2 };
   if (numViews === 3) return { rows: 2, cols: 2 }; // 2 on top, 1 on bottom
   if (numViews === 4) return { rows: 2, cols: 2 };
+  if (numViews === 5) return { rows: 2, cols: 3 }; // 3 on top, 2 on bottom
+  if (numViews === 6) return { rows: 2, cols: 3 }; // 3 per row
   // For more views, calculate a reasonable grid
   const cols = Math.ceil(Math.sqrt(numViews));
   const rows = Math.ceil(numViews / cols);
@@ -3194,6 +3238,9 @@ function updateViewSizes() {
   } else if (numViews === 3 || numViews === 4) {
     targetWidth = 375;  // 250 * 1.5
     targetHeight = 282; // 188 * 1.5
+  } else if (numViews === 5 || numViews === 6) {
+    targetWidth = 300;  // 200 * 1.5
+    targetHeight = 225; // 150 * 1.5
   } else {
     targetWidth = 300;  // 200 * 1.5
     targetHeight = 225; // 150 * 1.5
@@ -3814,8 +3861,8 @@ loader.load(
       // Hide arrows when animating OR when robot is moved (same as gripper HUD)
       // Only check disabled state if the required variables/functions exist
       let disabled = false;
-      if (typeof taskCompletedSelected !== 'undefined' && typeof slidersAtDefault === 'function') {
-        disabled = taskCompletedSelected || !slidersAtDefault();
+      if (typeof window.taskCompletedSelected !== 'undefined' && typeof slidersAtDefault === 'function') {
+        disabled = window.taskCompletedSelected || !slidersAtDefault();
       }
       const showArrows = !animating && !disabled;
       gripArrows.forEach(arrow => {
@@ -3986,7 +4033,7 @@ loader.load(
     function updateGripperInteractivity() {
       if (!openBtn || !closeBtn) return;
 
-      if (taskCompletedSelected) {
+      if (window.taskCompletedSelected) {
         openBtn.disabled = true;
         closeBtn.disabled = true;
 
@@ -4043,7 +4090,7 @@ loader.load(
           if (gripperChanged) parts.push('gripper changed');
           taskCompletedBtn.title = `Blocked - ${parts.join(' & ')}. Reset sliders and gripper to enable.`;
         }else{
-          taskCompletedBtn.title = taskCompletedSelected
+          taskCompletedBtn.title = window.taskCompletedSelected
             ? 'Selected--task already completed--press Confirm to submit'
             : 'Not selected. Press to select, then press Confirm to submit.';
         }
@@ -4058,12 +4105,12 @@ loader.load(
 
     function recomputeLocks(){
       // Sliders are locked if TAC is selected OR the gripper is not at its original state
-      const lock = taskCompletedSelected || (gripDir !== initialGripDir);
+      const lock = window.taskCompletedSelected || (gripDir !== initialGripDir);
       setSlidersLocked(lock);
 
       // Explain why the panel is locked
       if (controlsContainer){
-        controlsContainer.title = taskCompletedSelected
+        controlsContainer.title = window.taskCompletedSelected
           ? 'Pose sliders are locked because “Task Already Completed” is selected.'
           : (gripDir !== initialGripDir ? 'Pose sliders are locked because the gripper state was changed.' : '');
       }
@@ -5057,10 +5104,10 @@ loader.load(
 
     /* Enable/disable HUD with same gating rules as before */
     function updateGripHUDInteractivity(){
-      const disabled = taskCompletedSelected || !slidersAtDefault();
-      console.log('[updateGripHUDInteractivity] disabled =', disabled, 'taskCompletedSelected =', taskCompletedSelected, 'slidersAtDefault() =', slidersAtDefault());
+      const disabled = window.taskCompletedSelected || !slidersAtDefault();
+      console.log('[updateGripHUDInteractivity] disabled =', disabled, 'window.taskCompletedSelected =', window.taskCompletedSelected, 'slidersAtDefault() =', slidersAtDefault());
       const hoverMsg = disabled
-        ? (taskCompletedSelected
+        ? (window.taskCompletedSelected
             ? 'Disabled: “Task Already Completed” is selected.'
             : 'Disabled: pose changed. Reset to default to change gripper.')
         : `Click to ${gripDir > 0 ? 'close' : 'open'} gripper`;
@@ -5192,7 +5239,7 @@ loader.load(
 
 
     function positionGripHUDs(){
-      const gripDisabled = taskCompletedSelected || !slidersAtDefault();
+      const gripDisabled = window.taskCompletedSelected || !slidersAtDefault();
       gripHUDs.forEach(({ view, el }) => {
         const cam  = view.camera;
         const rect = view.renderer.domElement.getBoundingClientRect();
@@ -5352,6 +5399,7 @@ loader.load(
     function approximatelyEqual(a,b,eps=EPS){ return Math.abs(a - b) <= eps; }
     function getChangedAxes(){ return poseAxes.filter(k => !approximatelyEqual(params[k], initialParams[k])); }
     function slidersAtDefault(){ return getChangedAxes().length === 0; }
+    window.slidersAtDefault = slidersAtDefault; // Expose for CanvasRecording
 
     function updateGoal() {
       cancelAnimationIfRunning('pose changed');
@@ -5930,7 +5978,10 @@ loader.load(
     }
 
     // Declare variables needed by initializeViews
-    let taskCompletedSelected = false;
+    // Declare on window so it's accessible from CanvasRecording closure
+    if (typeof window.taskCompletedSelected === 'undefined') {
+      window.taskCompletedSelected = false;
+    }
     let taskCompletedBtn = null;
     let verifyButtonUsed = false; // Track if Verify button has been clicked in this session
 
@@ -6053,7 +6104,7 @@ loader.load(
       }
 
       // NEW: If "Task Already Completed" is selected, POST that and exit early.
-      if (taskCompletedSelected) {
+      if (window.taskCompletedSelected) {
         try {
           const payload = {
             state_id: state.state_id,
@@ -6212,7 +6263,7 @@ loader.load(
         animateBtn.disabled = true;
         animateBtnWrapper.title = 'Specify next goal to simulate';
         animateBtn.style.pointerEvents = 'none';
-      } else if (taskCompletedSelected) {
+      } else if (window.taskCompletedSelected) {
         // Task completed is selected
         animateBtn.disabled = true;
         animateBtnWrapper.title = 'Disabled when "Task Already Completed" is selected';
@@ -6655,7 +6706,7 @@ loader.load(
       updateAnimateButtonState();
       updateVerifyButtonState();
       
-      const tacOn = taskCompletedSelected === true;
+      const tacOn = window.taskCompletedSelected === true;
       if (tacOn && animateBtn) {
         animateBtn.classList.remove('active', 'rendering');
         animateBtn.textContent = '▶ Simulate';

@@ -23,6 +23,7 @@ class SimManager:
     def __init__(
         self,
         use_sim: bool,
+        use_gpu_physics: bool,
         task_name: str | None,
         usd_path: str | None,
         obs_cache_root: Path,
@@ -38,6 +39,7 @@ class SimManager:
 
         Args:
             use_sim: Whether to use simulation
+            use_gpu_physics: Whether to use GPU physics in Isaac Sim (faster but uses more VRAM)
             task_name: Task name for USD file path (fallback if usd_path not provided)
             usd_path: Path to USD file for Isaac Sim (relative to repo root)
             obs_cache_root: Root directory for observation cache
@@ -50,6 +52,7 @@ class SimManager:
 
         """
         self.use_sim = use_sim
+        self.use_gpu_physics = use_gpu_physics
         self.task_name = task_name
         # Use provided usd_path or fall back to task_name-based path
         self.usd_path = usd_path or (f"public/assets/usd/{task_name}.usd" if task_name else None)
@@ -69,6 +72,7 @@ class SimManager:
 
         # Persistent Isaac Sim worker for reusable simulation
         self.isaac_manager = None
+        self.isaac_worker_pid = None  # Track worker PID for cleanup
 
         # Start background worker
         self._start_sim_worker()
@@ -101,6 +105,7 @@ class SimManager:
 
             initial_config = {
                 "usd_path": self.usd_path,
+                "use_gpu_physics": self.use_gpu_physics,
                 "robot_joints": [0.0] * 7,
                 "object_poses": {},  # Will be populated from pose estimation
                 "drawer_joint_positions": {},  # Will be populated from drawer tracking
@@ -109,7 +114,13 @@ class SimManager:
 
             print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
             self.isaac_manager.start_worker(initial_config)
-            print("✓ Persistent Isaac Sim worker ready")
+            
+            # Track worker PID for cleanup
+            if self.isaac_manager.worker_process:
+                self.isaac_worker_pid = self.isaac_manager.worker_process.pid
+                print(f"✓ Persistent Isaac Sim worker ready (PID: {self.isaac_worker_pid})")
+            else:
+                print("✓ Persistent Isaac Sim worker ready")
 
             print("🎮 Initializing simulation and animation...")
             self.isaac_manager.capture_initial_state(initial_config)
@@ -199,6 +210,7 @@ class SimManager:
 
             config = {
                 "usd_path": f"public/assets/usd/{self.task_name}.usd",
+                "use_gpu_physics": self.use_gpu_physics,
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": state_info.get("object_poses", {}),
@@ -438,3 +450,45 @@ class SimManager:
             print(f"⚠️ Failed to capture webcam views for ep={episode_id}, state={state_id}: {e}")
 
         return view_paths
+
+    def shutdown(self):
+        """Shutdown SimManager and clean up Isaac Sim worker process."""
+        # Guard against repeated calls
+        if hasattr(self, '_shutdown_called') and self._shutdown_called:
+            return
+        self._shutdown_called = True
+        
+        print("🛑 Shutting down SimManager...")
+        
+        # Stop sim worker thread
+        if hasattr(self, 'sim_capture_queue') and self.sim_capture_queue:
+            try:
+                self.sim_capture_queue.put(None)  # Signal worker to stop
+            except Exception as e:
+                print(f"⚠️ Error stopping sim worker queue: {e}")
+        
+        # Stop Isaac Sim worker
+        if hasattr(self, 'isaac_manager') and self.isaac_manager:
+            try:
+                if self.isaac_worker_pid:
+                    print(f"Stopping Isaac Sim worker process (PID: {self.isaac_worker_pid})...")
+                else:
+                    print("Stopping Isaac Sim worker...")
+                    
+                self.isaac_manager.stop_worker()
+                self.isaac_worker_pid = None
+                print("✓ Isaac Sim worker stopped")
+            except Exception as e:
+                print(f"⚠️ Error stopping Isaac Sim worker: {e}")
+                # Force kill if stop_worker fails
+                if self.isaac_worker_pid:
+                    try:
+                        import os
+                        import signal
+                        print(f"Force killing Isaac Sim worker (PID: {self.isaac_worker_pid})...")
+                        os.kill(self.isaac_worker_pid, signal.SIGKILL)
+                        print("✓ Isaac Sim worker force killed")
+                    except Exception as kill_error:
+                        print(f"⚠️ Failed to force kill worker: {kill_error}")
+        
+        print("✓ SimManager shutdown complete")
