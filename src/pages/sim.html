@@ -1071,6 +1071,18 @@
   animation: renderingPulse 1.5s ease-in-out infinite;
 }
 
+/* Disabled state for animate button */
+#viewport .confirm-bar .animate-button:disabled{
+  background:#9ca3af; /* gray-400 */
+  cursor:not-allowed;
+  opacity:0.6;
+}
+
+#viewport .confirm-bar .animate-button:disabled:hover{
+  transform:none;
+  box-shadow:none;
+}
+
 /* Subtle pulse animation for rendering state */
 @keyframes renderingPulse {
   0%, 100% { 
@@ -4114,6 +4126,10 @@ loader.load(
       updateGripArrowVisibility();
       updateGripperButtonStates();
 
+      // Update button states when gripper changes
+      if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
+      if (typeof updateVerifyButtonState === 'function') updateVerifyButtonState();
+
       // Any gripper change blocks "Task Already Completed" until reset
       updateTaskCompletedAvailability();
 
@@ -5343,6 +5359,10 @@ loader.load(
       // Clear home position flag when user manually changes pose
       homePositionClicked = false;
 
+      // Update button states when goal changes
+      if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
+      if (typeof updateVerifyButtonState === 'function') updateVerifyButtonState();
+
       // 1) Absolute position from sliders/drag
       targetPose.pos.set(params.x, params.y, params.z);
 
@@ -5952,41 +5972,70 @@ loader.load(
     const confirmBtn = document.createElement('button');
     confirmBtn.textContent = 'Submit';
     confirmBtn.className = 'confirm-button';
+    
+    // Wrapper for tooltip support when disabled
+    const confirmBtnWrapper = document.createElement('span');
+    confirmBtnWrapper.style.display = 'inline-block';
+    confirmBtnWrapper.appendChild(confirmBtn);
 
-    // Function to update Verify button state based on animation status
+    // Function to update Verify button state based on animation status and user action
     function updateVerifyButtonState() {
       if (!confirmBtn) return;
       
+      // Check if user has specified an action (moved from default or changed gripper)
+      // Use defensive checks to ensure functions/variables are defined
+      const slidersChanged = (typeof slidersAtDefault === 'function') ? !slidersAtDefault() : false;
+      const gripperChanged = (typeof initialGripDir !== 'undefined' && typeof gripDir !== 'undefined') 
+        ? (gripDir !== initialGripDir) 
+        : false;
+      const hasSpecifiedAction = slidersChanged || gripperChanged;
+      
       if (backendAnimState.active) {
         confirmBtn.disabled = true;
-        confirmBtn.title = 'End animation to verify';
+        confirmBtnWrapper.title = 'End animation to verify';
         confirmBtn.classList.add('inactive');
+        confirmBtn.style.pointerEvents = 'none';
+      } else if (!hasSpecifiedAction) {
+        // User hasn't specified an action yet
+        confirmBtn.disabled = true;
+        confirmBtnWrapper.title = 'Specify next goal to submit';
+        confirmBtn.classList.add('inactive');
+        confirmBtn.style.pointerEvents = 'none';
       } else {
         // Only re-enable if button hasn't been used yet
         if (!verifyButtonUsed) {
           confirmBtn.disabled = false;
-          confirmBtn.title = '';
+          confirmBtnWrapper.title = '';
           confirmBtn.classList.remove('inactive');
+          confirmBtn.style.pointerEvents = 'auto';
         }
       }
     }
 
     confirmBtn.onclick = async () => {
+      // IMMEDIATELY disable button to prevent double-clicks
+      if (confirmBtn.disabled) {
+        console.log('⚠️ Button already clicked, ignoring duplicate submission');
+        return;
+      }
+      confirmBtn.disabled = true;
+      
       // Check if animation is currently active
       if (backendAnimState.active) {
         console.log('⚠️ Cannot verify while animation is running - please stop animation first');
+        confirmBtn.disabled = false; // Re-enable if we're not actually submitting
         return;
       }
 
       // Check if button has already been used
       if (verifyButtonUsed) {
         console.log('⚠️ Verify button already used in this session');
+        confirmBtn.disabled = false; // Re-enable if we're not actually submitting
         return;
       }
 
-      // Mark button as used and disable it
+      // Mark button as used and keep it disabled
       verifyButtonUsed = true;
-      confirmBtn.disabled = true;
       confirmBtn.textContent = 'Submitted';
 
       // 0) Freeze any ongoing animation (unchanged)
@@ -6030,10 +6079,18 @@ loader.load(
             const errorData = await response.json().catch(() => ({}));
             console.error('❌ Failed to send task already completed response:', errorData);
             alert('Failed to submit response. Please try again.');
+            // Re-enable button on error
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Submit';
+            verifyButtonUsed = false;
           }
         } catch (err) {
           console.error('❌ Failed to send task already completed response', err);
           alert('Failed to submit response. Please try again.');
+          // Re-enable button on error
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Submit';
+          verifyButtonUsed = false;
         }
         return; // IMPORTANT: do NOT run the normal submit-goal flow.
       }
@@ -6109,9 +6166,19 @@ loader.load(
           }
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
+          alert('Failed to submit. Please try again.');
+          // Re-enable button on error
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Submit';
+          verifyButtonUsed = false;
         }
       } catch (err) {
         console.error('❌ failed to send goal', err);
+        alert('Failed to submit. Please try again.');
+        // Re-enable button on error
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Submit';
+        verifyButtonUsed = false;
       }
     };
 
@@ -6122,6 +6189,44 @@ loader.load(
     animateBtn.className = 'animate-button';
     animateBtn.textContent = '▶ Simulate';
     animateBtn.onclick = toggleAnimation;
+    
+    // Wrapper for tooltip support when disabled
+    const animateBtnWrapper = document.createElement('span');
+    animateBtnWrapper.style.display = 'inline-block';
+    animateBtnWrapper.appendChild(animateBtn);
+
+    // Function to update Animate button state based on user action
+    function updateAnimateButtonState() {
+      if (!animateBtn) return;
+      
+      // Check if user has specified an action (moved from default or changed gripper)
+      // Use defensive checks to ensure functions/variables are defined
+      const slidersChanged = (typeof slidersAtDefault === 'function') ? !slidersAtDefault() : false;
+      const gripperChanged = (typeof initialGripDir !== 'undefined' && typeof gripDir !== 'undefined') 
+        ? (gripDir !== initialGripDir) 
+        : false;
+      const hasSpecifiedAction = slidersChanged || gripperChanged;
+      
+      if (!hasSpecifiedAction && !backendAnimState.active) {
+        // User hasn't specified an action yet and animation is not running
+        animateBtn.disabled = true;
+        animateBtnWrapper.title = 'Specify next goal to simulate';
+        animateBtn.style.pointerEvents = 'none';
+      } else if (taskCompletedSelected) {
+        // Task completed is selected
+        animateBtn.disabled = true;
+        animateBtnWrapper.title = 'Disabled when "Task Already Completed" is selected';
+        animateBtn.style.pointerEvents = 'none';
+      } else {
+        // User has specified an action or animation is running
+        animateBtn.disabled = false;
+        animateBtnWrapper.title = backendAnimState.active ? 'Click to stop animation' : 'Click to start animation';
+        animateBtn.style.pointerEvents = 'auto';
+      }
+    }
+    
+    // Initialize button state immediately
+    updateAnimateButtonState();
 
     // Animation status indicator - use external container
     const animStatusIndicator = document.querySelector('#animation-status-container .animation-status');
@@ -6141,24 +6246,24 @@ loader.load(
           if (slotsAvailable > 0) {
             animStatusIndicator.textContent = `✓ Simulation available (${slotsAvailable}/${maxSlots} slots)`;
             animStatusIndicator.style.color = '#22c55e'; // green
-            animateBtn.disabled = false;
           } else {
             animStatusIndicator.textContent = `⏳ Simulation busy (0/${maxSlots} slots)`;
             animStatusIndicator.style.color = '#f59e0b'; // orange
-            animateBtn.disabled = !backendAnimState.active; // Only disable if not our animation
           }
         } else {
           animStatusIndicator.textContent = '⚠️ Animation unavailable';
           animStatusIndicator.style.color = '#ef4444'; // red
-          if (!backendAnimState.active) {
-            animateBtn.disabled = true;
-          }
         }
+        
+        // Always update button state based on user action and current state
+        updateAnimateButtonState();
         
       } catch (error) {
         console.error('❌ Status check failed:', error);
         animStatusIndicator.textContent = '⚠️ Animation status unknown';
         animStatusIndicator.style.color = '#ef4444';
+        // Update button state even on error
+        updateAnimateButtonState();
       }
     }
     
@@ -6301,6 +6406,10 @@ loader.load(
       recomputeLocks();
       updateGripHUDInteractivity();
       updateGripHUDState(); // Update gripper HUD state after reset
+      
+      // Update button states after reset
+      if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
+      if (typeof updateVerifyButtonState === 'function') updateVerifyButtonState();
     }
 
     // --- NEW: applyHomePosition() ---
@@ -6386,6 +6495,10 @@ loader.load(
       updateTaskCompletedAvailability();
       recomputeLocks();
       updateGripHUDInteractivity();
+      
+      // Update button states after applying home position
+      if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
+      if (typeof updateVerifyButtonState === 'function') updateVerifyButtonState();
 
       console.log(`🏠 HOME: Applied to ${applied} joint(s), goal aligned to EE pose:`, p, q);
       console.log(`Home Pos applied to ${applied} joint(s) using order:`, jointNames.slice(0, applied));
@@ -6530,21 +6643,22 @@ loader.load(
     // Add reset button to its own bar (lower-left, standalone like confirm)
     resetBar.appendChild(resetBtn);
 
-    // Add confirm button at the bottom
-    confirmBar.appendChild(confirmBtn);
+    // Add confirm button at the bottom (wrapped for tooltip support)
+    confirmBar.appendChild(confirmBtnWrapper);
 
-    // Place Animate to the LEFT of Confirm
-    confirmBar.insertBefore(animateBtn, confirmBtn);
+    // Place Animate to the LEFT of Confirm (wrapped for tooltip support)
+    confirmBar.insertBefore(animateBtnWrapper, confirmBtnWrapper);
 
     /* === NEW: keep buttons in sync with TAC / locks === */
     function reflectButtonInteractivity(){
+      // Update both buttons based on current state
+      updateAnimateButtonState();
+      updateVerifyButtonState();
+      
       const tacOn = taskCompletedSelected === true;
-      if (animateBtn) {
-        animateBtn.disabled = tacOn;         // disable Animate when TAC is on
-        if (tacOn) {
-          animateBtn.classList.remove('active', 'rendering');
-          animateBtn.textContent = '▶ Simulate';
-        }
+      if (tacOn && animateBtn) {
+        animateBtn.classList.remove('active', 'rendering');
+        animateBtn.textContent = '▶ Simulate';
       }
       // Reset stays enabled
     }

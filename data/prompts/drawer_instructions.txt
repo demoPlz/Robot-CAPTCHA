@@ -1,3 +1,6 @@
 TITLE: "Drawer" Task Hints
 The plastic plate attached to the middle drawer is the handle for the robot to grasp.
 <br>
+The progression of the task: 1. if drawer isn't open and object is on the desk, open the drawer; 
+2. If the drawer is opened, venture to grasp the object, and put object into the drawer; 
+3. After putting the object into the drawer, close the drawer.

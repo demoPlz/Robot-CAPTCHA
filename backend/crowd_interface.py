@@ -82,6 +82,8 @@ class CrowdInterface:
         # --- read-only demo video display (independent of recording) ---
         show_demo_videos: bool = False,
         show_videos_dir: str | None = None,
+        # --- tutorial state capture ---
+        enable_tutorial_state_capture: bool = False,
         # --- sim ---
         use_sim: bool = True,
         max_animation_users: int = 2,
@@ -104,6 +106,11 @@ class CrowdInterface:
         mturk_description: str = "View a robot simulation and specify the next position for the robot to move to",
         mturk_keywords: str = "robot, manipulation, annotation, simulation",
         mturk_external_url: str | None = None,
+        # --- mturk worker qualifications ---
+        mturk_require_masters: bool = False,
+        mturk_min_approval_rate: int = 95,
+        mturk_min_approved_hits: int = 100,
+        mturk_require_location: list[str] | None = None,
     ):
 
         # --- Shutdown tracking ---
@@ -112,6 +119,10 @@ class CrowdInterface:
 
         # --- UI prompt mode (simple vs MANUAL) ---
         self.use_manual_prompt = bool(use_manual_prompt or int(os.getenv("USE_MANUAL_PROMPT", "0")))
+
+        # --- Tutorial state capture ---
+        self.enable_tutorial_state_capture = enable_tutorial_state_capture
+        print(f"[CrowdInterface] Tutorial state capture enabled: {self.enable_tutorial_state_capture}")
 
         # --- Sim ---
         self.use_sim = use_sim
@@ -291,6 +302,10 @@ class CrowdInterface:
                     external_url=effective_external_url,
                     num_expert_workers=num_expert_workers,
                     required_responses_per_critical_state=required_responses_per_critical_state,
+                    require_masters=mturk_require_masters,
+                    min_approval_rate=mturk_min_approval_rate,
+                    min_approved_hits=mturk_min_approved_hits,
+                    require_location=mturk_require_location,
                 )
                 print(f"✅ MTurk integration enabled ({'sandbox' if mturk_sandbox else 'production'})")
             except Exception as e:

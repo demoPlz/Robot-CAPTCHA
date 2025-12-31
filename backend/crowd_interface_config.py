@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 2
+        self.required_approvals_per_critical_state: int = 3
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
@@ -40,12 +40,15 @@ class CrowdInterfaceConfig:
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
-        self.autofill_critical_states: bool = False
-        self.num_autofill_actions: int | None = None
+        self.autofill_critical_states: bool = True
+        self.num_autofill_actions: int | None = 3
 
         # ========== UI Prompting ==========
         self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state
         self.show_demo_videos: bool = False  # Display reference videos to users
+
+        # ========== Tutorial State Capture ==========
+        self.enable_tutorial_state_capture: bool = True  # Show UI to save states for tutorial HITs
 
         # ========== Demo Video Recording ==========
         # Records user interaction videos for training/demonstration purposes
@@ -89,7 +92,7 @@ class CrowdInterfaceConfig:
         # ========== MTurk Integration ==========
         self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
         self.mturk_sandbox: bool = False  # Use MTurk sandbox (False for production)
-        self.mturk_reward: float = 0.25  # Payment per assignment in USD
+        self.mturk_reward: float = 0.50  # Payment per assignment in USD
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment (3 minutes)
         self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
         self.mturk_auto_approval_delay_seconds: int = 60  # Auto-approve after 1 minute
@@ -100,6 +103,12 @@ class CrowdInterfaceConfig:
         # If not set, will auto-detect from /tmp/cloudflared.log (created by start_tunnel.sh)
         # Manual override: set to your public URL (ngrok/cloudflare tunnel)
         self.mturk_external_url: str | None = None  # Auto-detected if using start_tunnel.sh
+        
+        # ========== MTurk Worker Qualifications ==========
+        self.mturk_require_masters: bool = False  # Require MTurk Masters (premium, higher quality but smaller pool)
+        self.mturk_min_approval_rate: int = 98  # Minimum approval rate percentage (0-100)
+        self.mturk_min_approved_hits: int = 100  # Minimum number of approved HITs
+        self.mturk_require_location: list[str] | None = ['US', 'CA', 'GB']  # Country codes (e.g., ['US', 'CA', 'GB']) or None for all
 
     @classmethod
     def from_cli_args(cls, argv=None):
@@ -159,6 +168,13 @@ class CrowdInterfaceConfig:
             "--use-manual-prompt", action="store_true", help="Require manual text/video prompt selection per state"
         )
         parser.add_argument("--show-demo-videos", action="store_true", help="Display reference videos to labelers")
+
+        # Tutorial state capture
+        parser.add_argument(
+            "--enable-tutorial-state-capture",
+            action="store_true",
+            help="Enable UI to save states for tutorial HITs"
+        )
 
         # Demo video recording
         parser.add_argument("--record-ui-demo-videos", action="store_true", help="Record user interaction videos")
@@ -257,6 +273,26 @@ class CrowdInterfaceConfig:
             type=str,
             help="Public URL for MTurk workers (e.g., https://abc123.trycloudflare.com)",
         )
+        parser.add_argument(
+            "--mturk-require-masters",
+            action="store_true",
+            help="Require MTurk Masters qualification (premium workers)",
+        )
+        parser.add_argument(
+            "--mturk-min-approval-rate",
+            type=int,
+            help="Minimum worker approval rate percentage (0-100, default: 95)",
+        )
+        parser.add_argument(
+            "--mturk-min-approved-hits",
+            type=int,
+            help="Minimum number of approved HITs for workers (default: 100)",
+        )
+        parser.add_argument(
+            "--mturk-require-location",
+            type=str,
+            help="Comma-separated country codes to restrict workers (e.g., 'US,CA,GB')",
+        )
 
         args, remaining = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
@@ -284,6 +320,8 @@ class CrowdInterfaceConfig:
             config.use_manual_prompt = True
         if args.show_demo_videos:
             config.show_demo_videos = True
+        if args.enable_tutorial_state_capture:
+            config.enable_tutorial_state_capture = True
         if args.record_ui_demo_videos:
             config.record_ui_demo_videos = True
         if args.ui_demo_videos_dir is not None:
@@ -326,6 +364,14 @@ class CrowdInterfaceConfig:
             config.mturk_keywords = args.mturk_keywords
         if args.mturk_external_url is not None:
             config.mturk_external_url = args.mturk_external_url
+        if args.mturk_require_masters:
+            config.mturk_require_masters = True
+        if args.mturk_min_approval_rate is not None:
+            config.mturk_min_approval_rate = args.mturk_min_approval_rate
+        if args.mturk_min_approved_hits is not None:
+            config.mturk_min_approved_hits = args.mturk_min_approved_hits
+        if args.mturk_require_location is not None:
+            config.mturk_require_location = [code.strip() for code in args.mturk_require_location.split(',')]
 
         return config
 
@@ -351,6 +397,7 @@ class CrowdInterfaceConfig:
             # UI
             "use_manual_prompt": self.use_manual_prompt,
             "show_demo_videos": self.show_demo_videos,
+            "enable_tutorial_state_capture": self.enable_tutorial_state_capture,
             # Simulation
             "use_sim": self.use_sim,
             "max_animation_users": self.max_animation_users,
@@ -373,6 +420,11 @@ class CrowdInterfaceConfig:
             "mturk_description": self.mturk_description,
             "mturk_keywords": self.mturk_keywords,
             "mturk_external_url": self.mturk_external_url,
+            # MTurk worker qualifications
+            "mturk_require_masters": self.mturk_require_masters,
+            "mturk_min_approval_rate": self.mturk_min_approval_rate,
+            "mturk_min_approved_hits": self.mturk_min_approved_hits,
+            "mturk_require_location": self.mturk_require_location,
         }
 
         # Optional: demo video recording (only include if enabled)

@@ -152,9 +152,26 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             crowd_interface.record_response(data)
             
             # Notify MTurk manager of assignment submission (if MTurk enabled)
+            # Distinguish expert (localhost direct) vs MTurk (via tunnel) workers
             episode_id = data["episode_id"]
             state_id = data["state_id"]
-            crowd_interface.update_mturk_assignment_count(episode_id, state_id)
+            
+            # Check for X-Forwarded-For header (set by cloudflared tunnel)
+            # If present, request came through tunnel (MTurk worker)
+            # If absent and localhost, it's direct localhost access (expert worker)
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+            remote_addr = request.remote_addr or ""
+            
+            # MTurk worker: has forwarded header OR non-localhost direct access
+            is_mturk_worker = forwarded_for or cf_connecting_ip or remote_addr not in ["127.0.0.1", "::1", "localhost"]
+            
+            if is_mturk_worker:
+                origin = forwarded_for or cf_connecting_ip or remote_addr
+                print(f"🌐 MTurk worker submission: episode={episode_id}, state={state_id} (from {origin})")
+                crowd_interface.update_mturk_assignment_count(episode_id, state_id)
+            else:
+                print(f"👤 Expert worker submission: episode={episode_id}, state={state_id}")
             
             return jsonify({"status": "ok"})
 
@@ -430,6 +447,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "is_resetting": crowd_interface.is_in_reset(),
                 "reset_countdown": crowd_interface.get_reset_countdown(),
                 "total_pending_states": total_pending,
+                "tutorial_state_capture_enabled": crowd_interface.enable_tutorial_state_capture,
             }
 
             response = jsonify(monitoring_data)
@@ -499,6 +517,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "state_id": pending["state_id"],
                     "current_image_url": current_image_url,
                     "previous_image_url": previous_image_url,
+                    "tutorial_state_capture_enabled": crowd_interface.enable_tutorial_state_capture,
                 }
             )
         except Exception as e:
@@ -888,6 +907,141 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/save-tutorial-state", methods=["POST"])
+    def save_tutorial_state():
+        """Save a critical state as a tutorial state for worker qualification testing.
+        
+        Only available when tutorial state capture is enabled in config.
+
+        Expected JSON: {"episode_id": str, "state_id": int, "state_name": str}
+
+        Saves:
+        - All camera images (real and simulated)
+        - Robot state (joint positions, gripper)
+        - Object positions
+        - Task information
+        - Metadata
+
+        """
+        try:
+            # Check if tutorial state capture is enabled
+            if not crowd_interface.enable_tutorial_state_capture:
+                return jsonify({"status": "error", "error": "Tutorial state capture is not enabled"}), 400
+            
+            data = request.get_json()
+            if not data:
+                return jsonify({"status": "error", "error": "No JSON data provided"}), 400
+
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            state_name = data.get("state_name")
+            
+            print(f"[Tutorial Save] Received: episode_id={episode_id} (type={type(episode_id)}), state_id={state_id} (type={type(state_id)}), state_name={state_name}")
+
+            if episode_id is None or state_id is None or not state_name:
+                return jsonify({"status": "error", "error": "episode_id, state_id, and state_name are required"}), 400
+
+            # Convert to int (episode_id might be string from JSON)
+            try:
+                episode_id = int(episode_id)
+                state_id = int(state_id)
+            except (ValueError, TypeError):
+                return jsonify({"status": "error", "error": "episode_id and state_id must be integers"}), 400
+
+            # Validate state name
+            import re
+            if not re.match(r'^[a-zA-Z0-9_-]+$', state_name):
+                return jsonify({"status": "error", "error": "state_name must contain only letters, numbers, underscores, and hyphens"}), 400
+
+            # Get the state from pending_states_by_episode (currently being served)
+            state_info = None
+            obs_path = None
+            
+            print(f"[Tutorial Save] Looking for episode_id={episode_id}, state_id={state_id}")
+            
+            with crowd_interface.state_manager.state_lock:
+                print(f"[Tutorial Save] pending_states_by_episode keys: {list(crowd_interface.state_manager.pending_states_by_episode.keys())}")
+                if episode_id in crowd_interface.state_manager.pending_states_by_episode:
+                    episode_states = crowd_interface.state_manager.pending_states_by_episode[episode_id]
+                    print(f"[Tutorial Save] Episode {episode_id} state keys: {list(episode_states.keys())}")
+                    state_info = episode_states.get(state_id)
+                    if state_info:
+                        print(f"[Tutorial Save] Found state: {state_info.keys()}")
+                else:
+                    print(f"[Tutorial Save] Episode {episode_id} not found in pending_states_by_episode")
+            
+            if not state_info:
+                return jsonify({"status": "error", "error": f"State {state_id} in episode {episode_id} is not currently being served"}), 404
+            
+            obs_path = state_info.get("obs_path")
+            if not obs_path:
+                return jsonify({"status": "error", "error": "No observation data available for this state"}), 404
+            
+            # Get view paths (rendered camera views for serving)
+            view_paths = state_info.get("view_paths", {})
+            if not view_paths:
+                return jsonify({"status": "error", "error": "No view images available for this state"}), 404
+
+            # Create tutorial states directory
+            from pathlib import Path
+            import json
+            import base64
+            
+            tutorial_dir = Path("data/tutorial_states") / state_name
+            tutorial_dir.mkdir(parents=True, exist_ok=True)
+
+            # Load observation from disk
+            obs = crowd_interface.dataset_manager.load_obs_from_disk(obs_path)
+            if not obs:
+                return jsonify({"status": "error", "error": "Failed to load observation data"}), 500
+
+            # Extract robot state from observation
+            joint_positions = obs.get("observation.state", [])
+            
+            # Save state metadata
+            state_metadata = {
+                "episode_id": str(episode_id),
+                "state_id": state_id,
+                "state_name": state_name,
+                "task": crowd_interface.task_text,
+                "robot_state": {
+                    "joint_positions": joint_positions.tolist() if hasattr(joint_positions, 'tolist') else list(joint_positions),
+                },
+                "saved_at": __import__('time').time(),
+            }
+
+            with open(tutorial_dir / "state.json", 'w') as f:
+                json.dump(state_metadata, f, indent=2)
+
+            # Copy the 6 rendered view images (real-life + simulated cameras)
+            import shutil
+            for view_name, view_path in view_paths.items():
+                src_path = Path(view_path)
+                if src_path.exists():
+                    # Keep the view name as-is (e.g., webcam_front, sim_front, etc.)
+                    dst_path = tutorial_dir / f"{view_name}.jpg"
+                    shutil.copy2(src_path, dst_path)
+                    print(f"  Copied {view_name}: {src_path} -> {dst_path}")
+                else:
+                    print(f"  Warning: View {view_name} not found at {view_path}")
+            
+            print(f"✅ Tutorial state saved: {state_name} (episode {episode_id}, state {state_id})")
+            print(f"   Saved {len(view_paths)} view images to {tutorial_dir}")
+            return jsonify({"status": "success", "message": f"Tutorial state '{state_name}' saved successfully"})
+
+        except Exception as e:
+            print(f"❌ Error saving tutorial state: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "error": str(e)}), 500
+
+    @app.route("/api/control/fast-forward", methods=["POST"])
+    def fast_forward():
+            print(f"❌ Error saving tutorial state: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "error": str(e)}), 500
 
     @app.route("/api/save-calibration", methods=["POST"])
     def save_calibration():

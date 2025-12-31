@@ -8,11 +8,11 @@ python backend/collect_data.py \
   --control.fps=30 \
   --control.single_task="Put the objects on the desk into the middle drawer" \
   --task-name=drawer \
-  --control.repo_id=$USER/test_1 \
-  --control.data_collection_policy_repo_id=$USER/test_1_dcp \
+  --control.repo_id=$USER/mturk_prod_3a_drawer_1 \
+  --control.data_collection_policy_repo_id=$USER/mturk_prod_3a_drawer_1_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
-  --control.num_episodes=2 \
+  --control.num_episodes=1 \
   --control.push_to_hub=false \
   --control.num_image_writer_processes=8 \
   --control.play_sound=false \

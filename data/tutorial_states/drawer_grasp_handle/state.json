@@ -1,0 +1,18 @@
+{
+  "episode_id": "0",
+  "state_id": 72,
+  "state_name": "drawer_grasp_handle",
+  "task": "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer",
+  "robot_state": {
+    "joint_positions": [
+      0.182154580950737,
+      1.426146388053894,
+      1.3471808433532715,
+      -1.0587854385375977,
+      -0.30003052949905396,
+      0.16193637251853943,
+      0.04000892490148544
+    ]
+  },
+  "saved_at": 1767137769.2349806
+}

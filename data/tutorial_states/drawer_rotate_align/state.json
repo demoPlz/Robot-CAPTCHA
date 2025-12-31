@@ -1,0 +1,18 @@
+{
+  "episode_id": "0",
+  "state_id": 157,
+  "state_name": "drawer_rotate_align",
+  "task": "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer",
+  "robot_state": {
+    "joint_positions": [
+      -0.5300602912902832,
+      1.6813534498214722,
+      1.268596887588501,
+      -1.038948655128479,
+      -0.06427863240242004,
+      -0.5231937170028687,
+      0.03999891132116318
+    ]
+  },
+  "saved_at": 1767138525.307146
+}

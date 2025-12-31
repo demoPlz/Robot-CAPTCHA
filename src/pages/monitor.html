@@ -321,6 +321,79 @@
             gap: 20px;
             overflow-y: auto;
         }
+        .tutorial-save-section {
+            background: #fef3c7;
+            border: 2px solid #fbbf24;
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .tutorial-save-header {
+            font-size: 16px;
+            font-weight: 600;
+            color: #92400e;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .tutorial-save-input-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .tutorial-save-input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 2px solid #fbbf24;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        .tutorial-save-input:focus {
+            border-color: #f59e0b;
+            box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
+        }
+        .tutorial-save-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tutorial-save-btn.save {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+        }
+        .tutorial-save-btn.save:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+        }
+        .tutorial-save-btn.skip {
+            background: #e2e8f0;
+            color: #475569;
+        }
+        .tutorial-save-btn.skip:hover {
+            background: #cbd5e1;
+        }
+        .tutorial-save-status {
+            font-size: 13px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .tutorial-save-status.success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        .tutorial-save-status.error {
+            background: #fef2f2;
+            color: #dc2626;
+        }
         .approval-comparison {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -487,6 +560,27 @@
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
                     </div>
                 </div>
+                <!-- Tutorial State Save Section -->
+                <div class="tutorial-save-section" id="tutorial-save-section" style="display: none;">
+                    <div class="tutorial-save-header">
+                        <span>💾</span> Save Current State as Tutorial
+                    </div>
+                    <div class="tutorial-save-input-group">
+                        <input 
+                            type="text" 
+                            id="tutorial-state-name" 
+                            class="tutorial-save-input"
+                            placeholder="Enter tutorial state name (e.g., start_state, cube_picked)"
+                        />
+                        <button class="tutorial-save-btn save" id="tutorial-save-btn">
+                            💾 Save
+                        </button>
+                        <button class="tutorial-save-btn skip" id="tutorial-skip-btn">
+                            ❌ Close
+                        </button>
+                    </div>
+                    <div id="tutorial-save-status" style="display: none;"></div>
+                </div>
             </div>
         </div>
 
@@ -581,6 +675,7 @@
                 <h2 class="approval-modal-title">Approve New Critical State?</h2>
             </div>
             <div class="approval-modal-body">
+                <!-- State Comparison -->
                 <div class="approval-comparison">
                     <div class="approval-image-container">
                         <div class="approval-image-label">Previous Critical State</div>
@@ -767,6 +862,12 @@
         const approvalRejectBtn = document.getElementById('approval-reject-btn');
         const approvalDiscardBtn = document.getElementById('approval-discard-btn');
         const approvalMarkEndBtn = document.getElementById('approval-mark-end-btn');
+        
+        // Tutorial save elements
+        const tutorialStateNameInput = document.getElementById('tutorial-state-name');
+        const tutorialSaveBtn = document.getElementById('tutorial-save-btn');
+        const tutorialSkipBtn = document.getElementById('tutorial-skip-btn');
+        const tutorialSaveStatus = document.getElementById('tutorial-save-status');
 
         // Undo classification modal elements
         const undoClassificationModal = document.getElementById('undo-classification-modal');
@@ -1307,10 +1408,12 @@
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
+                    updateTutorialSaveUI(data);
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
+                    hideTutorialSaveUI();
                 }
             } catch (e) {
                 console.error('Error fetching latest state:', e);
@@ -1340,12 +1443,15 @@
                 
                 const data = await response.json();
                 
+                console.log('[Pending Approval] Received data:', data);
+                
                 if (data.status === 'pending') {
                     // New approval needed or state changed
                     if (!currentApprovalState || 
                         currentApprovalState.episode_id !== data.episode_id ||
                         currentApprovalState.state_id !== data.state_id) {
                         
+                        console.log('[Pending Approval] Setting currentApprovalState to:', data);
                         currentApprovalState = data;
                         await showApprovalModal(data);
                     }
@@ -1359,6 +1465,33 @@
             } catch (e) {
                 console.error('Error fetching pending approval:', e);
             }
+        }
+
+        // --- Tutorial Save UI Management ---
+        let currentServedState = null;
+        
+        function updateTutorialSaveUI(data) {
+            const tutorialSection = document.getElementById('tutorial-save-section');
+            if (!tutorialSection) return;
+            
+            if (data.tutorial_state_capture_enabled && data.state_id !== undefined && data.episode_id !== undefined) {
+                currentServedState = {
+                    episode_id: data.episode_id,
+                    state_id: data.state_id
+                };
+                tutorialSection.style.display = 'flex';
+            } else {
+                currentServedState = null;
+                tutorialSection.style.display = 'none';
+            }
+        }
+        
+        function hideTutorialSaveUI() {
+            const tutorialSection = document.getElementById('tutorial-save-section');
+            if (tutorialSection) {
+                tutorialSection.style.display = 'none';
+            }
+            currentServedState = null;
         }
 
         async function showApprovalModal(data) {
@@ -1530,11 +1663,96 @@
             }
         }
 
+        // --- Tutorial State Save Handlers ---
+        async function handleTutorialSave() {
+            console.log('[Tutorial Save] currentServedState:', currentServedState);
+            if (!currentServedState) {
+                showTutorialStatus('No state currently being served', 'error');
+                return;
+            }
+            
+            const stateName = tutorialStateNameInput.value.trim();
+            if (!stateName) {
+                showTutorialStatus('Please enter a state name', 'error');
+                return;
+            }
+            
+            // Validate state name (alphanumeric, underscores, hyphens only)
+            if (!/^[a-zA-Z0-9_-]+$/.test(stateName)) {
+                showTutorialStatus('Name must contain only letters, numbers, underscores, and hyphens', 'error');
+                return;
+            }
+            
+            try {
+                tutorialSaveBtn.disabled = true;
+                tutorialSkipBtn.disabled = true;
+                
+                const payload = {
+                    episode_id: String(currentServedState.episode_id),
+                    state_id: currentServedState.state_id,
+                    state_name: stateName
+                };
+                console.log('[Tutorial Save] Sending payload:', payload);
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/save-tutorial-state`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                    showTutorialStatus(`✅ Saved as "${stateName}"`, 'success');
+                    // Clear input for next time
+                    tutorialStateNameInput.value = '';
+                    // Hide the tutorial section after successful save
+                    setTimeout(() => {
+                        hideTutorialSaveUI();
+                    }, 1500);
+                } else {
+                    const data = await response.json();
+                    const errorMsg = data.error || 'Failed to save';
+                    // If error indicates non-recording mode, hide the section entirely
+                    if (errorMsg.includes('recording mode')) {
+                        hideTutorialSaveUI();
+                    } else {
+                        showTutorialStatus(`❌ ${errorMsg}`, 'error');
+                    }
+                }
+            } catch (e) {
+                console.error('Error saving tutorial state:', e);
+                showTutorialStatus('❌ Error saving tutorial state', 'error');
+            } finally {
+                tutorialSaveBtn.disabled = false;
+                tutorialSkipBtn.disabled = false;
+            }
+        }
+        
+        function handleTutorialSkip() {
+            // Just hide the tutorial save section
+            hideTutorialSaveUI();
+            tutorialStateNameInput.value = '';
+            hideTutorialStatus();
+        }
+        
+        function showTutorialStatus(message, type) {
+            tutorialSaveStatus.textContent = message;
+            tutorialSaveStatus.className = `tutorial-save-status ${type}`;
+            tutorialSaveStatus.style.display = 'block';
+        }
+        
+        function hideTutorialStatus() {
+            tutorialSaveStatus.style.display = 'none';
+        }
+
         // Bind approval modal events
         approvalProceedBtn.addEventListener('click', handleApprovalProceed);
         approvalRejectBtn.addEventListener('click', handleApprovalReject);
         approvalDiscardBtn.addEventListener('click', handleApprovalDiscard);
         approvalMarkEndBtn.addEventListener('click', handleApprovalMarkEnd);
+        
+        // Bind tutorial save events
+        tutorialSaveBtn.addEventListener('click', handleTutorialSave);
+        tutorialSkipBtn.addEventListener('click', handleTutorialSkip);
 
         // --- Pre-Execution Approval Modal ---
         let currentPreExecutionApproval = null;
