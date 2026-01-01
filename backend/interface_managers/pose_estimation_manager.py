@@ -365,7 +365,7 @@ class PoseEstimationManager:
 
                             # RETRY LOGIC: If estimation failed, retry up to 5 times
                             if pose_world is None:
-                                retry_count = result_data.get("retry_count", 0)
+                                retry_count = result.get("retry_count", 0)
                                 max_retries = 5
                                 
                                 if retry_count < max_retries:

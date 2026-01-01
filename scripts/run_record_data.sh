@@ -17,5 +17,4 @@ python backend/collect_data.py \
   --control.num_image_writer_processes=8 \
   --control.play_sound=false \
   --show-demo-videos \
-  --record-ui-demo-videos \
   "$@"

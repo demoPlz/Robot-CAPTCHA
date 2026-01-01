@@ -44,11 +44,11 @@ class CrowdInterfaceConfig:
         self.num_autofill_actions: int | None = 3
 
         # ========== UI Prompting ==========
-        self.use_manual_prompt: bool = False  # Manual text/video prompt selection per state (require monitor.html approval before serving)
+        self.use_manual_prompt: bool = True  # Manual text/video prompt selection per state (require monitor.html approval before serving)
         self.show_demo_videos: bool = True  # Display reference videos to users
 
         # ========== Tutorial State Capture ==========
-        self.enable_tutorial_state_capture: bool = True  # Show UI to save states for tutorial HITs
+        self.enable_tutorial_state_capture: bool = False  # Show UI to save states for tutorial HITs
 
         # ========== Demo Video Recording ==========
         # Records user interaction videos for training/demonstration purposes
