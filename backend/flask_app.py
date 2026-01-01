@@ -1166,6 +1166,28 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ Error serving demo video {filename}: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/video-description/<video_id>")
+    def get_video_description(video_id):
+        """Get the description text for demo videos.
+        
+        Looks for a shared file named 'demos_description.txt' in the videos directory.
+        Returns plain text content or default text if not found.
+        """
+        if not crowd_interface.video_manager.show_demo_videos:
+            return jsonify({"error": "Show demo videos is not enabled"}), 404
+            
+        desc_path = crowd_interface.video_manager.get_demos_description_path()
+        if not desc_path or not desc_path.exists():
+            return "Watch this example demonstration to understand the task better.", 200
+            
+        try:
+            with open(desc_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return content if content else "Watch this example demonstration to understand the task better.", 200
+        except Exception as e:
+            print(f"❌ Error reading description file {desc_path}: {e}")
+            return "Watch this example demonstration to understand the task better.", 200
+    
     @app.route("/api/show-videos/<video_id>")
     def serve_show_video(video_id):
         """Serve read-only example videos by numeric id from prompts/{task-name}/videos (or custom dir).

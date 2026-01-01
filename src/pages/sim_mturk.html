@@ -52,6 +52,47 @@
             margin-bottom: 8px;
         }
         
+        .demo-video-section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .demo-video-section h2 {
+            margin-top: 0;
+            color: #232f3e;
+            margin-bottom: 10px;
+        }
+        
+        .demo-video-section .video-description {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            color: #374151;
+            line-height: 1.5;
+        }
+        
+        .demo-video-section video {
+            width: 100%;
+            max-width: 900px;
+            border-radius: 4px;
+            background: #000;
+            display: block;
+        }
+        
+        .demo-video-section .no-video {
+            padding: 40px;
+            text-align: center;
+            color: #6b7280;
+            font-style: italic;
+            background: #f9fafb;
+            border-radius: 4px;
+        }
+        
         .task-container {
             background: white;
             padding: 20px;
@@ -153,6 +194,20 @@
             </ul>
         </div>
         
+        <div class="demo-video-section" id="demo-video-section">
+            <h2>Example Video</h2>
+            <div id="demo-video-description" class="video-description">
+                Watch this example demonstration to understand the task better.
+            </div>
+            <video id="demo-video" controls loop style="display: none;">
+                <source id="demo-video-source" type="video/webm">
+                Your browser does not support the video tag.
+            </video>
+            <div class="no-video" id="no-video-message">
+                Loading video...
+            </div>
+        </div>
+        
         <div class="task-container">
             <div id="task-iframe-wrapper">
                 <div class="loading">Loading task...</div>
@@ -231,9 +286,81 @@
             }
         }
         
+        // Load demo video for the current state
+        async function loadDemoVideo() {
+            const videoSection = document.getElementById('demo-video-section');
+            const videoElement = document.getElementById('demo-video');
+            const videoSource = document.getElementById('demo-video-source');
+            const noVideoMessage = document.getElementById('no-video-message');
+            const descriptionDiv = document.getElementById('demo-video-description');
+            
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const stateId = urlParams.get('state_id');
+                
+                if (!stateId) {
+                    console.log('No state_id provided, skipping demo video');
+                    noVideoMessage.textContent = 'No state ID provided (testing mode).';
+                    return;
+                }
+                
+                console.log('Fetching demo video for state:', stateId);
+                
+                // Fetch the video list for this state
+                const response = await fetch(`/api/show-videos/${stateId}`);
+                if (!response.ok) {
+                    console.log('No demo videos available for state:', stateId);
+                    noVideoMessage.textContent = 'No demonstration video available for this task.';
+                    return;
+                }
+                
+                const videos = await response.json();
+                console.log('Demo videos response:', videos);
+                
+                if (videos && videos.length > 0) {
+                    // Use the first (most recent) video
+                    const videoUrl = videos[0].url;
+                    const videoId = videos[0].id || stateId;
+                    console.log('Loading demo video:', videoUrl);
+                    
+                    // Load description from API
+                    try {
+                        const descResponse = await fetch(`/api/video-description/${videoId}`);
+                        if (descResponse.ok) {
+                            const descText = await descResponse.text();
+                            descriptionDiv.textContent = descText;
+                            console.log('Loaded video description:', descText);
+                        }
+                    } catch (descError) {
+                        console.warn('Failed to load description:', descError);
+                        // Keep default description
+                    }
+                    
+                    // Hide the no-video message and show the video
+                    noVideoMessage.style.display = 'none';
+                    videoSource.src = videoUrl;
+                    videoElement.style.display = 'block';
+                    videoElement.load();
+                    
+                    // Auto-play muted
+                    videoElement.muted = true;
+                    videoElement.play().catch(err => {
+                        console.warn('Autoplay failed, user will need to click play:', err);
+                    });
+                } else {
+                    console.log('No videos found for state:', stateId);
+                    noVideoMessage.textContent = 'No demonstration video available for this task.';
+                }
+            } catch (error) {
+                console.error('Failed to load demo video:', error);
+                noVideoMessage.textContent = 'Error loading video: ' + error.message;
+            }
+        }
+        
         // Load instructions on page load
         loadInstructions();
         loadTaskInstructions();
+        loadDemoVideo();
         
         // Get episode_id and state_id from URL parameters
         const urlParams = new URLSearchParams(window.location.search);

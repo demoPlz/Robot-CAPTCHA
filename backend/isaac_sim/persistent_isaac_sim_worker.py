@@ -45,6 +45,15 @@ class PersistentWorker:
 
     def start(self, initial_config: dict):
         """Start the persistent worker loop."""
+        # CRITICAL: Wait for Isaac Sim to fully initialize before signaling ready
+        # SimulationApp prints "Startup Complete" but background initialization continues
+        # Without this delay, commands arrive before worker can process them
+        print("Waiting for Isaac Sim background initialization...")
+        sys.stdout.flush()
+        time.sleep(10)  # Give Isaac Sim time to complete all background tasks
+        print("Isaac Sim ready for commands")
+        sys.stdout.flush()
+        
         print("WORKER_READY")  # Signal to manager that we're ready
         sys.stdout.flush()
 

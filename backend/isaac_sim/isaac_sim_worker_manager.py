@@ -468,11 +468,17 @@ class PersistentWorkerManager:
         # Wait for result
         result_signal_file = f"{self.result_file}.signal"
         start_time = time.time()
-        timeout = 30  # 30 second timeout
+        
+        # Use longer timeout for initialization commands since they load USD and create scene
+        action = command.get("action", "")
+        if action in ["initialize_and_capture", "initialize_animation"]:
+            timeout = 120  # 2 minutes for initialization commands
+        else:
+            timeout = 30  # 30 seconds for regular commands
 
         while not os.path.exists(result_signal_file):
             if time.time() - start_time > timeout:
-                raise TimeoutError("Command timeout")
+                raise TimeoutError(f"Command timeout after {timeout}s (action: {action})")
             time.sleep(0.1)
 
         # Read result

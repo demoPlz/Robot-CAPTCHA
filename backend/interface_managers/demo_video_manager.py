@@ -253,6 +253,18 @@ class DemoVideoManager:
         except Exception:
             return None, None
 
+    def get_demos_description_path(self) -> Path | None:
+        """Get the path to the shared description file for all demo videos.
+        
+        Description file is named 'demos_description.txt' in the videos directory.
+        
+        Returns:
+            Path to description file or None if videos dir not configured
+        """
+        if not self._show_videos_dir:
+            return None
+        return self._show_videos_dir / "demos_description.txt"
+
     def get_demo_video_config(self) -> dict:
         """
         Small, stable contract the frontend can consume.

@@ -43,3 +43,6 @@ output/
 external/**/*.yml
 external/**/*.pth
 external/**/*.obj
+
+# Videos
+*.webm

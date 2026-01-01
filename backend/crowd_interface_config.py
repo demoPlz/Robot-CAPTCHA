@@ -36,7 +36,7 @@ class CrowdInterfaceConfig:
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
         # automatically discard it. Threshold is L2 distance in joint positions (radians).
-        self.jitter_threshold: float = 0.05  # radians - tune based on robot sensitivity
+        self.jitter_threshold: float = 0.02  # radians - tune based on robot sensitivity
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
@@ -69,7 +69,7 @@ class CrowdInterfaceConfig:
         # Note: Keys must match USD prim names in Isaac Sim
         # self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
 
-        self.objects: dict[str, str] = {"Cube_Blue": "Blue cube"}
+        self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
 
         # Resolve mesh paths for pose estimation (relative to repo root)
         repo_root = Path(__file__).resolve().parent.parent

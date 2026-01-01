@@ -722,6 +722,16 @@ class StateManager:
             dict with 'action' (list of floats) and 'is_undo' (bool), or None if no goal available
 
         """
+        # PRIORITY: Check if there's an undo goal (from undo_to_previous_critical_state)
+        if self.latest_goal is not None:
+            goal_tensor = self.latest_goal
+            self.latest_goal = None  # Clear after consuming
+            
+            # Convert to list
+            action_list = goal_tensor.tolist() if hasattr(goal_tensor, "tolist") else list(goal_tensor)
+            print(f"↩️  Executing undo motion to previous critical state")
+            return action_list
+        
         # Phase 2: Execution loop - find first non-executed pre-approved action
         with self.state_lock:
             # Find the latest completed critical state

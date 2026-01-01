@@ -1381,6 +1381,7 @@
   user-select: none;
   padding: 4px;
   transition: all 0.2s ease;
+  z-index: 10010;
 }
 
 /* Only pulse when never activated and not during interaction */
@@ -1415,24 +1416,70 @@
   animation: none; /* Stop pulsing when active */
 }
 
-/* the independent right-side video window */
+/* Example video modal - centered overlay */
 #exampleDock{
   position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   display: none;                 /* toggled by JS */
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85); /* dark overlay */
+  z-index: 10005;                /* above everything */
+  padding: 40px;
+}
+
+#exampleDock.visible {
+  display: flex;
+}
+
+#exampleDock .video-container {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
   background: #ffffff;
-  border: 1px solid rgba(0,0,0,0.08);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-  z-index: 10005;                /* above the card */
-  overflow: hidden;
-  padding: 12px;                 /* padding inside the white box */
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
 }
 
 #exampleDock video{
   display: block;
-  width: 100%; height: 100%;
-  object-fit: cover;             /* or 'contain' if you prefer letterboxing */
+  max-width: 85vw;
+  max-height: 85vh;
+  object-fit: contain;           /* contain to show full video */
   background: #000;
+  border-radius: 4px;
 }
+
+#exampleDock .close-btn {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #e5e7eb;
+  color: #374151;
+  font-size: 20px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  transition: all 0.2s ease;
+  z-index: 1;
+}
+
+#exampleDock .close-btn:hover {
+  background: #f3f4f6;
+  transform: scale(1.1);
+}
+
 #exampleDock .placeholder{
   width: 100%; height: 100%;
   display: flex; align-items: center; justify-content: center;
@@ -2956,6 +3003,11 @@ mount.appendChild(recordRegion);
 const urlParams = new URLSearchParams(window.location.search);
 const isMTurkMode = urlParams.get('mturk') === '1';
 
+// Add body class for MTurk mode styling
+if (isMTurkMode) {
+  document.body.classList.add('mturk-mode');
+}
+
 // Add hints panel on the right side of the main UI (hidden in MTurk mode)
 const hintsPanel = document.createElement('div');
 hintsPanel.className = 'hints-panel';
@@ -3008,69 +3060,80 @@ const webcamColumn = document.createElement('div');
 webcamColumn.className = 'webcam-column';
 contentContainer.appendChild(webcamColumn);
 
-// ADD: Example video dock (independent window to the right of the views)
+// ADD: Example video modal (centered overlay)
 let exampleDock = null;
 let exampleVideo = null;
 let exampleToggle = null; // created only when demo videos are allowed AND a URL/id exists
 
 function createExampleDockOnce(){
   if (exampleDock) return;
+  
   exampleDock = document.createElement('div');
   exampleDock.id = 'exampleDock';
-
+  
+  // Create container for video and close button
+  const videoContainer = document.createElement('div');
+  videoContainer.className = 'video-container';
+  
+  // Create close button
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'close-btn';
+  closeBtn.innerHTML = '×';
+  closeBtn.setAttribute('aria-label', 'Close video');
+  closeBtn.onclick = hideExampleDock;
+  
   exampleVideo = document.createElement('video');
-  exampleVideo.muted = true;           // allow autoplay
+  exampleVideo.muted = true;
   exampleVideo.loop = true;
   exampleVideo.autoplay = true;
   exampleVideo.playsInline = true;
   exampleVideo.preload = 'auto';
-
-  exampleDock.appendChild(exampleVideo);
+  
+  videoContainer.appendChild(closeBtn);
+  videoContainer.appendChild(exampleVideo);
+  exampleDock.appendChild(videoContainer);
   document.body.appendChild(exampleDock);
+  
+  // Close modal when clicking outside the video
+  exampleDock.addEventListener('click', (e) => {
+    if (e.target === exampleDock) {
+      hideExampleDock();
+    }
+  });
+  
+  // Close modal on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && exampleDock.classList.contains('visible')) {
+      hideExampleDock();
+    }
+  });
 }
 
 function updateExampleDockLayout(){
-  if (!exampleDock || !viewsGrid) return;
-  
-  // Get prompt bar position for top alignment
-  const promptBar = document.querySelector('.prompt-bar');
-  const viewsRect = viewsGrid.getBoundingClientRect();
-  const promptRect = promptBar ? promptBar.getBoundingClientRect() : viewsRect;
-  
-  const gap = 24; // px between views and dock - increased for comfortable spacing
-  
-  // Make the dock 20% smaller (80% of original size)
-  const scaleFactor = 0.75;
-  const dockWidth = Math.round(viewsRect.width * scaleFactor);
-  const dockHeight = Math.round(viewsRect.height * scaleFactor);
-  
-  // Position: align top with prompt bar, right of views with gap
-  exampleDock.style.top    = Math.round(promptRect.top) + 'px';
-  exampleDock.style.left   = Math.round(viewsRect.right + gap) + 'px';
-  exampleDock.style.width  = dockWidth + 'px';
-  exampleDock.style.height = dockHeight + 'px';
+  // No layout needed for centered modal - CSS handles it
+  return;
 }
 
 function showExampleDock(){
   // Mark button as activated if dock is being shown (remove never-activated class)
-  if (exampleToggle.classList.contains('never-activated')) {
+  if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
     exampleToggle.classList.remove('never-activated');
   }
   
   createExampleDockOnce();
-  exampleDock.style.display = 'block';
-  exampleToggle.classList.add('active');
-  exampleToggle.setAttribute('aria-pressed', 'true');
-  exampleToggle.title = 'Hide example';
-  updateExampleDockLayout();
+  exampleDock.classList.add('visible');
+  if (exampleToggle) {
+    exampleToggle.classList.add('active');
+    exampleToggle.setAttribute('aria-pressed', 'true');
+    exampleToggle.title = 'Hide example';
+  }
   
-  // Start video playback when dock is shown - restart from beginning
-  const video = exampleDock.querySelector('video');
-  if (video) {
-    video.currentTime = 0; // Reset to beginning
-    video.play().catch(err => {
+  // Start video playback when modal is shown - restart from beginning
+  if (exampleVideo) {
+    exampleVideo.currentTime = 0; // Reset to beginning
+    exampleVideo.play().catch(err => {
       console.warn('Autoplay blocked or failed; showing controls.', err);
-      video.controls = true; // let the user click play
+      exampleVideo.controls = true; // let the user click play
     });
   }
 }
@@ -3078,16 +3141,17 @@ function showExampleDock(){
 function hideExampleDock(){
   if (!exampleDock) return;
   
-  // Pause video when dock is hidden
-  const video = exampleDock.querySelector('video');
-  if (video) {
-    video.pause();
+  // Pause video when modal is hidden
+  if (exampleVideo) {
+    exampleVideo.pause();
   }
   
-  exampleDock.style.display = 'none';
-  exampleToggle.classList.remove('active');
-  exampleToggle.setAttribute('aria-pressed', 'false');
-  exampleToggle.title = 'Show example';
+  exampleDock.classList.remove('visible');
+  if (exampleToggle) {
+    exampleToggle.classList.remove('active');
+    exampleToggle.setAttribute('aria-pressed', 'false');
+    exampleToggle.title = 'Show example';
+  }
 }
 
 function toggleExampleDock(force){
@@ -3651,7 +3715,7 @@ loader.load(
     const promptFromServer = state.prompt;
     
     // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}.<br><b>Toward completing this task, where should the robot travel to next?</b>`;
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}`;
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state
@@ -3690,7 +3754,10 @@ loader.load(
       });
     }
 
-    if (hasFlexVideo && exampleUrl) {
+    // In MTurk mode, skip the modal - video is shown in the wrapper page
+    const skipModalInMTurk = isMTurkMode && hasFlexVideo && exampleUrl;
+    
+    if (hasFlexVideo && exampleUrl && !skipModalInMTurk) {
       // 1) Build the toggle button now (it did not exist before)
       exampleToggle = document.createElement('button');
       exampleToggle.className = 'prompt-example-toggle never-activated';
@@ -4670,6 +4737,15 @@ loader.load(
           console.log(`🖼️  Old background:`, oldBackground);
           console.log(`🖼️  New background set to:`, view.container.style.background.substring(0, 50) + '...');
           console.log(`✓ Updated ${view.name} with animation frame`);
+          
+          // IMPORTANT: Also update the snapshot image used by CanvasRecording compositor
+          // This ensures animation frames are captured in recordings
+          const img = new Image();
+          img.onload = () => {
+            view._snapshotImg = img;
+            console.log(`📸 Updated snapshot image for ${view.name} (${img.width}x${img.height})`);
+          };
+          img.src = imageData;
         } else {
           console.warn(`⚠️ View ${view.name} has no container to update`);
         }
