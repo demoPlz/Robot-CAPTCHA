@@ -50,6 +50,16 @@ class PersistentWorkerManager:
         with open(config_file, "w") as f:
             json.dump(initial_config, f)
 
+        # Clean up any leftover command/result files from previous runs
+        for old_file in [self.command_file, self.result_file, 
+                         f"{self.command_file}.signal", f"{self.result_file}.signal"]:
+            if os.path.exists(old_file):
+                try:
+                    os.remove(old_file)
+                    print(f"🗑️  Cleaned up leftover file: {old_file}")
+                except:
+                    pass
+
         # Start worker in Isaac Sim environment
         worker_script = os.path.join(os.path.dirname(__file__), "persistent_isaac_sim_worker.py")
         cmd = [
@@ -232,11 +242,6 @@ class PersistentWorkerManager:
         result = self._send_command(command)
         if result.get("status") == "success":
             self.simulation_initialized = True
-
-            print("Verifying worker simulation state before initializing animation...")
-            if not self._verify_worker_simulation_ready():
-                print("⚠ Worker simulation verification failed, skipping animation initialization")
-                return result
 
             # Auto-initialize animation mode with pre-cloning
             print(f"Auto-initializing animation mode with {self.max_animation_users} environments...")

@@ -46,12 +46,11 @@ class PersistentWorker:
     def start(self, initial_config: dict):
         """Start the persistent worker loop."""
         # CRITICAL: Wait for Isaac Sim to fully initialize before signaling ready
-        # SimulationApp prints "Startup Complete" but background initialization continues
-        # Without this delay, commands arrive before worker can process them
-        print("Waiting for Isaac Sim background initialization...")
+        # SimulationApp returns after basic init, but extensions continue loading
+        print("Waiting for Isaac Sim full initialization (20 seconds)...")
         sys.stdout.flush()
-        time.sleep(10)  # Give Isaac Sim time to complete all background tasks
-        print("Isaac Sim ready for commands")
+        time.sleep(20)  # Give ample time for all extensions and GPU initialization
+        print("✓ Isaac Sim initialization complete, starting worker loop")
         sys.stdout.flush()
         
         print("WORKER_READY")  # Signal to manager that we're ready
@@ -96,13 +95,16 @@ class PersistentWorker:
                     time.sleep(0.05)  # 50ms - still responsive
 
             except Exception as e:
-                print(f"Error in worker loop: {e}")
+                print(f"❌ ERROR in worker loop: {e}")
+                sys.stdout.flush()
                 import traceback
-
                 traceback.print_exc()
+                sys.stderr.flush()
+                sys.stdout.flush()
                 self._send_result({"status": "error", "message": str(e)})
 
-        print("Worker shutting down...")
+        print("⚠️ Worker loop exited, shutting down...")
+        sys.stdout.flush()
         self._update_status("shutdown", "Worker shut down gracefully")
 
     def _check_for_command(self) -> dict:
@@ -130,12 +132,18 @@ class PersistentWorker:
     def _process_command(self, command: dict) -> dict:
         """Process a command and return result."""
         action = command.get("action")
+        
+        print(f"📥 Processing command: {action}")
+        sys.stdout.flush()
 
         try:
             if action == "initialize_and_capture":
                 # Initialize simulation and capture first state
                 config = command["config"]
                 output_dir = command["output_dir"]
+                
+                print(f"🎬 Starting initialize_and_capture...")
+                sys.stdout.flush()
 
                 print(
                     f"Debug: Before capture_static_images - simulation_initialized = {self.isaac_worker.simulation_initialized}"
@@ -339,16 +347,25 @@ def main():
 
     try:
         # Create and start persistent worker
+        print("Creating PersistentWorker...")
+        sys.stdout.flush()
+        
         worker = PersistentWorker(args.output_dir, args.max_users, simulation_app)
+        
+        print("Starting worker loop...")
+        sys.stdout.flush()
+        
         worker.start(initial_config)
 
     except KeyboardInterrupt:
         print("Interrupted by user")
+        sys.stdout.flush()
     except Exception as e:
         print(f"Worker error: {e}")
+        sys.stdout.flush()
         import traceback
-
         traceback.print_exc()
+        sys.stdout.flush()
         sys.exit(1)
     finally:
         if "simulation_app" in globals():
