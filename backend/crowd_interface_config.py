@@ -36,7 +36,7 @@ class CrowdInterfaceConfig:
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
         # automatically discard it. Threshold is L2 distance in joint positions (radians).
-        self.jitter_threshold: float = 0.02  # radians - tune based on robot sensitivity
+        self.jitter_threshold: float = 0.01  # radians - tune based on robot sensitivity
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response

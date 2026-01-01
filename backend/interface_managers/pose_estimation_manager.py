@@ -363,8 +363,46 @@ class PoseEstimationManager:
                             if "object_poses" not in st:
                                 st["object_poses"] = {}
 
-                            # FALLBACK LOGIC: If estimation failed (pose_world is None), use last known pose
+                            # RETRY LOGIC: If estimation failed, retry up to 5 times
                             if pose_world is None:
+                                retry_count = result_data.get("retry_count", 0)
+                                max_retries = 5
+                                
+                                if retry_count < max_retries:
+                                    # Re-enqueue the job with incremented retry count
+                                    print(f"🔄 Pose estimation failed for {obj}, retrying ({retry_count + 1}/{max_retries})...")
+                                    
+                                    job_id = f"{ep_id}_{st_id}_{obj}_{uuid.uuid4().hex[:8]}"
+                                    job = {
+                                        "job_id": job_id,
+                                        "episode_id": int(ep_id),
+                                        "state_id": int(st_id),
+                                        "object": obj,
+                                        "obs_path": st.get("obs_path"),
+                                        "K": self._intrinsics_for_pose(),
+                                        "prompt": (self.objects or {}).get(obj, obj),
+                                        "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
+                                        "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
+                                        "retry_count": retry_count + 1,  # Track retry attempts
+                                    }
+                                    
+                                    tmp = self.pose_tmp / f"{job_id}.json"
+                                    dst = self.pose_inbox / f"{job_id}.json"
+                                    try:
+                                        with open(tmp, "w", encoding="utf-8") as f:
+                                            json.dump(job, f)
+                                        os.replace(tmp, dst)
+                                        print(f"   ✅ Retry job enqueued: {dst.name}")
+                                        # Don't set object_poses yet - wait for retry result
+                                        continue
+                                    except Exception as e:
+                                        print(f"⚠️  Failed to enqueue retry job: {e}")
+                                        # Fall through to fallback logic
+                                
+                                # Max retries exceeded or retry failed - use fallback
+                                if retry_count >= max_retries:
+                                    print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
+                                
                                 fallback_pose = self.last_known_poses.get(obj)
                                 if fallback_pose is not None:
                                     print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")

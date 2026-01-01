@@ -46,10 +46,10 @@ class PersistentWorker:
     def start(self, initial_config: dict):
         """Start the persistent worker loop."""
         # CRITICAL: Wait for Isaac Sim to fully initialize before signaling ready
-        # SimulationApp returns after basic init, but extensions continue loading
-        print("Waiting for Isaac Sim full initialization (20 seconds)...")
+        # Use a shorter delay since most initialization happens during SimulationApp creation
+        print("Waiting for Isaac Sim background initialization...")
         sys.stdout.flush()
-        time.sleep(20)  # Give ample time for all extensions and GPU initialization
+        time.sleep(3)  # Shorter delay - most init happens before this
         print("✓ Isaac Sim initialization complete, starting worker loop")
         sys.stdout.flush()
         

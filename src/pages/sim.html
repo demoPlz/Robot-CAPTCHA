@@ -2846,12 +2846,6 @@ function bindRecordingHotkeysOnce() {
   });
 }
 
-function maybeRecord(trigger) {
-  // Don't auto-record when demo videos are disabled or when in buffered demo-video mode
-  // (in buffered mode, recording only starts manually via 'a' key or UI)
-  return;
-}
-
 function createRecordingMiniUI(){
   let el = document.getElementById('recMini');
   if (el) return el;
@@ -4231,9 +4225,6 @@ loader.load(
     
     
     function onGripperChange(newDir) {
-      // START recording on first state-altering action
-      maybeRecord('gripper-change');
-      
       cancelAnimationIfRunning('gripper changed');
       gripDir = newDir;                         // Update the current gripper direction
       drawGripArrows(newDir);
@@ -5687,9 +5678,6 @@ loader.load(
       // Press: start rotation or translation drag
       el.addEventListener('pointerdown', (evt) => {
         if (slidersLocked) return;
-        // START recording - this drag will alter the pose
-        maybeRecord('pose-drag');
-        
         const hits = pickAll(evt);
         if (!hits.length) return;
 
