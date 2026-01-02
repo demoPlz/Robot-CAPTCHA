@@ -3709,7 +3709,7 @@ loader.load(
     const promptFromServer = state.prompt;
     
     // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}`;
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}<br><b>Imitate the example video above.</b>`;
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state

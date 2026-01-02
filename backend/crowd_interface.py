@@ -13,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 from threading import Lock
+from typing import Optional
 
 import numpy as np
 import torch
@@ -103,6 +104,7 @@ class CrowdInterface:
         mturk_assignment_duration_seconds: int = 600,
         mturk_lifetime_seconds: int = 3600,
         mturk_auto_approval_delay_seconds: int = 60,
+        mturk_assignment_coefficient: float = 1.0,
         mturk_title: str = "Control a robot arm to complete a manipulation task",
         mturk_description: str = "View a robot simulation and specify the next position for the robot to move to",
         mturk_keywords: str = "robot, manipulation, annotation, simulation",
@@ -299,6 +301,7 @@ class CrowdInterface:
                     assignment_duration_seconds=mturk_assignment_duration_seconds,
                     lifetime_seconds=mturk_lifetime_seconds,
                     auto_approval_delay_seconds=mturk_auto_approval_delay_seconds,
+                    assignment_coefficient=mturk_assignment_coefficient,
                     title=mturk_title,
                     description=mturk_description,
                     keywords=mturk_keywords,
@@ -309,6 +312,7 @@ class CrowdInterface:
                     min_approval_rate=mturk_min_approval_rate,
                     min_approved_hits=mturk_min_approved_hits,
                     require_location=mturk_require_location,
+                    get_state_data_callback=self._get_state_data_for_mturk,
                 )
                 print(f"✅ MTurk integration enabled ({'sandbox' if mturk_sandbox else 'production'})")
             except Exception as e:
@@ -825,6 +829,37 @@ class CrowdInterface:
         """
         if self.mturk_manager:
             self.mturk_manager.update_hit_assignment_count(episode_id, state_id)
+    
+    def _get_state_data_for_mturk(self, episode_id: int, state_id: int) -> Optional[dict]:
+        """Callback for MTurk manager to fetch state data.
+        
+        Used when creating replacement HITs after timeout.
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            
+        Returns:
+            State data dict or None if not found
+        """
+        with self.state_lock:
+            if episode_id in self.pending_states_by_episode:
+                return self.pending_states_by_episode[episode_id].get(state_id)
+        return None
+    
+    def get_mturk_submitted_assignments(self, episode_id: int, state_id: int) -> list[dict]:
+        """Get submitted MTurk assignments for a state (for monitoring).
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            
+        Returns:
+            List of assignment info dicts
+        """
+        if not self.mturk_manager:
+            return []
+        return self.mturk_manager.get_submitted_assignments(episode_id, state_id)
 
     def get_mturk_hit_status(self, episode_id: int, state_id: int) -> dict | None:
         """Get MTurk HIT status for a state.

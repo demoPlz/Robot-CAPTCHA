@@ -68,10 +68,6 @@
         
         .demo-video-section .video-description {
             margin-bottom: 15px;
-            padding: 12px;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
-            border-radius: 4px;
             color: #374151;
             line-height: 1.5;
         }
@@ -315,7 +311,7 @@
                     if (descResponse.ok) {
                         const descText = await descResponse.text();
                         if (descText && descText.trim()) {
-                            descriptionDiv.textContent = descText;
+                            descriptionDiv.innerHTML = descText;
                         }
                     }
                 } catch (descError) {

@@ -265,6 +265,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             flex_video_id = None
             is_imp = False
             obs_path = None
+            actions_list = []
 
             with crowd_interface.state_lock:
                 # Prefer pending
@@ -281,6 +282,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         flex_video_id = int(raw_vid) if raw_vid is not None else None
                     except Exception:
                         flex_video_id = None
+                    # Get submitted actions
+                    actions = p_info.get("actions", [])
+                    for action_tensor in actions:
+                        actions_list.append(action_tensor.tolist())
                 else:
                     # Completed metadata
                     c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
@@ -320,6 +325,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "maincam_data_url": maincam_url,
                     "description_bank": bank["entries"],
                     "description_bank_text": bank["raw_text"],
+                    "submitted_actions": actions_list,
                 }
             )
         except Exception as e:
@@ -1775,6 +1781,28 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         except Exception as e:
             print(f"❌ Error getting MTurk HIT status: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/mturk/submitted-assignments", methods=["GET"])
+    def mturk_submitted_assignments():
+        """Get submitted MTurk assignments for a specific state (for monitoring).
+        
+        Query params:
+            episode_id: int
+            state_id: int
+        """
+        try:
+            episode_id = request.args.get("episode_id", type=int)
+            state_id = request.args.get("state_id", type=int)
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            assignments = crowd_interface.get_mturk_submitted_assignments(episode_id, state_id)
+            return jsonify({"status": "success", "assignments": assignments})
+
+        except Exception as e:
+            print(f"❌ Error getting submitted assignments: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/mturk/all-hits", methods=["GET"])

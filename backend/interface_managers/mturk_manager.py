@@ -39,6 +39,7 @@ class MTurkManager:
         assignment_duration_seconds: int = 600,
         lifetime_seconds: int = 3600,
         auto_approval_delay_seconds: int = 60,
+        assignment_coefficient: float = 1.0,
         title: str = "Control a robot arm to complete a manipulation task",
         description: str = "View a robot simulation and specify the next position for the robot to move to",
         keywords: str = "robot, manipulation, annotation, simulation",
@@ -50,6 +51,7 @@ class MTurkManager:
         min_approval_rate: int = 95,
         min_approved_hits: int = 100,
         require_location: Optional[list[str]] = None,
+        get_state_data_callback: Optional[callable] = None,
     ):
         """Initialize MTurk manager.
 
@@ -59,6 +61,7 @@ class MTurkManager:
             assignment_duration_seconds: Time allowed per assignment
             lifetime_seconds: How long HIT remains available
             auto_approval_delay_seconds: Auto-approve delay (minimum 60 seconds)
+            assignment_coefficient: Multiplier for max assignments (e.g., 1.5 = 50% extra slots)
             title: HIT title shown to workers
             description: HIT description
             keywords: Search keywords
@@ -70,6 +73,7 @@ class MTurkManager:
             min_approval_rate: Minimum approval rate percentage (0-100, default 95)
             min_approved_hits: Minimum number of approved HITs (default 100)
             require_location: List of country codes to restrict workers (e.g., ['US', 'CA', 'GB'])
+            get_state_data_callback: Callback function to fetch state data: (episode_id, state_id) -> state_data dict
 
         """
         self.sandbox = sandbox
@@ -77,6 +81,7 @@ class MTurkManager:
         self.assignment_duration_seconds = assignment_duration_seconds
         self.lifetime_seconds = lifetime_seconds
         self.auto_approval_delay_seconds = max(60, auto_approval_delay_seconds)  # Minimum 60s
+        self.assignment_coefficient = assignment_coefficient
         self.title = title
         self.description = description
         self.keywords = keywords
@@ -85,6 +90,7 @@ class MTurkManager:
         self.required_responses_per_critical_state = required_responses_per_critical_state
         self.keywords = keywords
         self.external_url = external_url
+        self.get_state_data_callback = get_state_data_callback
         
         # Worker qualification settings
         self.require_masters = require_masters
@@ -98,6 +104,7 @@ class MTurkManager:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         env_suffix = "sandbox" if sandbox else "production"
         self.timing_file = self.output_dir / f"hit_timing_{env_suffix}_{timestamp}.json"
+        self.active_hits_file = self.output_dir / f"active_hits_{env_suffix}.json"
 
         # Initialize MTurk client
         endpoint_url = (
@@ -125,6 +132,9 @@ class MTurkManager:
         self.hit_tracking: dict[tuple[int, int], dict] = {}
         self.hit_lock = Lock()
         
+        # Load any existing active HITs from previous session
+        self._load_active_hits()
+        
         # Track HIT completion times: episode_id -> state_id -> {created_at, completed_at, max_assignments, duration_seconds}
         self.hit_timing_stats: dict[int, dict[int, dict]] = {}
         self.timing_lock = Lock()
@@ -136,6 +146,34 @@ class MTurkManager:
         self.running = True
         self.approval_thread = Thread(target=self._approval_worker, daemon=True)
         self.approval_thread.start()
+    
+    def _load_active_hits(self):
+        """Load active HITs from disk (from previous session)."""
+        if self.active_hits_file.exists():
+            try:
+                import json
+                with open(self.active_hits_file, 'r') as f:
+                    data = json.load(f)
+                    for key_str, metadata in data.items():
+                        # Convert string key back to tuple
+                        episode_id, state_id = map(int, key_str.strip('()').split(', '))
+                        self.hit_tracking[(episode_id, state_id)] = metadata
+                    if self.hit_tracking:
+                        print(f"📂 Loaded {len(self.hit_tracking)} active HIT(s) from previous session")
+            except Exception as e:
+                print(f"⚠️  Failed to load active HITs: {e}")
+    
+    def _save_active_hits(self):
+        """Save active HITs to disk for recovery after restart."""
+        try:
+            import json
+            with self.hit_lock:
+                # Convert tuple keys to strings for JSON serialization
+                data = {str(k): v for k, v in self.hit_tracking.items()}
+            with open(self.active_hits_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"⚠️  Failed to save active HITs: {e}")
     
     def _save_timing_stats(self):
         """Save timing statistics to JSON file."""
@@ -251,8 +289,9 @@ class MTurkManager:
             HIT ID if successful, None otherwise
 
         """
-        # Calculate max_assignments: leave slots for expert workers
-        max_assignments = max(1, self.required_responses_per_critical_state - self.num_expert_workers)
+        # Calculate max_assignments: apply coefficient to (required - experts)
+        base_assignments = max(1, self.required_responses_per_critical_state - self.num_expert_workers)
+        max_assignments = max(1, int(self.assignment_coefficient * base_assignments))
         
         if self.num_expert_workers > 0:
             print(f"📊 Creating HIT with {max_assignments} MTurk assignments (reserving {self.num_expert_workers} slots for expert workers)")
@@ -306,30 +345,6 @@ class MTurkManager:
             hit_id = response["HIT"]["HITId"]
             hit_type_id = response["HIT"]["HITTypeId"]
             
-            # Verify HIT was created successfully by fetching it
-            # Add small delay to allow MTurk backend to index the HIT
-            import time as time_module
-            time_module.sleep(0.5)
-            
-            try:
-                hit_info = self.mturk_client.get_hit(HITId=hit_id)
-                hit_status = hit_info["HIT"]["HITStatus"]
-                hit_review_status = hit_info["HIT"].get("HITReviewStatus", "N/A")
-                num_available = hit_info["HIT"]["NumberOfAssignmentsAvailable"]
-                expiration = hit_info["HIT"]["Expiration"]
-                
-                print(f"🔍 HIT Verification:")
-                print(f"   Status: {hit_status}")
-                print(f"   Review Status: {hit_review_status}")
-                print(f"   Assignments Available: {num_available}")
-                print(f"   Expires: {expiration}")
-                
-                if hit_status != "Assignable":
-                    print(f"⚠️  WARNING: HIT status is '{hit_status}' - it may not be visible to workers!")
-                    
-            except ClientError as verify_error:
-                print(f"⚠️  Could not verify HIT creation: {verify_error}")
-            
             # Track HIT
             created_at = time.time()
             with self.hit_lock:
@@ -358,10 +373,16 @@ class MTurkManager:
             
             # Save timing stats to file
             self._save_timing_stats()
+            
+            # Save active HITs to disk for recovery
+            self._save_active_hits()
 
             env = "sandbox" if self.sandbox else "production"
             base_url = "workersandbox.mturk.com" if self.sandbox else "worker.mturk.com"
             requester_url = f"https://requester{'sandbox' if self.sandbox else ''}.mturk.com/manage"
+            
+            # Direct worker preview URL
+            worker_url = f"https://{base_url}/mturk/preview?groupId={hit_type_id}"
             
             # Format creation time
             from datetime import datetime
@@ -370,8 +391,7 @@ class MTurkManager:
             print(f"✅ Created MTurk HIT ({env}): {hit_id} for episode={episode_id}, state={state_id}")
             print(f"   🕐 Created at: {creation_time}")
             print(f"   🔧 Requester manage: {requester_url}")
-            print(f"   👤 Workers can find this HIT by searching on https://{base_url}")
-            print(f"      Search for: \"{self.title[:50]}...\" or filter by 'Available HITs'")
+            print(f"   👤 Worker preview URL: {worker_url}")
             
             # List recent HITs for debugging
             self.list_recent_hits(max_results=5)
@@ -423,6 +443,9 @@ class MTurkManager:
                     
                     # Mark HIT as completed in timing stats
                     self._mark_hit_completed(episode_id, state_id)
+                    
+                    # Save updated active HITs
+                    self._save_active_hits()
                     
                     # Expire the HIT immediately to prevent more workers from accepting
                     try:
@@ -487,48 +510,20 @@ class MTurkManager:
                                     print(f"   🕐 Accepted at: {accept_time}")
                                     print(f"   📊 Status: {num_pending} pending, {num_available} available, {max_assignments} max")
                                     
-                                    # Alert and start timeout timer ONLY when all slots are taken
+                                    # Alert when all slots are taken
                                     if num_available == 0:
-                                        print(f"🎯 All assignment slots taken for episode={episode_id}, state={state_id} - HIT no longer searchable by workers")
-                                        # Start timeout timer only when fully blocked
-                                        if self.hit_tracking[(episode_id, state_id)]["pending_since"] is None:
-                                            self.hit_tracking[(episode_id, state_id)]["pending_since"] = time.time()
-                                            print(f"   ⏱️  Timeout timer started (will expire if blocked for {self.assignment_duration_seconds}s)")
+                                        print(f"🎯 All assignment slots taken for episode={episode_id}, state={state_id} - HIT no longer searchable")
                                 
                                 elif num_pending < prev_pending:
-                                    # Worker abandoned or timed out (submitted assignments are caught separately)
+                                    # Worker abandoned or assignment duration expired (submitted assignments caught separately)
                                     abandoned = prev_pending - num_pending
                                     self.hit_tracking[(episode_id, state_id)]["assignments_pending"] = num_pending
-                                    # Clear pending timer if slots become available again
-                                    if num_available > 0:
-                                        self.hit_tracking[(episode_id, state_id)]["pending_since"] = None
-                                    print(f"🚪 Worker(s) abandoned/timed out {abandoned} assignment(s) for episode={episode_id}, state={state_id}")
+                                    print(f"⏱️  {abandoned} worker(s) kicked out (assignment duration expired) for episode={episode_id}, state={state_id}")
                                     print(f"   📊 Status: {num_pending} pending, {num_available} available, {max_assignments} max")
                                     
                                     # Alert if slots become available again
                                     if num_available > 0:
                                         print(f"♻️  Assignment slot(s) now available again for episode={episode_id}, state={state_id} - HIT is searchable")
-                                
-                                # Check for timeout - expire HIT ONLY if all slots blocked for too long
-                                pending_since = self.hit_tracking[(episode_id, state_id)]["pending_since"]
-                                if pending_since and num_pending > 0 and num_available == 0:
-                                    elapsed = time.time() - pending_since
-                                    if elapsed > self.assignment_duration_seconds:
-                                        print(f"⏰ TIMEOUT: All slots blocked for {elapsed:.0f}s (limit: {self.assignment_duration_seconds}s)")
-                                        print(f"   Expiring HIT to kick out non-responsive workers")
-                                        try:
-                                            # Expire HIT - this forces MTurk to return pending assignments
-                                            self.mturk_client.update_expiration_for_hit(HITId=hit_id, ExpireAt=0)
-                                            
-                                            # Remove from tracking entirely - this allows system to create new HIT
-                                            # Even if workers submit after expiration, we want fresh HIT for remaining slots
-                                            del self.hit_tracking[(episode_id, state_id)]
-                                            
-                                            print(f"   ✅ Expired HIT {hit_id} and removed from tracking")
-                                            print(f"   System will create new HIT for this state (workers may have submitted late)")
-                                            
-                                        except ClientError as expire_error:
-                                            print(f"   ❌ Failed to expire HIT: {expire_error}")
                                     
                         except ClientError as e:
                             if "does not exist" not in str(e):
@@ -693,6 +688,53 @@ class MTurkManager:
         if self.approval_thread.is_alive():
             self.approval_thread.join(timeout=5)
         print("MTurk manager shutdown")
+    
+    def get_submitted_assignments(self, episode_id: int, state_id: int) -> list[dict]:
+        """Get all submitted assignments for a specific HIT.
+        
+        Used by monitor to preview submissions before all responses arrive.
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            
+        Returns:
+            List of assignment info dicts with worker_id, submit_time, assignment_id
+        """
+        with self.hit_lock:
+            key = (episode_id, state_id)
+            if key not in self.hit_tracking:
+                return []
+            
+            hit_id = self.hit_tracking[key]["hit_id"]
+        
+        try:
+            # Get all submitted AND approved assignments (approved assignments were recently submitted)
+            # We check both because auto-approval happens quickly
+            all_assignments = []
+            
+            for status in ["Submitted", "Approved"]:
+                response = self.mturk_client.list_assignments_for_hit(
+                    HITId=hit_id,
+                    AssignmentStatuses=[status],
+                )
+                all_assignments.extend(response.get("Assignments", []))
+            
+            assignments = []
+            for assignment in all_assignments:
+                assignments.append({
+                    "assignment_id": assignment["AssignmentId"],
+                    "worker_id": assignment["WorkerId"],
+                    "submit_time": assignment["SubmitTime"].isoformat() if hasattr(assignment["SubmitTime"], "isoformat") else str(assignment["SubmitTime"]),
+                    "accept_time": assignment["AcceptTime"].isoformat() if hasattr(assignment["AcceptTime"], "isoformat") else str(assignment["AcceptTime"]),
+                    "status": assignment["AssignmentStatus"],
+                })
+            
+            return assignments
+            
+        except ClientError as e:
+            print(f"⚠️  Failed to get assignments for HIT {hit_id}: {e}")
+            return []
     
     def list_recent_hits(self, max_results: int = 10):
         """List recent HITs for debugging.

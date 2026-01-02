@@ -1,9 +1,8 @@
-<strong>Goal:</strong> Set and submit the <b>next goal position</b> that the robot should go to that:
+<strong>Goal:</strong> Given a specific task instruction (following <b>Task</b>), set and submit the <b>goal position</b> that the robot should go to that:
     <ol style="margin: 5px 0 5px 20px;">
         <li>is safe i.e. does not cause hardware damaging collisions, and</li>
-        <li>advances the progress of the manipulation task.</li>
+        <li>fulfills the task instruction.</li>
     </ol>
-    <b>Only one step forward.</b> You are presented with a state at an arbitrary stage of the manipulation task, and your goal should move the robot closer to completing the task.
 <br>
 <strong>Controls:</strong> You can <em>either</em> specify a movement or a gripper action:
     <ul style="margin: 5px 0 5px 20px; list-style-type: none; padding-left: 20px;">
@@ -18,3 +17,5 @@
 <strong>Submit:</strong> Once you're satisfied with your suggestion, click "Submit" to submit. After submitting, click "Submit HIT" to finalize.
 <br>
 <strong>If the simulated and real-life views differ (e.g. different object locations), use the real-life views as ground truth.</strong>
+<br>
+<strong>If you are not sure what to do, follow the example video.</strong>

@@ -1,3 +1,6 @@
-This example shows the process of setting a possible goal position. You can do something similar. In some examples, 
+This example shows the process of setting a possible goal position. <b>You should do something similar.</b> In some examples, 
 I click "Simulate" and show how the robot would move given the specified goal position; in some examples, the object position 
 differ between the simulated views and the real views, and I use the real views as the ground truth.
+<br>
+
+The vieo plays in a loop. I click submit right after finishing specifying.

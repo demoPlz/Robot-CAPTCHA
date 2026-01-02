@@ -659,6 +659,14 @@
                         &nbsp;&nbsp;|&nbsp;&nbsp;
                         <span class="muted">Video ID:</span> <span id="kv-video">-</span>
                     </div>
+                    
+                    <!-- Submitted Actions Section -->
+                    <div id="submitted-actions-section" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: none;">
+                        <div class="field-label" style="font-weight: 600; margin-bottom: 8px;">📊 Submitted Actions:</div>
+                        <div id="submitted-actions-list" class="muted" style="font-size: 13px;">
+                            Loading...
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -2318,9 +2326,14 @@
                 kvSt.textContent = stateId;
                 kvVid.textContent = '-';
                 modalContext = { episodeId, stateId, selectedVideoId:null, selectedText:null, bank:[] };
+                
+                // Hide actions section initially
+                const actionsSection = document.getElementById('submitted-actions-section');
+                if (actionsSection) actionsSection.style.display = 'none';
+                
                 openModal();
 
-                // Load details (maincam + current VLM + bank)
+                // Load details (maincam + current VLM + bank + actions)
                 const details = await fetchStateDetails(episodeId, stateId);
 
                 if (details.maincam_data_url) {
@@ -2371,6 +2384,9 @@
 
                 // Update navigation display
                 updateModalNavigation();
+                
+                // Display submitted actions
+                displaySubmittedActions(details.submitted_actions || []);
             } catch (e) {
                 console.error('Error in openVlmModal:', e);
                 showToast('Failed to load VLM details.');
@@ -2450,6 +2466,47 @@
                 console.error(e);
                 showToast('Failed to save selection.');
             }
+        }
+        
+        // Display submitted actions for a state
+        function displaySubmittedActions(actions) {
+            const actionsSection = document.getElementById('submitted-actions-section');
+            const actionsList = document.getElementById('submitted-actions-list');
+            
+            console.log('[Submitted Actions] Displaying', actions.length, 'actions');
+            
+            if (!actionsSection || !actionsList) {
+                console.warn('[Submitted Actions] Section elements not found');
+                return;
+            }
+            
+            if (actions.length === 0) {
+                actionsList.innerHTML = 'No actions submitted yet';
+                actionsSection.style.display = 'block';
+                return;
+            }
+            
+            // Show section and populate list
+            actionsSection.style.display = 'block';
+            
+            const jointNames = ['waist', 'shoulder', 'elbow', 'forearm_roll', 'wrist_angle', 'wrist_rotate', 'gripper'];
+            
+            const items = actions.map((action, idx) => {
+                const jointValues = action.map((val, jIdx) => {
+                    const name = jointNames[jIdx] || `joint_${jIdx}`;
+                    return `<div style="font-size: 11px;"><span style="color: #64748b;">${name}:</span> ${val.toFixed(4)}</div>`;
+                }).join('');
+                
+                return `
+                    <div style="margin-bottom: 8px; padding: 8px; background: white; border-radius: 4px; border: 1px solid #e2e8f0;">
+                        <div style="font-weight: 600; margin-bottom: 4px;">Submission ${idx + 1}</div>
+                        ${jointValues}
+                    </div>
+                `;
+            }).join('');
+            
+            actionsList.innerHTML = items;
+            console.log('[Submitted Actions] Displayed', actions.length, 'actions');
         }
 
         // Modal buttons & close mechanisms

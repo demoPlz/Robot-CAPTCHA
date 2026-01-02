@@ -40,7 +40,7 @@ class CrowdInterfaceConfig:
 
         # ========== Critical State Autofill ==========
         # When enabled, critical states receive num_autofill_actions + 1 responses (cloned) per response
-        self.autofill_critical_states: bool = True
+        self.autofill_critical_states: bool = False
         self.num_autofill_actions: int | None = 3
 
         # ========== UI Prompting ==========
@@ -59,7 +59,7 @@ class CrowdInterfaceConfig:
         # ========== Simulation ==========
         self.use_sim: bool = True  # Use Isaac Sim for state simulaion
         self.use_gpu_physics: bool = False  # Use GPU physics (faster but uses more VRAM) vs CPU physics
-        self.max_animation_users: int = 1  # Maximum simultaneous users viewing animations
+        self.max_animation_users: int = 4  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
         self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
@@ -90,13 +90,14 @@ class CrowdInterfaceConfig:
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
         # ========== MTurk Integration ==========
-        self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
+        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
         self.mturk_sandbox: bool = False  # Use MTurk sandbox (False for production)
-        self.mturk_reward: float = 0.50  # Payment per assignment in USD
-        self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment (3 minutes)
+        self.mturk_reward: float = 0.25  # Payment per assignment in USD
+        self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment
         self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
         self.mturk_auto_approval_delay_seconds: int = 60  # Auto-approve after 1 minute
-        self.mturk_title: str = "Control a robot arm"
+        self.mturk_assignment_coefficient: float = 5.0  # Multiplier for max assignments: coefficient * (required - experts)
+        self.mturk_title: str = "Control a robot arm (2 minutes)"
         self.mturk_description: str = "View a task environment and specify the next position for the robot to move to"
         self.mturk_keywords: str = "robot, manipulation, annotation"
         # External URL where your frontend is hosted (for MTurk ExternalQuestion)
@@ -107,7 +108,7 @@ class CrowdInterfaceConfig:
         # ========== MTurk Worker Qualifications ==========
         self.mturk_require_masters: bool = False  # Require MTurk Masters (premium, higher quality but smaller pool)
         self.mturk_min_approval_rate: int = 98  # Minimum approval rate percentage (0-100)
-        self.mturk_min_approved_hits: int = 100  # Minimum number of approved HITs
+        self.mturk_min_approved_hits: int = 5000  # Minimum number of approved HITs
         self.mturk_require_location: list[str] | None = ['US', 'CA', 'GB']  # Country codes (e.g., ['US', 'CA', 'GB']) or None for all
 
     @classmethod
@@ -254,6 +255,11 @@ class CrowdInterfaceConfig:
             help="Auto-approve delay in seconds (default: 60, minimum: 60)",
         )
         parser.add_argument(
+            "--mturk-assignment-coefficient",
+            type=float,
+            help="Multiplier for max MTurk assignments (default: 1.0, e.g., 1.5 = 50%% extra slots)",
+        )
+        parser.add_argument(
             "--mturk-title",
             type=str,
             help="MTurk HIT title",
@@ -356,6 +362,8 @@ class CrowdInterfaceConfig:
             config.mturk_lifetime_seconds = args.mturk_lifetime
         if args.mturk_auto_approval_delay is not None:
             config.mturk_auto_approval_delay_seconds = args.mturk_auto_approval_delay
+        if args.mturk_assignment_coefficient is not None:
+            config.mturk_assignment_coefficient = args.mturk_assignment_coefficient
         if args.mturk_title is not None:
             config.mturk_title = args.mturk_title
         if args.mturk_description is not None:
@@ -417,6 +425,7 @@ class CrowdInterfaceConfig:
             "mturk_assignment_duration_seconds": self.mturk_assignment_duration_seconds,
             "mturk_lifetime_seconds": self.mturk_lifetime_seconds,
             "mturk_auto_approval_delay_seconds": self.mturk_auto_approval_delay_seconds,
+            "mturk_assignment_coefficient": self.mturk_assignment_coefficient,
             "mturk_title": self.mturk_title,
             "mturk_description": self.mturk_description,
             "mturk_keywords": self.mturk_keywords,
