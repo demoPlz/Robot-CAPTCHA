@@ -880,6 +880,9 @@
 
         let latestStateInFlight = false;
         let pendingInfoInFlight = false;
+        let preExecutionApprovalInFlight = false;
+        let approvalInFlight = false;
+        let undoClassificationInFlight = false;
 
         const lastCamUpdate = { front:0, left:0, right:0, perspective:0, obs_main:0, obs_wrist:0 };
         const cameraBuffers = {};
@@ -2750,13 +2753,22 @@
                     }
                 }, INFO_POLL_MS),
                 preExecutionApproval: setInterval(() => {
-                    fetchPendingPreExecutionApproval();
+                    if (!preExecutionApprovalInFlight) {
+                        preExecutionApprovalInFlight = true;
+                        fetchPendingPreExecutionApproval().finally(() => preExecutionApprovalInFlight = false);
+                    }
                 }, 500),  // Poll pre-execution approval more frequently (500ms)
                 approval: setInterval(() => {
-                    fetchPendingApproval();
+                    if (!approvalInFlight) {
+                        approvalInFlight = true;
+                        fetchPendingApproval().finally(() => approvalInFlight = false);
+                    }
                 }, 500),  // Poll approval more frequently (500ms)
                 undoClassification: setInterval(() => {
-                    fetchPendingUndoClassification();
+                    if (!undoClassificationInFlight) {
+                        undoClassificationInFlight = true;
+                        fetchPendingUndoClassification().finally(() => undoClassificationInFlight = false);
+                    }
                 }, 500)  // Poll undo classification at same rate
             };
         }

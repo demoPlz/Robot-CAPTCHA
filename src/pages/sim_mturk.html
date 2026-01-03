@@ -318,12 +318,19 @@
                     console.warn('Failed to load description:', descError);
                 }
                 
-                // Show video
-                noVideoMessage.style.display = 'none';
+                // Show video with loading indicator
+                noVideoMessage.textContent = 'Loading video...';
+                noVideoMessage.style.display = 'block';
                 videoSource.src = videoUrl;
-                videoElement.style.display = 'block';
-                videoElement.load();
+                videoElement.style.display = 'none';
                 
+                // Show video once it's ready to play
+                videoElement.addEventListener('canplay', () => {
+                    noVideoMessage.style.display = 'none';
+                    videoElement.style.display = 'block';
+                }, { once: true });
+                
+                videoElement.load();
                 videoElement.muted = true;
                 videoElement.play().catch(err => {
                     console.warn('Autoplay failed:', err);
