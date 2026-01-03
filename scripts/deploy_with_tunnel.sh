@@ -7,20 +7,19 @@ echo "🚀 Deploy to Netlify with Auto-Detected Tunnel URL"
 echo "===================================================="
 echo ""
 
-# Check if Flask backend is running
-if ! curl -s http://localhost:9000/api/test > /dev/null 2>&1; then
-    echo "❌ Backend is not running on port 9000"
-    echo "   Please start your Flask backend first"
+echo "1. Detecting cloudflared tunnel URL..."
+TUNNEL_OUTPUT=$(./scripts/check_tunnel.sh)
+
+if ! echo "$TUNNEL_OUTPUT" | grep -q "tunnel is RUNNING"; then
+    echo "❌ No cloudflared tunnel is running"
+    echo "   Start it with: ./scripts/start_tunnel.sh"
     exit 1
 fi
 
-# Get the cloudflared URL from the backend
-echo "1. Fetching cloudflared tunnel URL from backend..."
-TUNNEL_INFO=$(curl -s http://localhost:9000/api/cloudflared-url)
-TUNNEL_URL=$(echo "$TUNNEL_INFO" | grep -oP '"url":\s*"\K[^"]+' || echo "")
+TUNNEL_URL=$(echo "$TUNNEL_OUTPUT" | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com')
 
 if [ -z "$TUNNEL_URL" ]; then
-    echo "❌ Could not get tunnel URL from backend"
+    echo "❌ Could not extract tunnel URL"
     exit 1
 fi
 
