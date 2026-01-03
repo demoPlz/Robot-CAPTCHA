@@ -293,6 +293,9 @@ class MTurkManager:
         base_assignments = max(1, self.required_responses_per_critical_state - self.num_expert_workers)
         max_assignments = max(1, int(self.assignment_coefficient * base_assignments))
         
+        print(f"🔍 DEBUG: required_responses={self.required_responses_per_critical_state}, experts={self.num_expert_workers}, coefficient={self.assignment_coefficient}")
+        print(f"🔍 DEBUG: base_assignments={base_assignments}, max_assignments={max_assignments}")
+        
         if self.num_expert_workers > 0:
             print(f"📊 Creating HIT with {max_assignments} MTurk assignments (reserving {self.num_expert_workers} slots for expert workers)")
         

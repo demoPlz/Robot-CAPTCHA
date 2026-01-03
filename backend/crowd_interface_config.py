@@ -90,7 +90,7 @@ class CrowdInterfaceConfig:
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
         # ========== MTurk Integration ==========
-        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
+        self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
         self.mturk_sandbox: bool = False  # Use MTurk sandbox (False for production)
         self.mturk_reward: float = 0.25  # Payment per assignment in USD
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment

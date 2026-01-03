@@ -194,8 +194,8 @@ def control_robot(cfg: ControlPipelineConfig):
     crowd_interface.register_cleanup_handlers()
 
     app = create_flask_app(crowd_interface)
-    # Use a controllable WSGI server instead of app.run() in a daemon thread.
-    http_server = make_server("0.0.0.0", 9000, app)
+    # Use a threaded WSGI server to handle multiple requests concurrently
+    http_server = make_server("0.0.0.0", 9000, app, threaded=True)
     server_thread = Thread(target=http_server.serve_forever, name="flask-wsgi", daemon=True)
     server_thread.start()
 

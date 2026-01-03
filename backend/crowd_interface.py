@@ -411,14 +411,16 @@ class CrowdInterface:
             if video_id is not None:
                 p, _ = self.video_manager.find_show_video_by_id(video_id)
                 if p:
-                    chosen_url = f"/api/show-videos/{video_id}"  # serves the exact id
+                    # Serve from static demos directory for fast loading
+                    video_filename = Path(p).name
+                    chosen_url = f"/demos/{video_filename}"
 
             # Fallback: latest available .webm
             if not chosen_url:
                 lp, lid = self.video_manager.find_latest_show_video()
                 if lp and lid:
-                    # Stable "latest" URL for the player; resolves dynamically on the server
-                    chosen_url = "/api/show-videos/latest.webm"
+                    video_filename = Path(lp).name
+                    chosen_url = f"/demos/{video_filename}"
 
             if chosen_url:
                 out["example_video_url"] = chosen_url

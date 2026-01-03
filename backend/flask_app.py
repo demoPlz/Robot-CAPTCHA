@@ -74,40 +74,21 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
     @app.route("/api/cloudflared-url")
     def get_cloudflared_url():
-        """Return the current cloudflared tunnel URL by reading from the log file.
-        
-        This endpoint allows the frontend to automatically discover the tunnel URL
-        without manual configuration.
-        """
+        """Return the current cloudflared tunnel URL from log file."""
         try:
-            # Common locations for cloudflared log/config files
-            home = Path.home()
-            possible_paths = [
-                Path("/tmp/cloudflared.log"),
-                home / ".cloudflared" / "cloudflared.log",
-                Path("cloudflared.log"),
-            ]
+            log_path = Path("/tmp/cloudflared.log")
             
-            # Try to find and read the cloudflared URL from logs
-            for log_path in possible_paths:
-                if log_path.exists():
-                    try:
-                        with open(log_path, 'r') as f:
-                            content = f.read()
-                            # Look for trycloudflare.com URL in the logs
-                            match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
-                            if match:
-                                url = match.group(0)
-                                return jsonify({"url": url, "source": str(log_path)})
-                    except Exception as e:
-                        print(f"Error reading {log_path}: {e}")
-                        continue
+            if log_path.exists():
+                with open(log_path, 'r') as f:
+                    content = f.read()
+                    match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
+                    if match:
+                        return jsonify({"url": match.group(0), "source": "tunnel"})
             
-            # If no URL found in logs, return localhost as fallback
             return jsonify({
                 "url": "http://127.0.0.1:9000",
                 "source": "fallback",
-                "message": "No cloudflared tunnel detected, using localhost"
+                "message": "No tunnel detected"
             })
             
         except Exception as e:
