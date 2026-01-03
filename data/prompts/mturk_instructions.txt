@@ -1,1 +1,6 @@
-<strong>Simply imitate the Example Video, which demonstrates how to complete the specified Task.</strong>
+<strong>TL;DR: Simply imitate the Example Video, which demonstrates how to complete the specified Task.</strong><br>
+Use the UI to suggest the <b>immediate next goal</b> pose for the robot to travel to.<br>
+You are only asked to suggest the immediate next goal! <b>You can either choose to move the arm, or open/close the gripper.</b> Other users will take care of what to do afterwards.<br>
+The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.<br>
+After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and adjust accordingly if necessary.<br>
+If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b>
