@@ -110,6 +110,7 @@ class CrowdInterface:
         mturk_keywords: str = "robot, manipulation, annotation, simulation",
         mturk_external_url: str | None = None,
         # --- mturk worker qualifications ---
+        mturk_use_qualifications: bool = True,
         mturk_require_masters: bool = False,
         mturk_min_approval_rate: int = 95,
         mturk_min_approved_hits: int = 100,
@@ -308,6 +309,7 @@ class CrowdInterface:
                     external_url=effective_external_url,
                     num_expert_workers=num_expert_workers,
                     required_responses_per_critical_state=required_responses_per_critical_state,
+                    use_qualifications=mturk_use_qualifications,
                     require_masters=mturk_require_masters,
                     min_approval_rate=mturk_min_approval_rate,
                     min_approved_hits=mturk_min_approved_hits,

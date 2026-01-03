@@ -106,7 +106,7 @@ class CrowdInterfaceConfig:
         self.mturk_external_url: str | None = None  # Auto-detected if using start_tunnel.sh
         
         # ========== MTurk Worker Qualifications ==========
-        self.mturk_use_qualifications: bool = True  # Master switch: enable/disable all qualification requirements
+        self.mturk_use_qualifications: bool = False  # Master switch: enable/disable all qualification requirements
         self.mturk_require_masters: bool = False  # Require MTurk Masters (premium, higher quality but smaller pool)
         self.mturk_min_approval_rate: int = 98  # Minimum approval rate percentage (0-100)
         self.mturk_min_approved_hits: int = 5000  # Minimum number of approved HITs

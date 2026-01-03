@@ -47,6 +47,7 @@ class MTurkManager:
         num_expert_workers: int = 0,
         required_responses_per_critical_state: int = 2,
         output_dir: str = "output/mturk_stats",
+        use_qualifications: bool = True,
         require_masters: bool = False,
         min_approval_rate: int = 95,
         min_approved_hits: int = 100,
@@ -69,6 +70,7 @@ class MTurkManager:
             num_expert_workers: Number of expert workers labeling via localhost (reduces MTurk assignments)
             required_responses_per_critical_state: Total responses needed per critical state
             output_dir: Directory to save timing statistics
+            use_qualifications: Master switch to enable/disable all qualification requirements
             require_masters: Require MTurk Masters qualification (premium workers, higher quality)
             min_approval_rate: Minimum approval rate percentage (0-100, default 95)
             min_approved_hits: Minimum number of approved HITs (default 100)
@@ -93,6 +95,7 @@ class MTurkManager:
         self.get_state_data_callback = get_state_data_callback
         
         # Worker qualification settings
+        self.use_qualifications = use_qualifications
         self.require_masters = require_masters
         self.min_approval_rate = min_approval_rate
         self.min_approved_hits = min_approved_hits
@@ -231,6 +234,10 @@ class MTurkManager:
             List of QualificationRequirement dictionaries
             
         """
+        # If qualifications are disabled, return empty list
+        if not self.use_qualifications:
+            return []
+        
         qualifications = []
         
         # 1. Approval rate requirement (e.g., >= 95%)
