@@ -7,3 +7,18 @@
   port = 5173
   targetPort = 5173
   publish = "dist"
+
+[[redirects]]
+  from = "/monitor.html"
+  to = "/src/pages/monitor.html"
+  status = 200
+
+[[redirects]]
+  from = "/sim.html"
+  to = "/src/pages/sim.html"
+  status = 200
+
+[[redirects]]
+  from = "/sim_mturk.html"
+  to = "/src/pages/sim_mturk.html"
+  status = 200
