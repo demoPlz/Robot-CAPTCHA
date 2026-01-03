@@ -90,8 +90,8 @@ class CrowdInterfaceConfig:
         self.action_selector_model_path: str | None = None  # Path to learned selector model
 
         # ========== MTurk Integration ==========
-        self.use_mturk: bool = False  # Enable MTurk HIT creation for critical states
-        self.mturk_sandbox: bool = False  # Use MTurk sandbox (False for production)
+        self.use_mturk: bool = True  # Enable MTurk HIT creation for critical states
+        self.mturk_sandbox: bool = True  # Use MTurk sandbox (False for production)
         self.mturk_reward: float = 0.25  # Payment per assignment in USD
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment
         self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
@@ -106,6 +106,7 @@ class CrowdInterfaceConfig:
         self.mturk_external_url: str | None = None  # Auto-detected if using start_tunnel.sh
         
         # ========== MTurk Worker Qualifications ==========
+        self.mturk_use_qualifications: bool = True  # Master switch: enable/disable all qualification requirements
         self.mturk_require_masters: bool = False  # Require MTurk Masters (premium, higher quality but smaller pool)
         self.mturk_min_approval_rate: int = 98  # Minimum approval rate percentage (0-100)
         self.mturk_min_approved_hits: int = 5000  # Minimum number of approved HITs
@@ -280,6 +281,16 @@ class CrowdInterfaceConfig:
             help="Public URL for MTurk workers (e.g., https://abc123.trycloudflare.com)",
         )
         parser.add_argument(
+            "--mturk-use-qualifications",
+            action="store_true",
+            help="Enable MTurk worker qualification requirements (default: True)",
+        )
+        parser.add_argument(
+            "--mturk-no-qualifications",
+            action="store_true",
+            help="Disable all MTurk worker qualification requirements",
+        )
+        parser.add_argument(
             "--mturk-require-masters",
             action="store_true",
             help="Require MTurk Masters qualification (premium workers)",
@@ -372,6 +383,10 @@ class CrowdInterfaceConfig:
             config.mturk_keywords = args.mturk_keywords
         if args.mturk_external_url is not None:
             config.mturk_external_url = args.mturk_external_url
+        if args.mturk_no_qualifications:
+            config.mturk_use_qualifications = False
+        elif args.mturk_use_qualifications:
+            config.mturk_use_qualifications = True
         if args.mturk_require_masters:
             config.mturk_require_masters = True
         if args.mturk_min_approval_rate is not None:
@@ -431,6 +446,7 @@ class CrowdInterfaceConfig:
             "mturk_keywords": self.mturk_keywords,
             "mturk_external_url": self.mturk_external_url,
             # MTurk worker qualifications
+            "mturk_use_qualifications": self.mturk_use_qualifications,
             "mturk_require_masters": self.mturk_require_masters,
             "mturk_min_approval_rate": self.mturk_min_approval_rate,
             "mturk_min_approved_hits": self.mturk_min_approved_hits,
