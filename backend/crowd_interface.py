@@ -770,6 +770,14 @@ class CrowdInterface:
         """
         return self.sim_manager.get_animation_status()
 
+    def reinitialize_simulation(self) -> dict:
+        """Manually reinitialize simulation if it failed during startup.
+
+        Delegates to SimManager.
+
+        """
+        return self.sim_manager.reinitialize_simulation()
+
     def capture_animation_frame(self, session_id: str) -> dict:
         """Capture current animation frame for a user session.
 

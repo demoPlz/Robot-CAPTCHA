@@ -34,6 +34,9 @@ class PersistentWorkerManager:
         self.command_file = f"{output_base_dir}/commands.json"
         self.result_file = f"{output_base_dir}/results.json"
         self.status_file = f"{output_base_dir}/status.json"
+        
+        # Thread safety for command sending (critical with multithreaded Flask)
+        self._command_lock = threading.Lock()
 
         os.makedirs(output_base_dir, exist_ok=True)
 
@@ -461,42 +464,44 @@ class PersistentWorkerManager:
         }
 
     def _send_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """Send command to worker and wait for result."""
-        # Write command to file
-        with open(self.command_file, "w") as f:
-            json.dump(command, f)
+        """Send command to worker and wait for result. Thread-safe."""
+        # CRITICAL: Lock to prevent race conditions with multithreaded Flask server
+        with self._command_lock:
+            # Write command to file
+            with open(self.command_file, "w") as f:
+                json.dump(command, f)
 
-        # Signal worker (it polls the command file)
-        command_signal_file = f"{self.command_file}.signal"
-        Path(command_signal_file).touch()
+            # Signal worker (it polls the command file)
+            command_signal_file = f"{self.command_file}.signal"
+            Path(command_signal_file).touch()
 
-        # Wait for result
-        result_signal_file = f"{self.result_file}.signal"
-        start_time = time.time()
-        
-        # Use longer timeout for initialization commands since they load USD and create scene
-        action = command.get("action", "")
-        if action in ["initialize_and_capture", "initialize_animation"]:
-            timeout = 120  # 2 minutes for initialization commands
-        else:
-            timeout = 30  # 30 seconds for regular commands
+            # Wait for result
+            result_signal_file = f"{self.result_file}.signal"
+            start_time = time.time()
+            
+            # Use longer timeout for initialization commands since they load USD and create scene
+            action = command.get("action", "")
+            if action in ["initialize_and_capture", "initialize_animation"]:
+                timeout = 120  # 2 minutes for initialization commands
+            else:
+                timeout = 30  # 30 seconds for regular commands
 
-        while not os.path.exists(result_signal_file):
-            if time.time() - start_time > timeout:
-                raise TimeoutError(f"Command timeout after {timeout}s (action: {action})")
-            time.sleep(0.1)
+            while not os.path.exists(result_signal_file):
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Command timeout after {timeout}s (action: {action})")
+                time.sleep(0.1)
 
-        # Read result
-        with open(self.result_file, "r") as f:
-            result = json.load(f)
+            # Read result
+            with open(self.result_file, "r") as f:
+                result = json.load(f)
 
-        # Cleanup signal files
-        if os.path.exists(command_signal_file):
-            os.remove(command_signal_file)
-        if os.path.exists(result_signal_file):
-            os.remove(result_signal_file)
+            # Cleanup signal files
+            if os.path.exists(command_signal_file):
+                os.remove(command_signal_file)
+            if os.path.exists(result_signal_file):
+                os.remove(result_signal_file)
 
-        return result
+            return result
 
     def get_worker_status(self) -> Dict[str, Any]:
         """Get current worker status."""

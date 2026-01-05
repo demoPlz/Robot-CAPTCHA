@@ -123,11 +123,18 @@ class SimManager:
                 print("✓ Persistent Isaac Sim worker ready")
 
             print("🎮 Initializing simulation and animation...")
-            self.isaac_manager.capture_initial_state(initial_config)
-            print("✓ Simulation and animation initialized")
+            try:
+                self.isaac_manager.capture_initial_state(initial_config)
+                print("✓ Simulation and animation initialized")
+            except Exception as init_e:
+                print(f"⚠️ Failed to initialize simulation: {init_e}")
+                print("⚠️ Worker started but not initialized. You can reinitialize via API.")
+                # Don't set isaac_manager to None - keep it so it can be reinitialized
 
         except Exception as e:
             print(f"⚠️ Failed to start persistent Isaac worker: {e}")
+            import traceback
+            traceback.print_exc()
             self.isaac_manager = None
 
     def _sim_worker(self):
@@ -323,6 +330,31 @@ class SimManager:
                 "active_users": 0,
                 "users": {},
             }
+
+    def reinitialize_simulation(self) -> dict:
+        """Manually reinitialize simulation if it failed during startup."""
+        if not self.use_sim or not self.isaac_manager:
+            return {"status": "error", "message": "Simulation not available"}
+
+        try:
+            initial_config = {
+                "usd_path": self.usd_path,
+                "use_gpu_physics": self.use_gpu_physics,
+                "robot_joints": [0.0] * 7,
+                "object_poses": {},
+                "drawer_joint_positions": {},
+                "objects": list(self.objects.keys()) if self.objects else [],
+            }
+            
+            print("🔄 Reinitializing simulation and animation...")
+            self.isaac_manager.capture_initial_state(initial_config)
+            print("✓ Simulation and animation reinitialized")
+            
+            return {"status": "success", "message": "Simulation reinitialized"}
+        
+        except Exception as e:
+            print(f"⚠️ Reinitialization failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def capture_animation_frame(self, session_id: str) -> dict:
         """Capture current animation frame for a user session."""

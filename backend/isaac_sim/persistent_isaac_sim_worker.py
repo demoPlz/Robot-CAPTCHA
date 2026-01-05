@@ -205,6 +205,12 @@ class PersistentWorker:
 
             elif action == "start_user_animation":
                 # Start animation for specific user
+                if not self.isaac_worker.simulation_initialized:
+                    return {"status": "error", "message": "Simulation not initialized. Call initialize_and_capture first."}
+                
+                if not self.isaac_worker.animation_mode:
+                    return {"status": "error", "message": "Animation mode not initialized. Call initialize_animation first."}
+                
                 user_id = command["user_id"]
                 goal_joints = command.get("goal_joints")
                 duration = command.get("duration", 3.0)
@@ -218,6 +224,9 @@ class PersistentWorker:
 
             elif action == "stop_user_animation":
                 # Stop animation for specific user
+                if not self.isaac_worker.simulation_initialized or not self.isaac_worker.animation_mode:
+                    return {"status": "error", "message": "Animation not initialized"}
+                
                 user_id = command["user_id"]
                 result = self.isaac_worker.stop_user_animation(user_id)
 
@@ -225,6 +234,9 @@ class PersistentWorker:
 
             elif action == "capture_user_frame":
                 # Capture frame for specific user
+                if not self.isaac_worker.simulation_initialized or not self.isaac_worker.animation_mode:
+                    return {"status": "error", "message": "Animation not initialized"}
+                
                 user_id = command["user_id"]
                 output_dir = command["output_dir"]
 

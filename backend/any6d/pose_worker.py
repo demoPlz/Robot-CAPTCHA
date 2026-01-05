@@ -284,6 +284,7 @@ def main():
             "state_id": state_id,
             "object": args.object,
             "success": False,
+            "retry_count": job.get("retry_count", 0),  # Preserve retry count for retry logic
         }
 
         try:

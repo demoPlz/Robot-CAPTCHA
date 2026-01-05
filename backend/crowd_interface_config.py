@@ -24,14 +24,14 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 20  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 3
+        self.required_approvals_per_critical_state: int = 20
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
         # MTurk max_assignments will be: required_responses_per_critical_state - num_expert_workers
-        self.num_expert_workers: int = 1  # Set to 0 for no experts, or >= 1 to reserve slots
+        self.num_expert_workers: int = 10  # Set to 0 for no experts, or >= 1 to reserve slots
 
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
@@ -96,7 +96,7 @@ class CrowdInterfaceConfig:
         self.mturk_assignment_duration_seconds: int = 180  # Time allowed per assignment
         self.mturk_lifetime_seconds: int = 3600  # How long HIT remains available (1 hour)
         self.mturk_auto_approval_delay_seconds: int = 60  # Auto-approve after 1 minute
-        self.mturk_assignment_coefficient: float = 5.0  # Multiplier for max assignments: coefficient * (required - experts)
+        self.mturk_assignment_coefficient: float = 2.0  # Multiplier for max assignments: coefficient * (required - experts)
         self.mturk_title: str = "Control a robot arm (2 minutes)"
         self.mturk_description: str = "View a task environment and specify the next position for the robot to move to"
         self.mturk_keywords: str = "robot, manipulation, annotation"
@@ -116,7 +116,8 @@ class CrowdInterfaceConfig:
     def from_cli_args(cls, argv=None):
         """Create a CrowdInterfaceConfig instance with CLI overrides.
 
-        Parses crowd-specific CLI arguments and removes them from sys.argv,
+        Parses crowd-specific CLI arguments and removemum approval rate percentage (0-100)
+        self.mturk_min_approved_hits: int = 5000  # Mis them from sys.argv,
         allowing LeRobot's argument parser to process remaining args without conflicts.
 
         Args:

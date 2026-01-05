@@ -1505,6 +1505,16 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ Error getting animation status: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/animation/reinitialize", methods=["POST"])
+    def reinitialize_animation():
+        """Manually reinitialize simulation if it failed during startup."""
+        try:
+            result = crowd_interface.reinitialize_simulation()
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error reinitializing simulation: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/animation/start", methods=["POST"])
     def start_animation():
         """Start animation for the current user session."""
