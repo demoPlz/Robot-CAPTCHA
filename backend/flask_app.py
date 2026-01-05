@@ -596,6 +596,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "episode_id": pending["episode_id"],
                     "state_id": pending["state_id"],
                     "action": action,  # Joint positions: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5, left_carriage_joint]
+                    "sequence": pending["sequence"],  # Monotonic counter for deduplication
                     "current_image_url": current_image_url,
                     "view_urls": view_urls,  # Static views for rendering
                     "camera_poses": crowd_interface.calibration.get_camera_poses(),
