@@ -159,8 +159,9 @@ class StateManager:
         self.approval_lock = Lock()
 
         # Pre-execution approval tracking (before robot moves)
-        self.pending_pre_execution_approval = None  # {episode_id, state_id, action, obs_path, view_paths, approved: None/True/False}
+        self.pending_pre_execution_approval = None  # {episode_id, state_id, action, obs_path, view_paths, approved: None/True/False, sequence: int}
         self.pre_execution_approval_lock = Lock()
+        self._pre_execution_approval_sequence = 0  # Monotonic counter to detect stale requests
 
         # Undo state tracking
         self.pending_undo_classification = (
@@ -919,21 +920,17 @@ class StateManager:
             if self.pending_pre_execution_approval is None:
                 return None
             if self.pending_pre_execution_approval["approved"] is not None:
-                print(f"   get_pending_pre_execution_approval: approved={self.pending_pre_execution_approval['approved']}, returning None")
+                # Approval decision already made - return None and clear stale data
                 return None
 
-            episode_id = self.pending_pre_execution_approval["episode_id"]
-            state_id = self.pending_pre_execution_approval["state_id"]
-            action = self.pending_pre_execution_approval["action"]
-            obs_path = self.pending_pre_execution_approval["obs_path"]
-            view_paths = self.pending_pre_execution_approval["view_paths"]
-
+            # Return a copy with sequence number for frontend deduplication
             return {
-                "episode_id": episode_id,
-                "state_id": state_id,
-                "action": action,  # Joint positions as list
-                "obs_path": obs_path,
-                "view_paths": view_paths,
+                "episode_id": self.pending_pre_execution_approval["episode_id"],
+                "state_id": self.pending_pre_execution_approval["state_id"],
+                "action": self.pending_pre_execution_approval["action"],
+                "obs_path": self.pending_pre_execution_approval["obs_path"],
+                "view_paths": self.pending_pre_execution_approval["view_paths"],
+                "sequence": self.pending_pre_execution_approval["sequence"],
             }
 
     def approve_pre_execution(self, episode_id: int, state_id: int) -> bool:
@@ -947,6 +944,7 @@ class StateManager:
             ):
                 return False
 
+            # Atomically mark as approved - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = True
             return True
 
@@ -961,6 +959,7 @@ class StateManager:
             ):
                 return False
 
+            # Atomically mark as rejected - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = False
             return True
 
@@ -1617,10 +1616,20 @@ class StateManager:
                 if not any(torch.equal(action, unique_a) for unique_a in remaining_unique):
                     remaining_unique.append(action)
                 
-            # Sample next action from deduplicated remaining actions
-            selected_action, selector_propensity, selection_metadata = self.action_selector.select_action(
-                remaining_unique, state_info
-            )
+            # Select action: use submission order if responses == approvals, else use selector
+            if self.required_responses_per_critical_state == self.required_approvals_per_critical_state:
+                # When all submissions need approval, present in submission order
+                selected_action = remaining_unique[0]
+                # Still compute selector propensity for metadata
+                _, selector_propensity, selection_metadata = self.action_selector.select_action(
+                    remaining_unique, state_info
+                )
+                selection_metadata["selector_used"] = "submission_order"
+            else:
+                # When sampling subset for approval, use action selector
+                selected_action, selector_propensity, selection_metadata = self.action_selector.select_action(
+                    remaining_unique, state_info
+                )
             
             # Compute true propensity as submission frequency
             # Propensity = (number of times this action appears) / (total number of actual submissions)
@@ -1631,6 +1640,7 @@ class StateManager:
             
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:
+                self._pre_execution_approval_sequence += 1
                 self.pending_pre_execution_approval = {
                     "episode_id": episode_id,
                     "state_id": state_id,
@@ -1640,6 +1650,7 @@ class StateManager:
                     "obs_path": state_info.get("obs_path"),
                     "view_paths": state_info.get("view_paths"),
                     "approved": None,
+                    "sequence": self._pre_execution_approval_sequence,
                 }
                 
             print(f"⏸️  Waiting for pre-approval decision (state {state_id}, action {num_reviewed + 1})")
