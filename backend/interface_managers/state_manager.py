@@ -334,6 +334,10 @@ class StateManager:
                         return
 
             info["critical"] = True
+            # CRITICAL: Set approval_status ATOMICALLY with critical flag to protect from races
+            # This must happen BEFORE calling demote_earlier_unanswered_criticals so the
+            # protection logic at line 1725 works correctly
+            info["approval_status"] = "pending"
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
 
@@ -371,12 +375,8 @@ class StateManager:
 
         # ---- Phase 1.5: Wait for administrator approval ----
         if approved is None:  # Only do approval if not already handled by undo classification
-            # CRITICAL: Mark state as "pending" BEFORE setting up modal
-            # This protects it from demotion by future states arriving during modal setup
-            with self.state_lock:
-                if latest_episode_id in self.pending_states_by_episode:
-                    if latest_state_id in self.pending_states_by_episode[latest_episode_id]:
-                        self.pending_states_by_episode[latest_episode_id][latest_state_id]["approval_status"] = "pending"
+            # approval_status was already set to "pending" atomically with critical=True above
+            # to protect from races in demote_earlier_unanswered_criticals
             
             # Set pending approval and wait for response
             with self.approval_lock:
@@ -410,6 +410,12 @@ class StateManager:
             return
 
         print(f"✅ Administrator approved state {latest_state_id}, proceeding...")
+        
+        # Mark state as approved so it can be served to users
+        with self.state_lock:
+            ep = self.pending_states_by_episode.get(latest_episode_id)
+            if ep and latest_state_id in ep:
+                ep[latest_state_id]["approval_status"] = "approved"
         
         # Record final_executed_action for the PREVIOUS critical state (the one we moved FROM)
         # The action that got us to latest_state_id belongs to the previous critical state
@@ -1569,7 +1575,8 @@ class StateManager:
 
         # Check if this is a critical state with "end." text - auto-fill with current position
         if text and text.strip().lower() == "end.":
-            self._auto_fill_end_state_locked(state_info, episode_id, state_id)
+            with self.state_lock:
+                self._auto_fill_end_state_locked(state_info, episode_id, state_id)
 
     def _run_pre_approval_loop_wrapper(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Wrapper for pre-approval loop that handles cleanup."""
