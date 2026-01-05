@@ -293,15 +293,19 @@ class StateManager:
                     **self.completed_states_by_episode.get(latest_episode_id, {}),
                 }
                 
-                # Find previous critical state
-                previous_critical_states = [
+                # Find previous APPROVED critical state (not just any critical state)
+                # We only want to compare against approved states to avoid comparing against
+                # intermediate jitter states that were marked critical but never approved
+                previous_approved_critical_states = [
                     (sid, sinfo)
                     for sid, sinfo in sorted(all_states.items())
-                    if sid < latest_state_id and sinfo.get("critical", False)
+                    if sid < latest_state_id 
+                    and sinfo.get("critical", False)
+                    and sinfo.get("approval_status") == "approved"
                 ]
                 
-                if previous_critical_states:
-                    prev_state_id, prev_state_info = previous_critical_states[-1]
+                if previous_approved_critical_states:
+                    prev_state_id, prev_state_info = previous_approved_critical_states[-1]
                     
                     # Check if the state we want to mark critical is jitter
                     is_jitter = self._is_jitter_state(
