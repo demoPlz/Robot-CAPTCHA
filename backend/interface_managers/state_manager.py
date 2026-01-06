@@ -394,14 +394,18 @@ class StateManager:
             while True:
                 time.sleep(0.1)
                 with self.approval_lock:
+                    # Check if approval was set FIRST (before checking demotion)
+                    # This prevents race where approval is set, but undo clears pending_approval_state
+                    # before we wake up from sleep
+                    if self.pending_approval_state and self.pending_approval_state["approved"] is not None:
+                        approved = self.pending_approval_state["approved"]
+                        self.pending_approval_state = None
+                        break
+                    
                     if self.pending_approval_state is None:
                         # State was demoted, exit
                         print(f"⚠️  State {latest_state_id} was demoted, canceling approval")
                         return
-                    if self.pending_approval_state["approved"] is not None:
-                        approved = self.pending_approval_state["approved"]
-                        self.pending_approval_state = None
-                        break
 
         if not approved:
             # Administrator rejected - perform undo

@@ -355,6 +355,56 @@ class PoseEstimationManager:
                         else:
                             pose_world = None
 
+                        # RETRY LOGIC: Decide if we should retry (outside lock to avoid deadlock during file I/O)
+                        should_retry = False
+                        retry_job_data = None
+                        obs_path_for_retry = None
+                        
+                        if pose_world is None:
+                            retry_count = result.get("retry_count", 0)
+                            max_retries = 5
+                            
+                            if retry_count < max_retries:
+                                # Need to get obs_path from state before releasing lock
+                                with self.state_lock:
+                                    ep = self.pending_states_by_episode.get(ep_id)
+                                    if ep and st_id in ep:
+                                        obs_path_for_retry = ep[st_id].get("obs_path")
+                                
+                                if obs_path_for_retry:
+                                    should_retry = True
+                                    print(f"🔄 Pose estimation failed for {obj}, retrying ({retry_count + 1}/{max_retries})...")
+                                    
+                                    job_id = f"{ep_id}_{st_id}_{obj}_{uuid.uuid4().hex[:8]}"
+                                    retry_job_data = {
+                                        "job_id": job_id,
+                                        "episode_id": int(ep_id),
+                                        "state_id": int(st_id),
+                                        "object": obj,
+                                        "obs_path": obs_path_for_retry,
+                                        "K": self._intrinsics_for_pose(),
+                                        "prompt": (self.objects or {}).get(obj, obj),
+                                        "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
+                                        "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
+                                        "retry_count": retry_count + 1,
+                                    }
+                        
+                        # Write retry job file OUTSIDE the lock
+                        if should_retry and retry_job_data:
+                            tmp = self.pose_tmp / f"{retry_job_data['job_id']}.json"
+                            dst = self.pose_inbox / f"{retry_job_data['job_id']}.json"
+                            try:
+                                with open(tmp, "w", encoding="utf-8") as f:
+                                    json.dump(retry_job_data, f)
+                                os.replace(tmp, dst)
+                                print(f"   ✅ Retry job enqueued: {dst.name}")
+                                # Skip setting object_poses - wait for retry result
+                                continue
+                            except Exception as e:
+                                print(f"⚠️  Failed to enqueue retry job: {e}")
+                                # Fall through to set fallback pose
+                        
+                        # Set pose in state (success, fallback, or None)
                         with self.state_lock:
                             ep = self.pending_states_by_episode.get(ep_id)
                             if not ep or st_id not in ep:
@@ -363,43 +413,11 @@ class PoseEstimationManager:
                             if "object_poses" not in st:
                                 st["object_poses"] = {}
 
-                            # RETRY LOGIC: If estimation failed, retry up to 5 times
                             if pose_world is None:
                                 retry_count = result.get("retry_count", 0)
                                 max_retries = 5
                                 
-                                if retry_count < max_retries:
-                                    # Re-enqueue the job with incremented retry count
-                                    print(f"🔄 Pose estimation failed for {obj}, retrying ({retry_count + 1}/{max_retries})...")
-                                    
-                                    job_id = f"{ep_id}_{st_id}_{obj}_{uuid.uuid4().hex[:8]}"
-                                    job = {
-                                        "job_id": job_id,
-                                        "episode_id": int(ep_id),
-                                        "state_id": int(st_id),
-                                        "object": obj,
-                                        "obs_path": st.get("obs_path"),
-                                        "K": self._intrinsics_for_pose(),
-                                        "prompt": (self.objects or {}).get(obj, obj),
-                                        "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
-                                        "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
-                                        "retry_count": retry_count + 1,  # Track retry attempts
-                                    }
-                                    
-                                    tmp = self.pose_tmp / f"{job_id}.json"
-                                    dst = self.pose_inbox / f"{job_id}.json"
-                                    try:
-                                        with open(tmp, "w", encoding="utf-8") as f:
-                                            json.dump(job, f)
-                                        os.replace(tmp, dst)
-                                        print(f"   ✅ Retry job enqueued: {dst.name}")
-                                        # Don't set object_poses yet - wait for retry result
-                                        continue
-                                    except Exception as e:
-                                        print(f"⚠️  Failed to enqueue retry job: {e}")
-                                        # Fall through to fallback logic
-                                
-                                # Max retries exceeded or retry failed - use fallback
+                                # Max retries exceeded or retry enqueue failed - use fallback
                                 if retry_count >= max_retries:
                                     print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
                                 
