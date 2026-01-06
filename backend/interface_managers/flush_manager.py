@@ -31,22 +31,28 @@ class FlushManager:
         self,
         state_lock: Lock,
         completed_states_buffer_by_episode: dict,
+        pending_states_by_episode: dict,
         episodes_pending_save: set,
         save_episode_callback,
+        required_responses_per_critical_state: int,
     ):
         """Initialize flush manager.
 
         Args:
             state_lock: Shared lock protecting state data structures
-            completed_states_buffer_by_episode: Reference to episode buffers
+            completed_states_buffer_by_episode: Reference to episode buffers (completed states)
+            pending_states_by_episode: Reference to pending states (for finding last approved critical)
             episodes_pending_save: Reference to pending save tracking set
             save_episode_callback: Callback to save episode to dataset
+            required_responses_per_critical_state: Number of responses needed for critical states
 
         """
         self.state_lock = state_lock
         self.completed_states_buffer_by_episode = completed_states_buffer_by_episode
+        self.pending_states_by_episode = pending_states_by_episode
         self.episodes_pending_save = episodes_pending_save
         self.save_episode_callback = save_episode_callback
+        self.required_responses_per_critical_state = required_responses_per_critical_state
 
         # Flush worker infrastructure
         self.flush_queue = queue.Queue()
@@ -87,44 +93,45 @@ class FlushManager:
                     num_states = 0
                     try:
                         with self.state_lock:
-                            buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
-                            if not buffer:
-                                print(f"⚠️  Episode {episode_id} has no completed states to flush")
+                            # Find last approved critical state across both pending and completed
+                            last_approved_critical_id = self._find_last_approved_critical_state(episode_id)
+                            
+                            if last_approved_critical_id is None:
+                                print(f"⚠️  Episode {episode_id} has no approved critical states to flush")
+                                with self.flush_lock:
+                                    del self.flush_in_progress[episode_id]
+                                self.flush_queue.task_done()
+                                continue
+                            
+                            print(f"📍 Last approved critical state: {last_approved_critical_id}")
+                            
+                            # Collect all states up to and including last approved critical
+                            buffer_copy = self._build_flush_buffer(episode_id, last_approved_critical_id)
+                            
+                            if not buffer_copy:
+                                print(f"⚠️  No states to flush for episode {episode_id}")
                                 with self.flush_lock:
                                     del self.flush_in_progress[episode_id]
                                 self.flush_queue.task_done()
                                 continue
 
-                            # Create deep copy of buffer
-                            buffer_copy = dict(buffer)
                             num_states = len(buffer_copy)
 
                             # Update progress tracking
                             with self.flush_lock:
                                 self.flush_in_progress[episode_id]["num_states"] = num_states
-                    except Exception as e:
-                        print(f"❌ Error copying buffer for episode {episode_id}: {e}")
-                        with self.flush_lock:
-                            del self.flush_in_progress[episode_id]
-                        self.flush_queue.task_done()
-                        continue
 
-                    # Perform actual save WITHOUT holding state_lock
-                    print(f"💾 Flushing {num_states} states from episode {episode_id} to dataset...")
-                    try:
+                        # Release lock before slow I/O operation
+                        print(f"💾 Flushing {num_states} states for episode {episode_id}...")
+
+                        # Call save callback (this may take time - no lock held)
                         self.save_episode_callback(buffer_copy)
+
                         print(f"✅ Successfully flushed episode {episode_id} ({num_states} states)")
 
-                        # After successful save, remove saved states from buffer
-                        with self.state_lock:
-                            current_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
-                            # Remove only the states we just saved
-                            for state_id in buffer_copy.keys():
-                                if state_id in current_buffer:
-                                    del current_buffer[state_id]
-
-                            # Remove from pending save set
-                            self.episodes_pending_save.discard(episode_id)
+                        # NOTE: Don't remove states from buffers after flush!
+                        # Flush is a checkpoint save - states remain active until episode completes
+                        # or user explicitly stops. This allows continued labeling after flush.
 
                     except Exception as e:
                         print(f"❌ Error flushing episode {episode_id}: {e}")
@@ -149,6 +156,96 @@ class FlushManager:
                     traceback.print_exc()
                     # Continue processing other requests
 
+        self.flush_worker_thread = Thread(target=_flush_worker_loop, daemon=True, name="FlushWorker")
+        self.flush_worker_thread.start()
+
+    def _find_last_approved_critical_state(self, episode_id: int) -> int | None:
+        """Find the last approved critical state in an episode.
+        
+        Searches both pending and completed states.
+        MUST be called with state_lock held.
+        
+        Args:
+            episode_id: Episode to search
+            
+        Returns:
+            state_id of last approved critical state, or None if none found
+        """
+        all_states = {}
+        
+        # Merge pending and completed states
+        if episode_id in self.pending_states_by_episode:
+            all_states.update(self.pending_states_by_episode[episode_id])
+        if episode_id in self.completed_states_buffer_by_episode:
+            all_states.update(self.completed_states_buffer_by_episode[episode_id])
+        
+        # Find all approved critical states
+        approved_critical = [
+            state_id
+            for state_id, state_info in all_states.items()
+            if state_info.get("critical", False) and state_info.get("approval_status") == "approved"
+        ]
+        
+        if not approved_critical:
+            return None
+        
+        # Return the highest (last) state_id
+        return max(approved_critical)
+    
+    def _build_flush_buffer(self, episode_id: int, last_approved_critical_id: int) -> dict:
+        """Build a buffer of states to flush, up to and including last approved critical state.
+        
+        MUST be called with state_lock held.
+        
+        For the last approved critical state:
+        - If it has action_to_save (fully labeled), use it
+        - If not (partially labeled or unlabeled), create filler action_to_save with NaNs
+        
+        Args:
+            episode_id: Episode to build buffer for
+            last_approved_critical_id: State ID of last approved critical state
+            
+        Returns:
+            Dictionary of state_id -> state_info for states to save
+        """
+        import torch
+        
+        buffer = {}
+        
+        # Collect all states from completed buffer with state_id <= last_approved_critical_id
+        # Make COPIES to avoid modifying shared state objects
+        completed = self.completed_states_buffer_by_episode.get(episode_id, {})
+        for state_id, state_info in completed.items():
+            if state_id <= last_approved_critical_id:
+                buffer[state_id] = state_info.copy()
+        
+        # Check if the last approved critical state itself needs to be added
+        if last_approved_critical_id not in buffer:
+            # It's still in pending states - need to prepare it for saving
+            pending = self.pending_states_by_episode.get(episode_id, {})
+            if last_approved_critical_id in pending:
+                # Create a COPY so we don't modify the original pending state
+                state_info_copy = pending[last_approved_critical_id].copy()
+                
+                # Check if it has action_to_save
+                if "action_to_save" not in state_info_copy:
+                    # Need to create filler action_to_save with all NaNs
+                    print(f"⚠️  State {last_approved_critical_id} not fully labeled, using NaN fillers")
+                    
+                    # Determine action dimensionality (7 joints by default)
+                    action_dim = 7  # [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5, left_carriage_joint]
+                    total_action_size = self.required_responses_per_critical_state * action_dim
+                    
+                    # Create all-NaN action tensor
+                    state_info_copy["action_to_save"] = torch.full(
+                        (total_action_size,), float("nan"), dtype=torch.float32
+                    )
+                
+                buffer[last_approved_critical_id] = state_info_copy
+        
+        return buffer
+
+        # Start the worker thread
         self.flush_worker_thread = Thread(target=_flush_worker_loop, daemon=True, name="FlushWorker")
         self.flush_worker_thread.start()
 

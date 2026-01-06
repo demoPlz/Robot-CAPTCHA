@@ -182,8 +182,10 @@ class StateManager:
         self.flush_manager = FlushManager(
             state_lock=self.state_lock,
             completed_states_buffer_by_episode=self.completed_states_buffer_by_episode,
+            pending_states_by_episode=self.pending_states_by_episode,
             episodes_pending_save=self._episodes_pending_save,
             save_episode_callback=self._save_episode_callback,
+            required_responses_per_critical_state=self.required_responses_per_critical_state,
         )
 
     # =========================
