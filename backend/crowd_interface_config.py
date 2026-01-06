@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 20  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 3
+        self.required_approvals_per_critical_state: int = 20
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost

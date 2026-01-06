@@ -30,6 +30,17 @@ import numpy as np
 import torch
 import trimesh
 
+# Parent death detection
+try:
+    import ctypes
+    import signal as sig
+    # PR_SET_PDEATHSIG = 1 on Linux - send signal when parent dies
+    libc = ctypes.CDLL("libc.so.6")
+    PR_SET_PDEATHSIG = 1
+    HAS_PDEATHSIG = True
+except Exception:
+    HAS_PDEATHSIG = False
+
 # ========== DEBUGPY SUPPORT ==========
 # Check if debug mode is enabled via environment variable
 if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
@@ -208,6 +219,15 @@ def main():
     ap.add_argument("--min-inliers", type=int, default=2, help="Minimum inliers required for valid result")
     args = ap.parse_args()
 
+    # Set up signal handler for graceful shutdown
+    def signal_handler(signum, frame):
+        print(f"\n[{args.object}] 🛑 Received signal {signum}, shutting down...", flush=True)
+        sys.exit(0)
+    
+    import signal
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     inbox = (args.jobs_dir / "inbox").resolve()
     outbox = (args.jobs_dir / "outbox").resolve()
     tmpdir = (args.jobs_dir / "tmp").resolve()
@@ -233,6 +253,15 @@ def main():
         sys.exit(2)
 
     print(f"[{args.object}] ✅ worker ready (watching {inbox})", flush=True)
+
+    # Set up parent death detection (Linux only)
+    if HAS_PDEATHSIG:
+        try:
+            # When parent dies, this process receives SIGTERM
+            libc.prctl(PR_SET_PDEATHSIG, sig.SIGTERM)
+            print(f"[{args.object}] ✓ Parent death detection enabled (will exit if parent dies)", flush=True)
+        except Exception as e:
+            print(f"[{args.object}] ⚠️  Failed to set parent death signal: {e}", flush=True)
 
     while True:
         job_path = claim_job(inbox, tmpdir, args.object)
