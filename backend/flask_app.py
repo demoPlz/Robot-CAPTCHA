@@ -489,18 +489,27 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if episode_id is None:
                 return jsonify({"status": "error", "message": "No active episode to flush"}), 400
             
-            # Trigger flush in background thread
+            # Queue flush request (non-blocking, thread-safe)
             result = crowd_interface.state_manager.flush_episode_now(episode_id)
             
-            if result.get("status") == "success":
-                return jsonify(result)
-            else:
-                return jsonify(result), 400
+            # All results are OK (queued, already_in_progress, or error)
+            return jsonify(result)
                 
         except Exception as e:
             print(f"❌ Error in flush-now endpoint: {e}")
             import traceback
             traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/flush-status", methods=["GET"])
+    def flush_status():
+        """Get status of flush operations."""
+        try:
+            episode_id = request.args.get("episode_id", type=int)
+            status = crowd_interface.state_manager.get_flush_status(episode_id)
+            return jsonify(status)
+        except Exception as e:
+            print(f"❌ Error in flush-status endpoint: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/pending-approval", methods=["GET"])

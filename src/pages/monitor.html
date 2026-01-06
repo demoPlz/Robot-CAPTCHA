@@ -2693,15 +2693,22 @@
                     headers: { 'Content-Type': 'application/json' }
                 });
                 const j = await r.json();
-                if (j.status === 'success') {
-                    console.log(`✓ Flushing ${j.num_states} states from episode ${j.episode_id}`);
-                    showToast(`💾 Flushing ${j.num_states} states to dataset...`);
+                
+                if (j.status === 'queued') {
+                    console.log(`✓ Flush queued for episode ${j.episode_id}`);
+                    showToast(`💾 Flush queued for episode ${j.episode_id}`);
+                } else if (j.status === 'already_in_progress') {
+                    console.log(`⏳ Flush already in progress for episode ${j.episode_id}`);
+                    showToast(`⏳ Flush already in progress (${j.num_states} states)`);
+                } else if (j.status === 'error') {
+                    console.error('Flush error:', j.message);
+                    showToast(`❌ ${j.message}`);
                 } else {
-                    console.error('Failed:', j.message);
-                    showToast(`❌ Flush failed: ${j.message}`);
+                    console.warn('Unexpected flush status:', j.status);
+                    showToast(`⚠️ ${j.message || 'Unexpected response'}`);
                 }
             } catch (e) { 
-                console.error(e); 
+                console.error('Flush request exception:', e); 
                 showToast('❌ Flush request failed');
             }
             finally { b.classList.remove('loading'); b.disabled = false; }

@@ -12,6 +12,8 @@ from threading import Lock, Thread, Timer
 
 import torch
 
+from interface_managers.flush_manager import FlushManager
+
 # Joint names constant (shared with crowd_interface)
 JOINT_NAMES = ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "left_carriage_joint"]
 
@@ -130,6 +132,9 @@ class StateManager:
         self.auto_label_queue = queue.Queue()
         self.auto_label_worker_thread = None
         
+        # Flush manager (handles incremental dataset saves)
+        self.flush_manager = None  # Initialized after callbacks are set
+        
         # Pre-approval threads tracking
         self._pre_approval_threads: dict[tuple[int, int], Thread] = {}  # (episode_id, state_id) -> thread
 
@@ -172,6 +177,14 @@ class StateManager:
 
         # Start auto-labeling worker
         self._start_auto_label_worker()
+        
+        # Initialize flush manager
+        self.flush_manager = FlushManager(
+            state_lock=self.state_lock,
+            completed_states_buffer_by_episode=self.completed_states_buffer_by_episode,
+            episodes_pending_save=self._episodes_pending_save,
+            save_episode_callback=self._save_episode_callback,
+        )
 
     # =========================
     # State Management (Public API - called externally)
@@ -1925,10 +1938,9 @@ class StateManager:
     # =========================
 
     def flush_episode_now(self, episode_id: int) -> dict:
-        """Flush collected frames for an episode to the dataset immediately.
+        """Request flush of collected frames for an episode to the dataset.
         
-        This allows saving progress without waiting for the full trajectory to complete.
-        The flush happens in a background thread to avoid blocking.
+        Delegates to FlushManager for non-blocking, thread-safe operation.
         
         Args:
             episode_id: The episode to flush
@@ -1936,63 +1948,18 @@ class StateManager:
         Returns:
             dict with "status" and "message" keys
         """
-        with self.state_lock:
-            # Check if episode exists
-            if episode_id not in self.completed_states_buffer_by_episode:
-                return {
-                    "status": "error",
-                    "message": f"Episode {episode_id} has no completed states to flush"
-                }
-            
-            # Check if there are any states to save
-            buffer = self.completed_states_buffer_by_episode[episode_id]
-            if not buffer:
-                return {
-                    "status": "error",
-                    "message": f"Episode {episode_id} buffer is empty"
-                }
-            
-            # Create a copy of the buffer for background saving
-            buffer_copy = dict(buffer)
-            num_states = len(buffer_copy)
-            
-            # Mark episode as pending save to prevent duplicate flushes
-            self._episodes_pending_save.add(episode_id)
-            
-        # Launch background thread to save
-        def _flush_worker():
-            try:
-                print(f"💾 Flushing {num_states} states from episode {episode_id} to dataset...")
-                self._save_episode_callback(buffer_copy)
-                print(f"✅ Successfully flushed episode {episode_id} ({num_states} states)")
-                
-                # After successful save, clear the buffer so we don't save these states again
-                with self.state_lock:
-                    # Only clear if no new states were added during save
-                    current_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
-                    # Remove only the states we saved
-                    for state_id in buffer_copy.keys():
-                        if state_id in current_buffer:
-                            del current_buffer[state_id]
-                    
-                    # Remove from pending save set
-                    self._episodes_pending_save.discard(episode_id)
-                    
-            except Exception as e:
-                print(f"❌ Error flushing episode {episode_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Remove from pending save set even on error
-                with self.state_lock:
-                    self._episodes_pending_save.discard(episode_id)
+        return self.flush_manager.flush_episode_now(episode_id)
+    
+    def get_flush_status(self, episode_id: int = None) -> dict:
+        """Get status of flush operations.
         
-        flush_thread = Thread(target=_flush_worker, daemon=True)
-        flush_thread.start()
+        Delegates to FlushManager.
         
-        return {
-            "status": "success",
-            "message": f"Flushing {num_states} states from episode {episode_id} in background",
-            "num_states": num_states,
-            "episode_id": episode_id
-        }
+        Args:
+            episode_id: If provided, get status for specific episode. Otherwise get all.
+            
+        Returns:
+            dict with flush status information
+        """
+        return self.flush_manager.get_flush_status(episode_id)
 
