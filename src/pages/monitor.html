@@ -78,6 +78,8 @@
         .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
         .flush-now-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
         .flush-now-btn:hover { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
+        .continue-btn { background:linear-gradient(135deg,#10b981,#059669); color:white; }
+        .continue-btn:hover { background:linear-gradient(135deg,#059669,#047857); }
         .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
         .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
         .mark-critical-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
@@ -560,6 +562,7 @@
                         <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
                         <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
                         <button class="control-button flush-now-btn" id="flush-now-btn"><span class="control-icon">💾</span>Flush Now</button>
+                        <button class="control-button continue-btn" id="continue-btn" style="display:none;"><span class="control-icon">▶️</span>Continue</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
                     </div>
                 </div>
@@ -2713,6 +2716,33 @@
             }
             finally { b.classList.remove('loading'); b.disabled = false; }
         }
+        
+        async function handleContinue() {
+            const b = continueBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/continue`, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const j = await r.json();
+                
+                if (j.status === 'success') {
+                    console.log(`✓ Continue initiated - robot moving to joint position`);
+                    showToast(`▶️ Continuing from last critical state`);
+                } else if (j.status === 'error') {
+                    console.error('Continue error:', j.message);
+                    showToast(`❌ ${j.message}`);
+                } else {
+                    console.warn('Unexpected continue status:', j.status);
+                    showToast(`⚠️ ${j.message || 'Unexpected response'}`);
+                }
+            } catch (e) { 
+                console.error('Continue request exception:', e); 
+                showToast('❌ Continue request failed');
+            }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
+        
         fastForwardBtn.addEventListener('click', handleFastForward);
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
@@ -2720,6 +2750,23 @@
         
         const flushNowBtn = document.getElementById('flush-now-btn');
         flushNowBtn.addEventListener('click', handleFlushNow);
+        
+        const continueBtn = document.getElementById('continue-btn');
+        continueBtn.addEventListener('click', handleContinue);
+        
+        // Check if continue mode is enabled
+        (async () => {
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/continue-enabled`);
+                const j = await r.json();
+                if (j.enabled) {
+                    continueBtn.style.display = '';
+                    console.log(`✓ Continue mode enabled for dataset: ${j.dataset}`);
+                }
+            } catch (e) {
+                console.error('Failed to check continue mode:', e);
+            }
+        })();
 
         // === NEW: Critical-only toggle logic ===
         let criticalOnlyMode = true; // Default to Critical only

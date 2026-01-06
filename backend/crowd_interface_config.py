@@ -33,6 +33,10 @@ class CrowdInterfaceConfig:
         # MTurk max_assignments will be: required_responses_per_critical_state - num_expert_workers
         self.num_expert_workers: int = 10  # Set to 0 for no experts, or >= 1 to reserve slots
 
+        # ========== Continue from Checkpoint ==========
+        # Load dataset and continue from last critical state
+        self.continue_from_dataset: str | None = None  # Dataset repo_id to continue from (e.g., "lerobot/drawer_v1")
+
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
         # automatically discard it. Threshold is L2 distance in joint positions (radians).

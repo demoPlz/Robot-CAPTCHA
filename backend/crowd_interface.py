@@ -1180,6 +1180,66 @@ class CrowdInterface:
         """Set the events object for keyboard-like control functionality."""
         self.events = events
 
+    def continue_from_last_critical(self) -> dict:
+        """Continue data collection from last critical state in saved dataset.
+        
+        1. Load dataset specified in config (continue_from_dataset)
+        2. Get last critical state joint positions
+        3. Copy old dataset frames to new dataset
+        4. Drive robot to that position
+        5. Mark as ready to continue
+        
+        Returns dict with status
+        """
+        try:
+            from crowd_interface_config import CrowdInterfaceConfig
+            cfg = CrowdInterfaceConfig()
+            
+            if not cfg.continue_from_dataset:
+                return {"status": "error", "message": "No continue_from_dataset configured"}
+            
+            # Get last critical state from old dataset
+            last_state = self.dataset_manager.get_last_critical_state_from_dataset(
+                cfg.continue_from_dataset,
+                self.dataset_manager.dataset.root if self.dataset_manager.dataset else Path("data")
+            )
+            
+            if not last_state:
+                return {"status": "error", "message": "No critical states found in dataset"}
+            
+            print(f"📍 Last critical state: episode {last_state['episode_index']}, frame {last_state['frame_index']}")
+            print(f"📍 Joint positions: {last_state['joint_positions']}")
+            
+            # Copy old dataset to new dataset
+            self.dataset_manager.copy_old_dataset_to_new(
+                cfg.continue_from_dataset,
+                self.dataset_manager.dataset.root if self.dataset_manager.dataset else Path("data")
+            )
+            
+            # Drive robot to last critical state position
+            # This will be picked up by the robot control loop
+            with self.goal_lock:
+                self._latest_goal = {
+                    "joint_positions": last_state['joint_positions'],
+                    "gripper": 1,  # Open gripper by default
+                    "timestamp": time.time(),
+                }
+            
+            print(f"🤖 Robot will move to last critical state position")
+            print(f"▶️ Ready to continue - waiting for robot arrival and 'Continue' button")
+            
+            return {
+                "status": "success",
+                "message": "Robot moving to last critical state",
+                "joint_positions": last_state['joint_positions'],
+            }
+            
+        except Exception as e:
+            print(f"❌ Error in continue_from_last_critical: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+
     def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
         """Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing."""
         if not isinstance(obs, dict):

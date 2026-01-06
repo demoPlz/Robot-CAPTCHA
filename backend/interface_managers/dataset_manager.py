@@ -286,6 +286,47 @@ class DatasetManager:
 
         self.dataset.save_episode()
 
+    def get_last_critical_state_from_dataset(self, dataset_repo_id: str, root: Path) -> dict | None:
+        """Load dataset and return last critical state with joint positions.
+        
+        Returns dict with keys: joint_positions, episode_index, frame_index
+        Or None if dataset is empty.
+        """
+        try:
+            dataset = LeRobotDataset(dataset_repo_id, root=root)
+            if len(dataset) == 0:
+                return None
+            
+            # Get last frame
+            last_frame = dataset[-1]
+            
+            return {
+                "joint_positions": last_frame["observation.state"].numpy().tolist(),
+                "episode_index": int(last_frame["episode_index"]),
+                "frame_index": int(last_frame["frame_index"]),
+            }
+        except Exception as e:
+            print(f"❌ Error loading continue dataset: {e}")
+            return None
+
+    def copy_old_dataset_to_new(self, old_dataset_repo_id: str, root: Path):
+        """Copy all frames from old dataset into current dataset.
+        
+        This allows seamless continuation - old data is preserved in new dataset.
+        """
+        try:
+            old_dataset = LeRobotDataset(old_dataset_repo_id, root=root)
+            print(f"📋 Copying {len(old_dataset)} frames from {old_dataset_repo_id}...")
+            
+            for frame in old_dataset:
+                self.dataset.add_frame(dict(frame))
+            
+            print(f"✅ Copied {len(old_dataset)} frames successfully")
+        except Exception as e:
+            print(f"❌ Error copying old dataset: {e}")
+            import traceback
+            traceback.print_exc()
+
     # =========================
     # Observation Cache Management
     # =========================

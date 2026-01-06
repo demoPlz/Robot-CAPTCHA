@@ -512,6 +512,31 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ Error in flush-status endpoint: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/continue", methods=["POST"])
+    def continue_from_checkpoint():
+        """Continue data collection from last critical state in dataset."""
+        try:
+            result = crowd_interface.continue_from_last_critical()
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error in continue endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/continue-enabled", methods=["GET"])
+    def continue_enabled():
+        """Check if continue mode is enabled in config."""
+        try:
+            from crowd_interface_config import CrowdInterfaceConfig
+            cfg = CrowdInterfaceConfig()
+            return jsonify({
+                "enabled": cfg.continue_from_dataset is not None,
+                "dataset": cfg.continue_from_dataset
+            })
+        except Exception as e:
+            return jsonify({"enabled": False, "error": str(e)})
+
     @app.route("/api/control/pending-approval", methods=["GET"])
     def get_pending_approval():
         """Get the critical state awaiting approval."""
