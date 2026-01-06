@@ -473,6 +473,36 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/flush-now", methods=["POST"])
+    def flush_now():
+        """Flush collected frames to dataset immediately (save without completing trajectory)."""
+        try:
+            # Get episode_id from request body if provided, otherwise use current serving episode
+            data = request.get_json(force=True, silent=True) or {}
+            episode_id = data.get("episode_id")
+            
+            if episode_id is None:
+                # Use current serving episode
+                with crowd_interface.state_lock:
+                    episode_id = crowd_interface.state_manager.current_serving_episode
+            
+            if episode_id is None:
+                return jsonify({"status": "error", "message": "No active episode to flush"}), 400
+            
+            # Trigger flush in background thread
+            result = crowd_interface.state_manager.flush_episode_now(episode_id)
+            
+            if result.get("status") == "success":
+                return jsonify(result)
+            else:
+                return jsonify(result), 400
+                
+        except Exception as e:
+            print(f"❌ Error in flush-now endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/control/pending-approval", methods=["GET"])
     def get_pending_approval():
         """Get the critical state awaiting approval."""

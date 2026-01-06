@@ -76,6 +76,8 @@
         .fast-forward-btn:hover { background:linear-gradient(135deg,#2563eb,#1e40af); }
         .rerecord-btn { background:linear-gradient(135deg,#f59e0b,#d97706); color:white; }
         .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
+        .flush-now-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
+        .flush-now-btn:hover { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
         .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
         .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
         .mark-critical-btn { background:linear-gradient(135deg,#8b5cf6,#7c3aed); color:white; }
@@ -557,6 +559,7 @@
                         <button class="control-button mark-critical-btn" id="mark-critical-btn"><span class="control-icon">⭐</span>Mark as Critical</button>
                         <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
                         <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
+                        <button class="control-button flush-now-btn" id="flush-now-btn"><span class="control-icon">💾</span>Flush Now</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
                     </div>
                 </div>
@@ -2682,10 +2685,34 @@
             } catch (e) { console.error(e); }
             finally { b.classList.remove('loading'); b.disabled = false; }
         }
+        async function handleFlushNow() {
+            const b = flushNowBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/flush-now`, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const j = await r.json();
+                if (j.status === 'success') {
+                    console.log(`✓ Flushing ${j.num_states} states from episode ${j.episode_id}`);
+                    showToast(`💾 Flushing ${j.num_states} states to dataset...`);
+                } else {
+                    console.error('Failed:', j.message);
+                    showToast(`❌ Flush failed: ${j.message}`);
+                }
+            } catch (e) { 
+                console.error(e); 
+                showToast('❌ Flush request failed');
+            }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
         fastForwardBtn.addEventListener('click', handleFastForward);
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
         markCriticalBtn.addEventListener('click', handleMarkCritical);
+        
+        const flushNowBtn = document.getElementById('flush-now-btn');
+        flushNowBtn.addEventListener('click', handleFlushNow);
 
         // === NEW: Critical-only toggle logic ===
         let criticalOnlyMode = true; // Default to Critical only
