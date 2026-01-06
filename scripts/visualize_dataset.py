@@ -174,8 +174,8 @@ def create_summary_dataframe(dataset: LeRobotDataset, max_frames: int = None) ->
             "Final_Action": data["final_action"],
         }
         
-        # Add execution details as separate columns
-        for exec_detail in data["execution_details"][:3]:  # Show up to 3 executions
+        # Add execution details as separate columns (show all executions)
+        for exec_detail in data["execution_details"]:
             exec_idx = exec_detail["exec_idx"]
             row[f"Exec{exec_idx}_Action"] = exec_detail["action"]
             row[f"Exec{exec_idx}_Prop"] = exec_detail["propensity"]
