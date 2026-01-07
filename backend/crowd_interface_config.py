@@ -35,7 +35,7 @@ class CrowdInterfaceConfig:
 
         # ========== Continue from Checkpoint ==========
         # Load dataset and continue from last critical state
-        self.continue_from_dataset: str | None = None  # Dataset repo_id to continue from (e.g., "lerobot/drawer_v1")
+        self.continue_from_dataset: str | None = None
 
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
