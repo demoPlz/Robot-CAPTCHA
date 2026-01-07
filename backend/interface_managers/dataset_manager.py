@@ -63,6 +63,8 @@ class DatasetManager:
 
     def init_dataset(self, cfg, robot):
         """Initialize dataset for data collection policy training."""
+        from pathlib import Path
+        
         # Check if we're continuing from a previous dataset
         from crowd_interface_config import CrowdInterfaceConfig
         crowd_cfg = CrowdInterfaceConfig()
@@ -84,6 +86,25 @@ class DatasetManager:
             sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
 
         else:
+            # Check if dataset already exists and auto-rename to prevent overwrite
+            dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
+            dataset_path = dataset_root / cfg.data_collection_policy_repo_id
+            
+            if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
+                # Dataset already exists - find a unique name
+                original_repo_id = cfg.data_collection_policy_repo_id
+                counter = 1
+                while True:
+                    new_repo_id = f"{original_repo_id}_new{counter}"
+                    new_path = dataset_root / new_repo_id
+                    if not new_path.exists():
+                        cfg.data_collection_policy_repo_id = new_repo_id
+                        break
+                    counter += 1
+                
+                print(f"⚠️  Dataset already exists at: {dataset_path}")
+                print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {cfg.data_collection_policy_repo_id}")
+            
             sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)
             self.dataset = LeRobotDataset.create(
                 cfg.data_collection_policy_repo_id,
