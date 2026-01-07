@@ -27,8 +27,10 @@ from dataclasses import asdict
 from pathlib import Path
 from pprint import pformat
 from threading import Thread
+import time
 
 import cv2  # for closing display windows
+import numpy as np
 from crowd_interface import *
 from crowd_interface_config import CrowdInterfaceConfig
 from flask_app import create_flask_app
@@ -100,6 +102,59 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
 
     crowd_interface.init_dataset(cfg, robot)
 
+    # If continuing from a previous dataset, drive robot to positions
+    if _CROWD_CONFIG.continue_from_dataset:
+        print(f"🔄 Continue mode active")
+        
+        # First, drive to home position (same as normal reset)
+        print(f"🏠 Moving robot to home position first...")
+        if not robot.is_connected:
+            robot.connect()
+        
+        # Get the home position from robot
+        initial_position = list(robot.follower_arms['main'].read("Present_Position"))
+        print(f"   Robot starting from: {[f'{x:.3f}' for x in initial_position]}")
+        
+        # Now drive to the last critical state from the checkpoint
+        print(f"📍 Now moving to last critical state from checkpoint...")
+        continue_result = crowd_interface.continue_from_last_critical()
+        
+        if continue_result.get("status") == "error":
+            print(f"❌ Failed to continue: {continue_result.get('message')}")
+            print(f"   Will start from current robot position instead")
+        else:
+            target_positions = np.array(continue_result.get("joint_positions"))
+            print(f"   Target: {[f'{x:.3f}' for x in target_positions]}")
+            
+            # Directly command robot to move to target position
+            print(f"🤖 Driving robot...")
+            robot.follower_arms['main'].write("Goal_Position", target_positions, duration=3.0)
+            
+            # Wait for robot to reach target position
+            time.sleep(0.5)  # Initial delay for command to register
+            
+            # Monitor movement until robot reaches target
+            max_wait_time = 10.0  # seconds
+            start_time = time.time()
+            while time.time() - start_time < max_wait_time:
+                current_pos = np.array(list(robot.follower_arms['main'].read("Present_Position")))
+                diff = current_pos - target_positions
+                max_diff = np.max(np.abs(diff))
+                
+                if max_diff < 0.01:  # Close enough (1cm / 0.01 radians)
+                    break
+                    
+                time.sleep(0.1)
+            
+            final_pos = np.array(list(robot.follower_arms['main'].read("Present_Position")))
+            final_diff = final_pos - target_positions
+            print(f"   Arrived at: {[f'{x:.3f}' for x in final_pos]}")
+            print(f"   Error: {[f'{x:.3f}' for x in final_diff]} (max: {np.max(np.abs(final_diff)):.3f})")
+            
+            print(f"✅ Robot positioned at last critical state")
+            print(f"   Please adjust the scene to match the checkpoint state")
+            input("Press Enter when ready to continue recording...")
+
     # Load pretrained policy
     policy = make_policy(cfg.policy, ds_meta=dataset.meta) if cfg.policy is not None else None
 
@@ -114,7 +169,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     # Pass events to crowd_interface for API control
     crowd_interface.set_events(events)
 
-    if has_method(robot, "teleop_safety_stop"):
+    # Skip safety stop in continue mode to avoid moving the robot from its positioned state
+    if has_method(robot, "teleop_safety_stop") and not _CROWD_CONFIG.continue_from_dataset:
         robot.teleop_safety_stop()
 
     recorded_episodes = 0

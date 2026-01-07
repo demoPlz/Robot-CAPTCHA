@@ -1215,20 +1215,15 @@ class CrowdInterface:
             print(f"📍 Continue from: episode {last_state['episode_index']}, frame {last_state['frame_index']}")
             print(f"📍 Joint positions: {last_state['joint_positions']}")
             
-            # Drive robot to last critical state position
-            with self.goal_lock:
-                self._latest_goal = {
-                    "joint_positions": last_state['joint_positions'],
-                    "gripper": 1,  # Open gripper by default
-                    "timestamp": time.time(),
-                }
+            # Don't set latest_goal - we'll manually drive the robot in collect_data.py
+            # and then just start recording from that position
             
-            print(f"🤖 Robot will move to last critical state position")
+            print(f"🤖 Will drive robot to last critical state position")
             print(f"▶️ Ready to continue data collection")
             
             return {
                 "status": "success",
-                "message": "Robot moving to last critical state",
+                "message": "Joint positions for last critical state",
                 "joint_positions": last_state['joint_positions'],
             }
             

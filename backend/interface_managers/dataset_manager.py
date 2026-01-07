@@ -399,23 +399,49 @@ class DatasetManager:
                 print(f"⚠️  Old dataset is empty, nothing to copy")
                 return
             
-            # Copy each episode
-            for episode_idx in range(old_dataset.meta.total_episodes):
-                # Get episode bounds
-                from_idx = old_dataset.episode_data_index["from"][episode_idx].item()
-                to_idx = old_dataset.episode_data_index["to"][episode_idx].item()
-                
-                # Add all frames from this episode
-                for frame_idx in range(from_idx, to_idx):
-                    frame = dict(old_dataset[frame_idx])
-                    self.dataset.add_frame(frame)
-                
-                # Save episode
-                self.dataset.save_episode()
-                print(f"   ✓ Copied episode {episode_idx} ({to_idx - from_idx} frames)")
+            # IMPORTANT: When continuing, we want to resume the LAST episode, not start a new one
+            # So we only copy the last episode's frames WITHOUT calling save_episode()
+            # This keeps the episode buffer open for continued recording
             
-            print(f"✅ Copied {old_dataset.meta.total_episodes} episodes ({len(old_dataset)} frames) successfully")
-            print(f"📊 Next recording will be episode {self.dataset.meta.total_episodes}")
+            last_episode_idx = old_dataset.meta.total_episodes - 1
+            print(f"📝 Continuing episode {last_episode_idx} (will not finalize, keeping buffer open)")
+            
+            # Get last episode bounds
+            from_idx = old_dataset.episode_data_index["from"][last_episode_idx].item()
+            to_idx = old_dataset.episode_data_index["to"][last_episode_idx].item()
+            
+            # Add all frames from last episode to buffer (without finalizing)
+            for frame_idx in range(from_idx, to_idx):
+                    frame = dict(old_dataset[frame_idx])
+                    
+                    # Transform frame to match new dataset format
+                    # Remove metadata fields that are auto-generated
+                    for key in ['episode_index', 'index', 'task_index', 'frame_index', 'timestamp']:
+                        frame.pop(key, None)
+                    
+                    # Transform image shapes from (C, H, W) to (H, W, C)
+                    import torch
+                    import numpy as np
+                    for key in list(frame.keys()):
+                        if key.startswith('observation.images.'):
+                            img = frame[key]
+                            if isinstance(img, torch.Tensor):
+                                if img.ndim == 3 and img.shape[0] == 3:
+                                    # Transpose from (C, H, W) to (H, W, C)
+                                    frame[key] = img.permute(1, 2, 0).numpy()
+                                else:
+                                    frame[key] = img.numpy()
+                            elif isinstance(img, np.ndarray):
+                                if img.ndim == 3 and img.shape[0] == 3:
+                                    # Transpose from (C, H, W) to (H, W, C)
+                                    frame[key] = np.transpose(img, (1, 2, 0))
+                    
+                    self.dataset.add_frame(frame)
+            
+            # DO NOT call save_episode() - keep buffer open for continued recording
+            print(f"   ✓ Loaded {to_idx - from_idx} frames into episode buffer (not finalized)")
+            print(f"✅ Ready to continue recording episode {last_episode_idx}")
+            print(f"📊 Current episode has {to_idx - from_idx} frames, will continue adding more")
             
         except Exception as e:
             print(f"❌ Error copying old dataset: {e}")

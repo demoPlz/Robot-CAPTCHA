@@ -35,7 +35,7 @@ class CrowdInterfaceConfig:
 
         # ========== Continue from Checkpoint ==========
         # Load dataset and continue from last critical state
-        self.continue_from_dataset: str | None = None  # Path to existing dataset directory
+        self.continue_from_dataset: str | None = "/home/yilong/.cache/huggingface/lerobot/yilong/mturk_test_3a_drawer_2_dcp"  # Path to existing dataset directory
 
         # ========== Jitter Detection ==========
         # Automatic jitter detection: if new critical state is too similar to unlabeled previous critical,
