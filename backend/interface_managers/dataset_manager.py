@@ -63,6 +63,18 @@ class DatasetManager:
 
     def init_dataset(self, cfg, robot):
         """Initialize dataset for data collection policy training."""
+        # Check if we're continuing from a previous dataset
+        from crowd_interface_config import CrowdInterfaceConfig
+        crowd_cfg = CrowdInterfaceConfig()
+        continue_from = crowd_cfg.continue_from_dataset
+        
+        # Auto-rename output dataset if it matches the continue_from dataset (prevent overwrite)
+        if continue_from and cfg.data_collection_policy_repo_id == continue_from:
+            original_repo_id = cfg.data_collection_policy_repo_id
+            cfg.data_collection_policy_repo_id = f"{continue_from}_continue"
+            print(f"⚠️  Output dataset would overwrite source dataset!")
+            print(f"   Auto-renaming: {original_repo_id} → {cfg.data_collection_policy_repo_id}")
+        
         if cfg.resume:
             self.dataset = LeRobotDataset(cfg.data_collection_policy_repo_id, root=cfg.root)
             self.dataset.start_image_writer(
@@ -88,6 +100,19 @@ class DatasetManager:
 
         # Update dataset action shape to accommodate crowd responses
         self._update_dataset_action_shape()
+        
+        # If continuing from previous dataset, copy all old frames
+        if continue_from:
+            print(f"🔄 Continue mode: copying frames from {continue_from}...")
+            # If continue_from is an absolute path, use it directly; otherwise use root
+            from pathlib import Path
+            continue_path = Path(continue_from)
+            if continue_path.is_absolute():
+                # Full path provided - use directly
+                self.copy_old_dataset_to_new(continue_from, None)
+            else:
+                # Repo ID provided - use with root
+                self.copy_old_dataset_to_new(continue_from, cfg.root)
 
         return self.task_text
 
@@ -286,14 +311,25 @@ class DatasetManager:
 
         self.dataset.save_episode()
 
-    def get_last_critical_state_from_dataset(self, dataset_repo_id: str, root: Path) -> dict | None:
+    def get_last_critical_state_from_dataset(self, dataset_repo_id: str, root: Path | None) -> dict | None:
         """Load dataset and return last critical state with joint positions.
+        
+        Args:
+            dataset_repo_id: Either a repo ID (e.g., "user/dataset") or full path to dataset
+            root: Root directory for datasets. Ignored if dataset_repo_id is an absolute path.
         
         Returns dict with keys: joint_positions, episode_index, frame_index
         Or None if dataset is empty.
         """
         try:
-            dataset = LeRobotDataset(dataset_repo_id, root=root)
+            # If dataset_repo_id is absolute path, use it directly; otherwise combine with root
+            from pathlib import Path
+            dataset_path = Path(dataset_repo_id)
+            if dataset_path.is_absolute():
+                dataset = LeRobotDataset(dataset_repo_id)
+            else:
+                dataset = LeRobotDataset(dataset_repo_id, root=root)
+                
             if len(dataset) == 0:
                 return None
             
@@ -307,21 +343,55 @@ class DatasetManager:
             }
         except Exception as e:
             print(f"❌ Error loading continue dataset: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    def copy_old_dataset_to_new(self, old_dataset_repo_id: str, root: Path):
+    def copy_old_dataset_to_new(self, old_dataset_repo_id: str, root: Path | None):
         """Copy all frames from old dataset into current dataset.
         
-        This allows seamless continuation - old data is preserved in new dataset.
+        This loads each episode from the old dataset and saves it to the new one,
+        properly maintaining episode boundaries and metadata.
+        
+        Args:
+            old_dataset_repo_id: Either a repo ID (e.g., "user/dataset") or full path to dataset
+            root: Root directory for datasets. Ignored if old_dataset_repo_id is an absolute path.
         """
         try:
-            old_dataset = LeRobotDataset(old_dataset_repo_id, root=root)
-            print(f"📋 Copying {len(old_dataset)} frames from {old_dataset_repo_id}...")
+            # If old_dataset_repo_id is absolute path, use it directly; otherwise combine with root
+            from pathlib import Path
+            dataset_path = Path(old_dataset_repo_id)
+            if dataset_path.is_absolute():
+                old_dataset = LeRobotDataset(old_dataset_repo_id)
+            else:
+                old_dataset = LeRobotDataset(old_dataset_repo_id, root=root)
             
-            for frame in old_dataset:
-                self.dataset.add_frame(dict(frame))
+            print(f"📂 Loaded dataset from: {old_dataset.root}")
+            print(f"📊 Dataset metadata: total_episodes={old_dataset.meta.total_episodes}, total_frames={old_dataset.meta.total_frames}")
+            print(f"📋 Copying {old_dataset.meta.total_episodes} episodes from {old_dataset_repo_id}...")
             
-            print(f"✅ Copied {len(old_dataset)} frames successfully")
+            if old_dataset.meta.total_episodes == 0:
+                print(f"⚠️  Old dataset is empty, nothing to copy")
+                return
+            
+            # Copy each episode
+            for episode_idx in range(old_dataset.meta.total_episodes):
+                # Get episode bounds
+                from_idx = old_dataset.episode_data_index["from"][episode_idx].item()
+                to_idx = old_dataset.episode_data_index["to"][episode_idx].item()
+                
+                # Add all frames from this episode
+                for frame_idx in range(from_idx, to_idx):
+                    frame = dict(old_dataset[frame_idx])
+                    self.dataset.add_frame(frame)
+                
+                # Save episode
+                self.dataset.save_episode()
+                print(f"   ✓ Copied episode {episode_idx} ({to_idx - from_idx} frames)")
+            
+            print(f"✅ Copied {old_dataset.meta.total_episodes} episodes ({len(old_dataset)} frames) successfully")
+            print(f"📊 Next recording will be episode {self.dataset.meta.total_episodes}")
+            
         except Exception as e:
             print(f"❌ Error copying old dataset: {e}")
             import traceback
