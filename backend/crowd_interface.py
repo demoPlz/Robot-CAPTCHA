@@ -1183,11 +1183,9 @@ class CrowdInterface:
     def continue_from_last_critical(self) -> dict:
         """Continue data collection from last critical state in saved dataset.
         
-        1. Load dataset specified in config (continue_from_dataset)
-        2. Get last critical state joint positions
-        3. Copy old dataset frames to new dataset
-        4. Drive robot to that position
-        5. Mark as ready to continue
+        This is called via the Continue button after dataset has been loaded.
+        The old frames have already been copied during init_dataset.
+        This just drives the robot to the last critical state position.
         
         Returns dict with status
         """
@@ -1198,26 +1196,26 @@ class CrowdInterface:
             if not cfg.continue_from_dataset:
                 return {"status": "error", "message": "No continue_from_dataset configured"}
             
+            # Determine if continue_from is an absolute path or repo ID
+            from pathlib import Path
+            continue_path = Path(cfg.continue_from_dataset)
+            root_for_load = None if continue_path.is_absolute() else (
+                self.dataset_manager.dataset.root if self.dataset_manager.dataset else Path("data")
+            )
+            
             # Get last critical state from old dataset
             last_state = self.dataset_manager.get_last_critical_state_from_dataset(
                 cfg.continue_from_dataset,
-                self.dataset_manager.dataset.root if self.dataset_manager.dataset else Path("data")
+                root_for_load
             )
             
             if not last_state:
                 return {"status": "error", "message": "No critical states found in dataset"}
             
-            print(f"📍 Last critical state: episode {last_state['episode_index']}, frame {last_state['frame_index']}")
+            print(f"📍 Continue from: episode {last_state['episode_index']}, frame {last_state['frame_index']}")
             print(f"📍 Joint positions: {last_state['joint_positions']}")
             
-            # Copy old dataset to new dataset
-            self.dataset_manager.copy_old_dataset_to_new(
-                cfg.continue_from_dataset,
-                self.dataset_manager.dataset.root if self.dataset_manager.dataset else Path("data")
-            )
-            
             # Drive robot to last critical state position
-            # This will be picked up by the robot control loop
             with self.goal_lock:
                 self._latest_goal = {
                     "joint_positions": last_state['joint_positions'],
@@ -1226,7 +1224,7 @@ class CrowdInterface:
                 }
             
             print(f"🤖 Robot will move to last critical state position")
-            print(f"▶️ Ready to continue - waiting for robot arrival and 'Continue' button")
+            print(f"▶️ Ready to continue data collection")
             
             return {
                 "status": "success",
