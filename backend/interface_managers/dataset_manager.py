@@ -309,7 +309,11 @@ class DatasetManager:
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
 
+        print(f"💾 Calling dataset.save_episode() for episode {episode_index}...")
+        print(f"   Episode buffer has {len(self.dataset.episode_buffer.get('action', []))} frames")
         self.dataset.save_episode()
+        print(f"✅ dataset.save_episode() completed")
+        print(f"📊 Updated metadata: total_episodes={self.dataset.meta.total_episodes}, total_frames={self.dataset.meta.total_frames}")
 
     def get_last_critical_state_from_dataset(self, dataset_repo_id: str, root: Path | None) -> dict | None:
         """Load dataset and return last critical state with joint positions.
