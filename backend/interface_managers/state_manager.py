@@ -1369,7 +1369,7 @@ class StateManager:
                 state_info["action_selection_metadata"] = {
                     **selection_metadata,
                     "resampled": True,
-                    "num_remaining_actions": len(remaining_actions),
+                    "num_remaining_actions": len(remaining_unique),
                     "num_already_executed": len(already_executed),
                     "conditional_propensity": conditional_propensity,
                 }
