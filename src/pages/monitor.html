@@ -3100,9 +3100,145 @@
                         // Set robot joints to proposed action positions
                         this.setRobotJoints(robotClone, jointPositions);
                         
-                        // Make robot visible (show all meshes)
+                        // Update world matrices after setting joints
+                        robotClone.updateMatrixWorld(true);
+                        
+                        // Get end effector world position and orientation
+                        const eeVis = robotClone.getObjectByName('ee_gripper_link');
+                        const eePos = new THREE.Vector3();
+                        const eeQuat = new THREE.Quaternion();
+                        if (eeVis) {
+                            eeVis.getWorldPosition(eePos);
+                            eeVis.getWorldQuaternion(eeQuat);
+                        }
+                        
+                        // Add red cross marker at end effector for orientation reference
+                        const CROSS_LEN = 0.10;    // 10 cm total length
+                        const CROSS_THICK = 0.005; // 5 mm thickness
+                        const crossMat = new THREE.MeshBasicMaterial({
+                            color: 0xff0000, 
+                            transparent: true, 
+                            opacity: 0.85, 
+                            depthTest: false, 
+                            depthWrite: false
+                        });
+                        
+                        const xBar = new THREE.Mesh(
+                            new THREE.BoxGeometry(CROSS_THICK, CROSS_THICK, CROSS_LEN), 
+                            crossMat
+                        );
+                        const yBar = new THREE.Mesh(
+                            new THREE.BoxGeometry(CROSS_THICK, CROSS_LEN, CROSS_THICK), 
+                            crossMat
+                        );
+                        
+                        const crossGroup = new THREE.Group();
+                        crossGroup.renderOrder = 1001; // Always on top
+                        crossGroup.add(xBar, yBar);
+                        crossGroup.position.copy(eePos);
+                        crossGroup.quaternion.copy(eeQuat);
+                        scene.add(crossGroup);
+                        
+                        // Add yellow alignment lines from gripper fingers
+                        const lineRad = 0.0025;  // 2.5mm radius
+                        const lineLen = 1.0;     // 1 meter base length (will be scaled)
+                        const floorZ = 0.0;      // Floor at z=0
+                        const fingerBottomPad = 0.0;
+                        
+                        const fingerLineMat = new THREE.MeshBasicMaterial({
+                            color: 0xffcc00, 
+                            transparent: true, 
+                            opacity: 0.95
+                        });
+                        
+                        // Helper to make a vertical line cylinder
+                        function makeDownLine(material) {
+                            const m = new THREE.Mesh(
+                                new THREE.CylinderGeometry(lineRad, lineRad, lineLen, 8, 1, true),
+                                material
+                            );
+                            m.rotation.x = Math.PI / 2; // Align cylinder Y → world Z
+                            return m;
+                        }
+                        
+                        // Create lines for both fingers
+                        const leftFingerLine = makeDownLine(fingerLineMat);
+                        const rightFingerLine = makeDownLine(fingerLineMat);
+                        scene.add(leftFingerLine);
+                        scene.add(rightFingerLine);
+                        
+                        // Position lines at finger tips
+                        const leftFingerLink = robotClone.getObjectByName('gripper_left');
+                        const rightFingerLink = robotClone.getObjectByName('gripper_right');
+                        
+                        // Finger tip offsets in local coordinates (matching sim.html defaults)
+                        const fingerTipLocalLeft = new THREE.Vector3(0.03, 0.00, 0.00);
+                        const fingerTipLocalRight = new THREE.Vector3(0.03, 0.00, 0.00);
+                        
+                        // Update finger line positions
+                        function updateFingerLine(link, lineMesh, localTipVec) {
+                            if (!link) { 
+                                lineMesh.visible = false; 
+                                return; 
+                            }
+                            link.updateMatrixWorld(true);
+                            const tipWorld = localTipVec.clone().applyMatrix4(link.matrixWorld);
+                            const lenToFloor = tipWorld.z - (floorZ + fingerBottomPad);
+                            if (lenToFloor <= 0) { 
+                                lineMesh.visible = false; 
+                                return; 
+                            }
+                            lineMesh.visible = true;
+                            lineMesh.scale.y = lenToFloor / lineLen;
+                            const midZ = (floorZ + fingerBottomPad) + 0.5 * lenToFloor;
+                            lineMesh.position.set(tipWorld.x, tipWorld.y, midZ);
+                        }
+                        
+                        updateFingerLine(leftFingerLink, leftFingerLine, fingerTipLocalLeft);
+                        updateFingerLine(rightFingerLink, rightFingerLine, fingerTipLocalRight);
+                        
+                        // Make robot visible with view-dependent transparency
+                        const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
+                        const minimalRoots = new Set(
+                            MINIMAL_LINKS.map(n => robotClone.getObjectByName(n)).filter(Boolean)
+                        );
+                        
+                        // Helper to check if object is under any minimal root
+                        function isUnderAny(obj, rootSet) {
+                            let p = obj;
+                            while (p) {
+                                if (rootSet.has(p)) return true;
+                                p = p.parent;
+                            }
+                            return false;
+                        }
+                        
+                        // Apply transparency to non-minimal parts
                         robotClone.traverse(obj => {
-                            if (obj.isMesh) obj.visible = true;
+                            if (!obj.isMesh) return;
+                            obj.visible = true;
+                            
+                            const keepOpaque = isUnderAny(obj, minimalRoots);
+                            if (!keepOpaque) {
+                                // Make this mesh transparent (ghost)
+                                const originalMat = obj.material;
+                                const ghostMat = Array.isArray(originalMat)
+                                    ? originalMat.map(mat => {
+                                        const gm = mat.clone();
+                                        gm.transparent = true;
+                                        gm.opacity = 0.42;
+                                        gm.depthWrite = false;
+                                        return gm;
+                                    })
+                                    : (() => {
+                                        const gm = originalMat.clone();
+                                        gm.transparent = true;
+                                        gm.opacity = 0.42;
+                                        gm.depthWrite = false;
+                                        return gm;
+                                    })();
+                                obj.material = ghostMat;
+                            }
                         });
                         
                         // Add lighting (matching sim.html)
