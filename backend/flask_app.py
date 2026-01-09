@@ -39,8 +39,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         # Check if this is a status response (no real state)
         if isinstance(state, dict) and state.get("status"):
-            # Return status response directly without processing through _state_to_json
-            response = jsonify(state)
+            # Return status response directly but include calibration data
+            payload = dict(state)
+            payload["gripper_tip_calib"] = crowd_interface.calibration.get_gripper_tip_calib()
+            payload["camera_poses"] = crowd_interface.calibration.get_camera_poses()
+            payload["camera_models"] = crowd_interface.calibration.get_camera_models()
+            response = jsonify(payload)
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"

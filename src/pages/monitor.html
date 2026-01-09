@@ -2894,6 +2894,53 @@
                 this.scenes = new Map();
                 this.renderers = new Map();
                 this.ROBOT_Z_OFFSET = 0.005;
+                this.gripperTipCalib = null;
+                this.calibLoading = false;
+                this.calibLoaded = false;
+            }
+            
+            async loadCalibration() {
+                if (this.calibLoaded) return this.gripperTipCalib;
+                if (this.calibLoading) {
+                    return new Promise((resolve) => {
+                        const check = setInterval(() => {
+                            if (this.calibLoaded) {
+                                clearInterval(check);
+                                resolve(this.gripperTipCalib);
+                            }
+                        }, 100);
+                    });
+                }
+                
+                this.calibLoading = true;
+                try {
+                    const response = await fetch(`${API_BASE_URL}/api/get-state`, { headers: { 'Accept': 'application/json' }});
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    console.log('[PreExecRenderer] Full state response:', data);
+                    console.log('[PreExecRenderer] data.status:', data.status);
+                    console.log('[PreExecRenderer] data.gripper_tip_calib:', data.gripper_tip_calib);
+                    if (data.gripper_tip_calib && data.gripper_tip_calib.left && data.gripper_tip_calib.right) {
+                        this.gripperTipCalib = data.gripper_tip_calib;
+                        console.log('[PreExecRenderer] Loaded gripper tip calibration:', this.gripperTipCalib);
+                    } else {
+                        console.warn('[PreExecRenderer] No gripper_tip_calib in state, using defaults');
+                        this.gripperTipCalib = {
+                            left:  { x: 0.03, y: 0.00, z: 0.00 },
+                            right: { x: 0.03, y: 0.00, z: 0.00 }
+                        };
+                    }
+                } catch (err) {
+                    console.error('[PreExecRenderer] Failed to load calibration:', err);
+                    this.gripperTipCalib = {
+                        left:  { x: 0.03, y: 0.00, z: 0.00 },
+                        right: { x: 0.03, y: 0.00, z: 0.00 }
+                    };
+                } finally {
+                    this.calibLoaded = true;
+                    this.calibLoading = false;
+                }
+                return this.gripperTipCalib;
             }
             
             async loadRobot() {
@@ -3053,6 +3100,7 @@
             async renderRobotAtAction(jointPositions, viewUrls, cameraPoses, cameraModels, viewNames) {
                 try {
                     await this.loadRobot();
+                    await this.loadCalibration();
                     
                     // For each view, create a canvas overlay and render the robot
                     const containers = document.querySelectorAll('.pre-exec-view-container');
@@ -3171,9 +3219,21 @@
                         const leftFingerLink = robotClone.getObjectByName('gripper_left');
                         const rightFingerLink = robotClone.getObjectByName('gripper_right');
                         
-                        // Finger tip offsets in local coordinates (matching sim.html defaults)
-                        const fingerTipLocalLeft = new THREE.Vector3(0.03, 0.00, 0.00);
-                        const fingerTipLocalRight = new THREE.Vector3(0.03, 0.00, 0.00);
+                        // Finger tip offsets in local coordinates (from calibration)
+                        const tipCalib = this.gripperTipCalib;
+                        console.log('[PreExecRenderer] Using tipCalib:', tipCalib);
+                        const fingerTipLocalLeft = new THREE.Vector3(
+                            tipCalib.left.x, 
+                            tipCalib.left.y, 
+                            tipCalib.left.z
+                        );
+                        const fingerTipLocalRight = new THREE.Vector3(
+                            tipCalib.right.x, 
+                            tipCalib.right.y, 
+                            tipCalib.right.z
+                        );
+                        console.log('[PreExecRenderer] fingerTipLocalLeft:', fingerTipLocalLeft);
+                        console.log('[PreExecRenderer] fingerTipLocalRight:', fingerTipLocalRight);
                         
                         // Update finger line positions
                         function updateFingerLine(link, lineMesh, localTipVec) {
