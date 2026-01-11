@@ -1494,24 +1494,56 @@
   display: none;                 /* toggled by JS */
   width: 640px;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 2px solid #9ca3af;
   border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
   z-index: 100;
+  overflow: hidden;
   /* Position will be set by JS to match hints panel location */
+}
+
+#exampleDock.dragging {
+  opacity: 0.8;
+  cursor: grabbing !important;
 }
 
 #exampleDock.visible {
   display: block;
 }
 
+#exampleDock .drag-handle {
+  cursor: grab;
+  padding: 10px 12px;
+  background: linear-gradient(to bottom, #f3f4f6, #e5e7eb);
+  border-bottom: 2px solid #d1d5db;
+  border-radius: 8px 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-align: center;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+#exampleDock .drag-handle:hover {
+  background: linear-gradient(to bottom, #e5e7eb, #d1d5db);
+}
+
+#exampleDock .drag-handle:active {
+  cursor: grabbing;
+  background: #d1d5db;
+}
+
 #exampleDock .video-container {
   position: relative;
   width: 100%;
   background: #ffffff;
-  border-radius: 4px;
+  border-radius: 0 0 8px 8px;
+  padding: 12px;
 }
 
 #exampleDock video{
@@ -3142,6 +3174,11 @@ function createExampleDockOnce(){
   exampleDock = document.createElement('div');
   exampleDock.id = 'exampleDock';
   
+  // Create drag handle
+  const dragHandle = document.createElement('div');
+  dragHandle.className = 'drag-handle';
+  dragHandle.innerHTML = '<span style="font-size: 16px;">⋮⋮</span> <span>Drag to reposition</span>';
+  
   // Create container for video and close button
   const videoContainer = document.createElement('div');
   videoContainer.className = 'video-container';
@@ -3162,15 +3199,42 @@ function createExampleDockOnce(){
   
   videoContainer.appendChild(closeBtn);
   videoContainer.appendChild(exampleVideo);
+  exampleDock.appendChild(dragHandle);
   exampleDock.appendChild(videoContainer);
   document.getElementById('page-wrapper').appendChild(exampleDock);
   
-  // Close modal when clicking outside the video
-  exampleDock.addEventListener('click', (e) => {
-    if (e.target === exampleDock) {
-      hideExampleDock();
+  // Make it draggable
+  let isDragging = false;
+  let dragOffset = { x: 0, y: 0 };
+  
+  dragHandle.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    exampleDock.classList.add('dragging');
+    const rect = exampleDock.getBoundingClientRect();
+    const wrapperRect = document.getElementById('page-wrapper').getBoundingClientRect();
+    // Calculate offset from mouse position to element's top-left corner
+    dragOffset.x = e.clientX - rect.left;
+    dragOffset.y = e.clientY - rect.top;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const wrapperRect = document.getElementById('page-wrapper').getBoundingClientRect();
+    // Position relative to wrapper, subtracting the offset
+    exampleDock.style.left = `${e.clientX - wrapperRect.left - dragOffset.x}px`;
+    exampleDock.style.top = `${e.clientY - wrapperRect.top - dragOffset.y}px`;
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      exampleDock.classList.remove('dragging');
     }
   });
+  
+  // Remove the click handler that was closing the dock
   
   // Close modal on Escape key
   document.addEventListener('keydown', (e) => {
@@ -3927,8 +3991,9 @@ loader.load(
 
       // 2) Build the dock lazily and load the video source (no placeholder fallback)
       createExampleDockOnce();
-      exampleDock.innerHTML = '';
-      exampleVideo = document.createElement('video');
+      // Don't clear innerHTML - preserve drag handle and structure
+      // Just update the video element that's already in the structure
+      exampleVideo.innerHTML = '';
       exampleVideo.muted = true;
       exampleVideo.loop = true;
       exampleVideo.autoplay = true;
@@ -3941,7 +4006,6 @@ loader.load(
       // Use a generic type; servers may emit mp4 or webm depending on encoder
       src.type = '';
       exampleVideo.appendChild(src);
-      exampleDock.appendChild(exampleVideo);
 
       // Do not auto-open the dock; let the user click the toggle
       exampleVideo.addEventListener('error', () => {
