@@ -64,6 +64,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         # Tell the frontend what to do with demo videos
         payload["demo_video"] = crowd_interface.video_manager.get_demo_video_config()
+        # Tell frontend which mode we're in (focus group vs crowdsourcing)
+        payload["crowdsourcing_mode"] = crowd_interface.use_mturk
 
         response = jsonify(payload)
         # Prevent caching
@@ -112,7 +114,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         """
         try:
-            return jsonify(crowd_interface.video_manager.get_demo_video_config())
+            config = crowd_interface.video_manager.get_demo_video_config()
+            # Add mode information for frontend
+            config["crowdsourcing_mode"] = crowd_interface.use_mturk
+            return jsonify(config)
         except Exception as e:
             return jsonify({"enabled": False, "error": str(e)}), 500
 
