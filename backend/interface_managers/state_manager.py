@@ -122,6 +122,7 @@ class StateManager:
         # Episode state
         self.current_serving_episode = None
         self.episodes_completed = set()
+        self.episodes_marked_as_end = set()  # Episodes with "end" state - block new states
         self.next_state_id = 0
         
         # Episode timing tracking
@@ -206,6 +207,11 @@ class StateManager:
         left_carriage_external_force: float | None = None,
     ):
         """Called by lerobot code to add states to backend."""
+        # Check if this episode has been marked as "end" - reject new states
+        if episode_id in self.episodes_marked_as_end:
+            print(f"🚫 Rejecting new state for episode {episode_id} (already marked as end)")
+            return
+        
         joint_positions_float = {k: float(v) for k, v in joint_positions.items()}
 
         state_id = self.next_state_id
@@ -2050,7 +2056,8 @@ class StateManager:
         per_user_times = {}  # email -> [duration1, duration2, ...]
         per_state_times = {}  # state_id -> {"durations": [d1, d2, ...], "state_duration": s}
         
-        for state_info in buffer:
+        # Buffer is a dict {state_id -> state_info}, iterate over values
+        for state_info in buffer.values():
             state_id = state_info.get("state_id")
             user_timings = state_info.get("user_timings", {})
             
@@ -2144,6 +2151,10 @@ class StateManager:
 
         # Mark as approved since we're auto-filling with "End."
         state_info["approval_status"] = "approved"
+        
+        # Mark this episode as ended - block any new states
+        self.episodes_marked_as_end.add(episode_id)
+        print(f"🏁 Episode {episode_id} marked as END - no more states will be accepted")
 
         self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
         self.completed_states_by_episode[episode_id][state_id] = state_info
