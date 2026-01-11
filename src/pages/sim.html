@@ -1488,39 +1488,36 @@
   animation: none; /* Stop pulsing when active */
 }
 
-/* Example video modal - centered overlay */
+/* Example video dock - positioned to overlay hints panel */
 #exampleDock{
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  position: absolute;
   display: none;                 /* toggled by JS */
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.85); /* dark overlay */
-  z-index: 10005;                /* above everything */
-  padding: 40px;
+  width: 640px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+  z-index: 100;
+  /* Position will be set by JS to match hints panel location */
 }
 
 #exampleDock.visible {
-  display: flex;
+  display: block;
 }
 
 #exampleDock .video-container {
   position: relative;
-  max-width: 90vw;
-  max-height: 90vh;
+  width: 100%;
   background: #ffffff;
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  border-radius: 4px;
 }
 
 #exampleDock video{
   display: block;
-  max-width: 85vw;
-  max-height: 85vh;
+  width: 100%;
+  height: auto;
   object-fit: contain;           /* contain to show full video */
   background: #000;
   border-radius: 4px;
@@ -1528,21 +1525,21 @@
 
 #exampleDock .close-btn {
   position: absolute;
-  top: -12px;
-  right: -12px;
-  width: 32px;
-  height: 32px;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid #e5e7eb;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #e5e7eb;
   color: #374151;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: bold;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
   transition: all 0.2s ease;
   z-index: 1;
 }
@@ -1716,7 +1713,7 @@ async function refreshViews() {
 // Helper function to build get-state URL with user email for timing tracking
 function buildGetStateUrl() {
   const userIdentity = JSON.parse(localStorage.getItem('userIdentity') || '{}');
-  const userEmail = userIdentity.user_email || '';
+  const userEmail = userIdentity.email || '';
   return userEmail ? `/api/get-state?user_email=${encodeURIComponent(userEmail)}` : `/api/get-state`;
 }
 
@@ -3166,7 +3163,7 @@ function createExampleDockOnce(){
   videoContainer.appendChild(closeBtn);
   videoContainer.appendChild(exampleVideo);
   exampleDock.appendChild(videoContainer);
-  document.body.appendChild(exampleDock);
+  document.getElementById('page-wrapper').appendChild(exampleDock);
   
   // Close modal when clicking outside the video
   exampleDock.addEventListener('click', (e) => {
@@ -3184,8 +3181,19 @@ function createExampleDockOnce(){
 }
 
 function updateExampleDockLayout(){
-  // No layout needed for centered modal - CSS handles it
-  return;
+  // Position exampleDock to overlay hints panel, aligned with prompt bar top
+  if (exampleDock && hintsPanel) {
+    const hintsRect = hintsPanel.getBoundingClientRect();
+    const promptBar = document.querySelector('#viewport .prompt-bar');
+    const promptRect = promptBar ? promptBar.getBoundingClientRect() : null;
+    const pageWrapper = document.getElementById('page-wrapper');
+    const wrapperRect = pageWrapper.getBoundingClientRect();
+    
+    exampleDock.style.left = `${hintsRect.left - wrapperRect.left}px`;
+    if (promptRect) {
+      exampleDock.style.top = `${promptRect.top - wrapperRect.top}px`;
+    }
+  }
 }
 
 function showExampleDock(){
@@ -3195,14 +3203,16 @@ function showExampleDock(){
   }
   
   createExampleDockOnce();
+  updateExampleDockLayout(); // Position it over hints
   exampleDock.classList.add('visible');
+  
   if (exampleToggle) {
     exampleToggle.classList.add('active');
     exampleToggle.setAttribute('aria-pressed', 'true');
     exampleToggle.title = 'Hide example';
   }
   
-  // Start video playback when modal is shown - restart from beginning
+  // Start video playback when shown - restart from beginning
   if (exampleVideo) {
     exampleVideo.currentTime = 0; // Reset to beginning
     exampleVideo.play().catch(err => {
@@ -3215,12 +3225,13 @@ function showExampleDock(){
 function hideExampleDock(){
   if (!exampleDock) return;
   
-  // Pause video when modal is hidden
+  // Pause video when hidden
   if (exampleVideo) {
     exampleVideo.pause();
   }
   
   exampleDock.classList.remove('visible');
+  
   if (exampleToggle) {
     exampleToggle.classList.remove('active');
     exampleToggle.setAttribute('aria-pressed', 'false');
@@ -3230,17 +3241,17 @@ function hideExampleDock(){
 
 function toggleExampleDock(force){
   // Mark button as activated (remove never-activated class)
-  if (exampleToggle.classList.contains('never-activated')) {
+  if (exampleToggle && exampleToggle.classList.contains('never-activated')) {
     exampleToggle.classList.remove('never-activated');
   }
   
   const want = (typeof force === 'boolean') ? force :
-               !(exampleDock && exampleDock.style.display === 'block');
+               !(exampleDock && exampleDock.classList.contains('visible'));
   
   console.log(`🎭 Toggling example dock:`, {
     action: want ? 'show' : 'hide',
     force: force,
-    currentDisplay: exampleDock?.style.display,
+    currentlyVisible: exampleDock?.classList.contains('visible'),
     videoSrc: exampleVideo?.src
   });
   
@@ -3855,7 +3866,7 @@ loader.load(
     const promptFromServer = state.prompt;
     
     // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}<br><b>Imitate the example video above.</b>`;
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}<br><b>Imitate the example video (click <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.3);font-style:normal;font-weight:600;">i</span>).</b>`;
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state

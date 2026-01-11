@@ -636,6 +636,9 @@ class StateManager:
                     "submitted_at_iso": None,
                     "duration_seconds": None,
                 }
+                print(f"⏱️  Started timing for {user_email} on state {latest_approved_state_id} at {now_iso}")
+            else:
+                print(f"⚠️  No user_email provided for get_latest_state() - timing not tracked")
 
             # Return the latest approved state for labeling
             return state_info.copy()
