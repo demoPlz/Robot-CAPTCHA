@@ -695,15 +695,34 @@ class StateManager:
             
             # Track submission timing for this user
             import datetime
-            if user_email and "user_timings" in state_info and user_email in state_info["user_timings"]:
-                now = time.time()
-                now_iso = datetime.datetime.now().isoformat()
-                timing = state_info["user_timings"][user_email]
-                timing["submitted_at"] = now
-                timing["submitted_at_iso"] = now_iso
-                if timing["first_served_at"]:
-                    timing["duration_seconds"] = now - timing["first_served_at"]
-                    print(f"⏱️  {user_name} ({user_email}) completed in {timing['duration_seconds']:.1f}s")
+            now = time.time()
+            now_iso = datetime.datetime.now().isoformat()
+            
+            if user_email:
+                # Ensure user_timings dict exists
+                if "user_timings" not in state_info:
+                    state_info["user_timings"] = {}
+                
+                # If user wasn't tracked before (missed get_latest_state call), initialize now
+                if user_email not in state_info["user_timings"]:
+                    state_info["user_timings"][user_email] = {
+                        "first_served_at": None,  # Unknown when they first saw it
+                        "first_served_at_iso": None,
+                        "submitted_at": now,
+                        "submitted_at_iso": now_iso,
+                        "duration_seconds": None,  # Can't calculate without start time
+                    }
+                    print(f"⚠️  User {user_name} ({user_email}) timing started at submission (no get_latest_state call)")
+                else:
+                    # User was tracked - update submission time and calculate duration
+                    timing = state_info["user_timings"][user_email]
+                    timing["submitted_at"] = now
+                    timing["submitted_at_iso"] = now_iso
+                    if timing["first_served_at"]:
+                        timing["duration_seconds"] = now - timing["first_served_at"]
+                        print(f"⏱️  {user_name} ({user_email}) completed in {timing['duration_seconds']:.1f}s")
+                    else:
+                        print(f"⚠️  {user_name} ({user_email}) submission received but no start time tracked")
             
             # Track actual number of unique worker submissions (not including autofill)
             if "actual_num_submissions" not in state_info:
@@ -2054,15 +2073,22 @@ class StateManager:
         
         # Calculate per-user and per-state statistics from completed states
         per_user_times = {}  # email -> [duration1, duration2, ...]
-        per_state_times = {}  # state_id -> {"durations": [d1, d2, ...], "state_duration": s}
+        per_user_counts = {}  # email -> num_submissions (even without duration)
+        per_state_times = {}  # state_id -> {"durations": [d1, d2, ...], "state_duration": s, "num_users": N}
         
         # Buffer is a dict {state_id -> state_info}, iterate over values
         for state_info in buffer.values():
             state_id = state_info.get("state_id")
             user_timings = state_info.get("user_timings", {})
             
-            # Per-user timing
+            # Per-user timing - track both durations and counts
             for email, timing_info in user_timings.items():
+                # Count submissions (even without duration)
+                if email not in per_user_counts:
+                    per_user_counts[email] = 0
+                per_user_counts[email] += 1
+                
+                # Track duration if available
                 duration = timing_info.get("duration_seconds")
                 if duration is not None:
                     if email not in per_user_times:
@@ -2072,7 +2098,10 @@ class StateManager:
             # Per-state timing
             if state_id is not None:
                 if state_id not in per_state_times:
-                    per_state_times[state_id] = {"durations": [], "state_duration": None}
+                    per_state_times[state_id] = {"durations": [], "state_duration": None, "num_users": 0}
+                
+                # Count users for this state
+                per_state_times[state_id]["num_users"] = len(user_timings)
                 
                 # Collect all user durations for this state
                 for timing_info in user_timings.values():
@@ -2088,11 +2117,18 @@ class StateManager:
         
         # Aggregate per-user stats
         per_user_stats = {}
-        for email, durations in per_user_times.items():
+        
+        # Combine users from both timing data and counts
+        all_users = set(per_user_times.keys()) | set(per_user_counts.keys())
+        
+        for email in all_users:
+            durations = per_user_times.get(email, [])
+            num_submissions = per_user_counts.get(email, 0)
+            
             per_user_stats[email] = {
-                "total_time": sum(durations),
+                "total_time": sum(durations) if durations else 0,
                 "avg_time": sum(durations) / len(durations) if durations else 0,
-                "num_submissions": len(durations),
+                "num_submissions": num_submissions,
                 "min_time": min(durations) if durations else 0,
                 "max_time": max(durations) if durations else 0,
             }
@@ -2102,12 +2138,13 @@ class StateManager:
         for state_id, state_data in per_state_times.items():
             durations = state_data["durations"]
             state_duration = state_data["state_duration"]
+            num_users = state_data["num_users"]
             
             # Only include states that have timing data (user submissions or state completion)
-            if durations or state_duration is not None:
+            if num_users > 0 or state_duration is not None:
                 per_state_stats[state_id] = {
                     "avg_time": sum(durations) / len(durations) if durations else 0,
-                    "num_users": len(durations),
+                    "num_users": num_users,
                     "state_duration": state_duration,
                 }
         
