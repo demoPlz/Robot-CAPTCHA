@@ -2097,15 +2097,19 @@ class StateManager:
                 "max_time": max(durations) if durations else 0,
             }
         
-        # Aggregate per-state stats
+        # Aggregate per-state stats (only include critical states with actual timing data)
         per_state_stats = {}
         for state_id, state_data in per_state_times.items():
             durations = state_data["durations"]
-            per_state_stats[state_id] = {
-                "avg_time": sum(durations) / len(durations) if durations else 0,
-                "num_users": len(durations),
-                "state_duration": state_data["state_duration"],
-            }
+            state_duration = state_data["state_duration"]
+            
+            # Only include states that have timing data (user submissions or state completion)
+            if durations or state_duration is not None:
+                per_state_stats[state_id] = {
+                    "avg_time": sum(durations) / len(durations) if durations else 0,
+                    "num_users": len(durations),
+                    "state_duration": state_duration,
+                }
         
         # Overall averages
         all_submission_times = [d for durations in per_user_times.values() for d in durations]
