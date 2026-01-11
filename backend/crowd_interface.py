@@ -83,6 +83,7 @@ class CrowdInterface:
         # --- read-only demo video display (independent of recording) ---
         show_demo_videos: bool = False,
         show_videos_dir: str | None = None,
+        frontend_url: str | None = None,  # URL where frontend is hosted (e.g., Netlify)
         # --- tutorial state capture ---
         enable_tutorial_state_capture: bool = False,
         # --- sim ---
@@ -190,6 +191,8 @@ class CrowdInterface:
         self.task_text = task_text
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
+        # Frontend URL for serving uncompressed videos from CDN
+        self.frontend_url = frontend_url
 
         # Calibration manager
         repo_root = Path(__file__).resolve().parent.parent
@@ -415,14 +418,22 @@ class CrowdInterface:
                 if p:
                     # Serve from static demos directory for fast loading
                     video_filename = Path(p).name
-                    chosen_url = f"/demos/{video_filename}"
+                    # If frontend_url is configured, serve uncompressed videos from Netlify
+                    if self.frontend_url:
+                        chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
+                    else:
+                        # Fallback to compressed videos through backend tunnel
+                        chosen_url = f"/demos/{video_filename}"
 
             # Fallback: latest available .webm
             if not chosen_url:
                 lp, lid = self.video_manager.find_latest_show_video()
                 if lp and lid:
                     video_filename = Path(lp).name
-                    chosen_url = f"/demos/{video_filename}"
+                    if self.frontend_url:
+                        chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
+                    else:
+                        chosen_url = f"/demos/{video_filename}"
 
             if chosen_url:
                 out["example_video_url"] = chosen_url

@@ -128,6 +128,9 @@ class StateManager:
         # Episode timing tracking
         self.episode_start_times = {}  # episode_id -> Unix timestamp
         self.episode_start_times_iso = {}  # episode_id -> ISO format
+        
+        # Warning suppression
+        self._no_user_email_warning_shown = False
 
         # Episode finalization
         self.episode_finalize_grace_s = episode_finalize_grace_s
@@ -626,19 +629,23 @@ class StateManager:
                 if "user_timings" not in state_info:
                     state_info["user_timings"] = {}
                 
-                # Always update to latest serve time (handles page reloads - resets timer)
-                now = time.time()
-                now_iso = datetime.datetime.now().isoformat()
-                state_info["user_timings"][user_email] = {
-                    "first_served_at": now,
-                    "first_served_at_iso": now_iso,
-                    "submitted_at": None,
-                    "submitted_at_iso": None,
-                    "duration_seconds": None,
-                }
-                print(f"⏱️  Started timing for {user_email} on state {latest_approved_state_id} at {now_iso}")
+                # Only set timing if this user hasn't seen this state before
+                if user_email not in state_info["user_timings"]:
+                    now = time.time()
+                    now_iso = datetime.datetime.now().isoformat()
+                    state_info["user_timings"][user_email] = {
+                        "first_served_at": now,
+                        "first_served_at_iso": now_iso,
+                        "submitted_at": None,
+                        "submitted_at_iso": None,
+                        "duration_seconds": None,
+                    }
+                    print(f"⏱️  Started timing for {user_email} on state {latest_approved_state_id} at {now_iso}")
             else:
-                print(f"⚠️  No user_email provided for get_latest_state() - timing not tracked")
+                # Only show warning once per session (to avoid spam from monitor.html polling)
+                if not self._no_user_email_warning_shown:
+                    print(f"⚠️  No user_email provided for get_latest_state() - timing not tracked (suppressing further warnings)")
+                    self._no_user_email_warning_shown = True
 
             # Return the latest approved state for labeling
             return state_info.copy()
