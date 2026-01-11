@@ -142,6 +142,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Distinguish expert (localhost direct) vs MTurk (via tunnel) workers
             episode_id = data["episode_id"]
             state_id = data["state_id"]
+            user_name = data.get("user_name", "Unknown")
+            user_email = data.get("user_email", "unknown")
             
             # Check for X-Forwarded-For header (set by cloudflared tunnel)
             # If present, request came through tunnel (MTurk worker)
@@ -155,10 +157,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             if is_mturk_worker:
                 origin = forwarded_for or cf_connecting_ip or remote_addr
-                print(f"🌐 MTurk worker submission: episode={episode_id}, state={state_id} (from {origin})")
+                print(f"🌐 Submission from {user_name} ({user_email}): episode={episode_id}, state={state_id} (from {origin})")
                 crowd_interface.update_mturk_assignment_count(episode_id, state_id)
             else:
-                print(f"👤 Expert worker submission: episode={episode_id}, state={state_id}")
+                print(f"👤 Expert submission from {user_name}: episode={episode_id}, state={state_id}")
             
             return jsonify({"status": "ok"})
 
