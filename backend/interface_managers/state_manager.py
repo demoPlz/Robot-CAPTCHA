@@ -383,8 +383,13 @@ class StateManager:
                 # Skip approval, jump directly to Phase 2
                 approved = True
             else:
-                # New state - proceed with normal approval flow
-                approved = None  # Will be set in approval phase below
+                # New state - the arrival state shouldn't need approval since it's just the undo target
+                # The NEXT state collected after this will need approval
+                print(f"⏩ Classified as new state - auto-approving undo arrival state, next state will need approval")
+                approved = True
+                # Clear the pending approval status since we're auto-approving
+                with self.approval_lock:
+                    self.pending_approval_state = None
         else:
             approved = None  # Will be set in approval phase below
 
@@ -450,13 +455,35 @@ class StateManager:
                     prev_critical_state_id = critical_states[-1]
                     prev_state_info = ep[prev_critical_state_id]
                     
-                    # Find the executed action (the one that was approved post-execution)
+                    # Mark the first currently_executing action as executed
+                    # (this is the action that got us to the current state)
                     exec_history = prev_state_info.get("execution_history", [])
+                    for entry in exec_history:
+                        if entry.get("currently_executing", False):
+                            entry["executed"] = True
+                            entry["currently_executing"] = False  # Clear the flag
+                            print(f"✅ Marked action as executed in previous state {prev_critical_state_id}'s execution_history")
+                            break
+                    
+                    # Find the executed action that was approved post-execution for final_executed_action
                     for entry in exec_history:
                         if entry.get("executed", False) and entry.get("post_execution_approved", False):
                             executed_action = entry["action"]
                             prev_state_info["final_executed_action"] = executed_action.tolist() if hasattr(executed_action, "tolist") else list(executed_action)
                             print(f"✅ Recorded final_executed_action for PREVIOUS state {prev_critical_state_id}")
+                            break
+            
+            # Also mark in completed_states_by_episode (same state object reference, but just to be safe)
+            ep2 = self.completed_states_by_episode.get(latest_episode_id, {})
+            if ep2 and len(critical_states) > 0:
+                prev_critical_state_id = critical_states[-1]
+                if prev_critical_state_id in ep2:
+                    prev_state_info2 = ep2[prev_critical_state_id]
+                    exec_history2 = prev_state_info2.get("execution_history", [])
+                    for entry in exec_history2:
+                        if entry.get("currently_executing", False):
+                            entry["executed"] = True
+                            entry["currently_executing"] = False
                             break
 
         # ---- Phase 2: enqueue pose jobs and BLOCK until all are reported ----
@@ -788,17 +815,18 @@ class StateManager:
             
             exec_history = state_info.get("execution_history", [])
             
-            # Find first non-executed approved action
+            # Find first non-executed approved action that's not currently being executed
+            # Mark as "currently_executing" to prevent returning it again until robot arrives
             for entry in exec_history:
-                if entry.get("approval") == 1 and not entry.get("executed", False):
-                    # Mark as executed
-                    entry["executed"] = True
+                if entry.get("approval") == 1 and not entry.get("executed", False) and not entry.get("currently_executing", False):
+                    # Mark as currently executing (will be marked as executed when robot arrives)
+                    entry["currently_executing"] = True
                     selected_action = entry["action"]
                     
                     # Convert to list if tensor
                     action_list = selected_action.tolist() if hasattr(selected_action, "tolist") else list(selected_action)
                     
-                    print(f"✅ Executing pre-approved action for state {latest_critical_state_id}")
+                    print(f"✅ Returning pre-approved action for state {latest_critical_state_id} (will mark executed when robot arrives)")
                     return action_list
             
             # No approved actions available - return None silently
@@ -1217,18 +1245,23 @@ class StateManager:
 
         # ---- Set up pending undo classification (will be triggered after robot arrives) ----
         # Store the previous critical state info for later classification
-        # Build list of all actions that have been attempted (approved, rejected, or executed)
-        attempted_actions = []
+        # Build list of all actions that have been ACTUALLY EXECUTED (not just pre-approved)
+        actually_executed_actions = []
         execution_history = previous_critical_state_info.get("execution_history", [])
-        for execution in execution_history:
-            attempted_actions.append(execution["action"])
+        print(f"🔍 DEBUG at undo setup: previous state {previous_critical_state_id} has {len(execution_history)} execution_history entries")
+        for i, execution in enumerate(execution_history):
+            is_executed = execution.get("executed", False)
+            print(f"   Entry {i}: executed={is_executed}, approval={execution.get('approval', 'N/A')}")
+            if is_executed:
+                actually_executed_actions.append(execution["action"])
+        print(f"🔍 DEBUG: Found {len(actually_executed_actions)} actually executed actions")
         
         with self.undo_lock:
             self.pending_undo_classification = {
                 "episode_id": latest_episode_id,
                 "state_id": previous_critical_state_id,
                 "is_new_state": None,  # None=pending, True=new state, False=old state
-                "already_executed_actions": attempted_actions,  # All actions that were attempted (approved or rejected)
+                "already_executed_actions": actually_executed_actions,  # Only actions that were actually executed (not just pre-approved)
                 "previous_obs_path": previous_critical_state_info.get("obs_path"),  # For side-by-side comparison
                 "awaiting_robot_arrival": True,  # Flag to indicate robot hasn't arrived yet
             }
@@ -1314,6 +1347,15 @@ class StateManager:
                 all_actions = state_info.get("actions", [])
                 required_responses = self.required_responses_per_critical_state
                 available_actions = all_actions[:required_responses]
+                
+                # Debug logging
+                print(f"🔍 DEBUG: Total submitted actions: {len(all_actions)}")
+                print(f"🔍 DEBUG: Available actions (first {required_responses}): {len(available_actions)}")
+                print(f"🔍 DEBUG: Already executed actions: {len(already_executed)}")
+                exec_history = state_info.get("execution_history", [])
+                print(f"🔍 DEBUG: Execution history entries: {len(exec_history)}")
+                for i, entry in enumerate(exec_history):
+                    print(f"   Entry {i}: executed={entry.get('executed', False)}, approval={entry.get('approval', 'N/A')}")
 
                 if not available_actions:
                     print(f"⚠️  No actions available to resample from")
@@ -1325,6 +1367,8 @@ class StateManager:
                     for action in available_actions
                     if not any(torch.equal(action, executed) for executed in already_executed)
                 ]
+                
+                print(f"🔍 DEBUG: Remaining actions after filtering: {len(remaining_actions_with_dupes)}")
 
                 if not remaining_actions_with_dupes:
                     print(f"⚠️  All actions have been executed, cannot resample")
