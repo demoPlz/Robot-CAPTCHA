@@ -601,6 +601,76 @@
     box-shadow: none;
   }
 
+  /* User Identity Modal */
+  .user-identity-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    backdrop-filter: blur(4px);
+  }
+  .user-identity-modal.show { display: flex; }
+  .user-identity-card {
+    background: white;
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+  }
+  .user-identity-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .user-identity-subtitle {
+    font-size: 14px;
+    color: #64748b;
+    margin-bottom: 24px;
+    text-align: center;
+  }
+  .user-identity-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+    box-sizing: border-box;
+  }
+  .user-identity-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  }
+  .user-identity-submit {
+    width: 100%;
+    padding: 12px;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .user-identity-submit:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  }
+  .user-identity-submit:disabled {
+    background: #cbd5e1;
+    cursor: not-allowed;
+    transform: none;
+  }
+
   /* Animate button styling */
   .controls-container .animate-button {
     background: #f65c5c;
@@ -1641,10 +1711,18 @@ async function refreshViews() {
   }
 }
 
+// Helper function to build get-state URL with user email for timing tracking
+function buildGetStateUrl() {
+  const userIdentity = JSON.parse(localStorage.getItem('userIdentity') || '{}');
+  const userEmail = userIdentity.user_email || '';
+  return userEmail ? `/api/get-state?user_email=${encodeURIComponent(userEmail)}` : `/api/get-state`;
+}
+
 async function getInitialState() {
   try {
-    console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}/api/get-state`);
-    const response = await apiFetch(`/api/get-state`, {
+    const url = buildGetStateUrl();
+    console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}${url}`);
+    const response = await apiFetch(url, {
       headers: {
         'Accept': 'application/json'
       }
@@ -1701,7 +1779,7 @@ function startBackgroundStateCheck() {
   // Check every 5 seconds if backend still has states available
   backgroundStateCheckTimer = setInterval(async () => {
     try {
-      const response = await apiFetch(`/api/get-state`, {
+      const response = await apiFetch(buildGetStateUrl(), {
         headers: { 'Accept': 'application/json' }
       });
       
@@ -1750,7 +1828,7 @@ function startRapidPollingForReadyStates() {
   // Poll every 1 second when states are blocked
   pollTimer = setInterval(async () => {
     try {
-      const response = await apiFetch(`/api/get-state`, {
+      const response = await apiFetch(buildGetStateUrl(), {
         headers: { 'Accept': 'application/json' }
       });
       
@@ -1786,7 +1864,7 @@ function startRegularPollingForStates() {
   // Poll every 5 seconds when no states exist
   pollTimer = setInterval(async () => {
     try {
-      const response = await apiFetch(`/api/get-state`, {
+      const response = await apiFetch(buildGetStateUrl(), {
         headers: { 'Accept': 'application/json' }
       });
       
@@ -3427,6 +3505,72 @@ loader.load(
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
+
+    // ====== User Identity Prompt ======
+    // Check if user identity is already stored
+    let userIdentity = null;
+    try {
+      const stored = localStorage.getItem('userIdentity');
+      if (stored) {
+        userIdentity = JSON.parse(stored);
+        console.log('✓ Found existing user identity:', userIdentity);
+      }
+    } catch (e) {
+      console.error('Error loading user identity from localStorage:', e);
+    }
+
+    // If no identity, show modal and wait for user input
+    if (!userIdentity) {
+      console.log('⏸️ No user identity found, showing prompt...');
+      const modal = document.getElementById('userIdentityModal');
+      const nameInput = document.getElementById('userNameInput');
+      const emailInput = document.getElementById('userEmailInput');
+      const submitBtn = document.getElementById('userIdentitySubmit');
+      
+      modal.classList.add('show');
+      
+      // Wait for user to submit identity
+      userIdentity = await new Promise((resolve) => {
+        const handleSubmit = () => {
+          const name = nameInput.value.trim();
+          const email = emailInput.value.trim();
+          
+          if (!name || !email) {
+            alert('Please enter both name and email');
+            return;
+          }
+          
+          // Basic email validation
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(email)) {
+            alert('Please enter a valid email address');
+            return;
+          }
+          
+          const identity = { name, email };
+          
+          // Store in localStorage for this session
+          try {
+            localStorage.setItem('userIdentity', JSON.stringify(identity));
+          } catch (e) {
+            console.warn('Could not store user identity in localStorage:', e);
+          }
+          
+          modal.classList.remove('show');
+          console.log('✅ User identity captured:', identity);
+          resolve(identity);
+        };
+        
+        submitBtn.addEventListener('click', handleSubmit);
+        emailInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') handleSubmit();
+        });
+        nameInput.focus();
+      });
+    }
+
+    // Store user identity globally for use in submission
+    window.userIdentity = userIdentity;
 
     // Create a wrapper group to position the robot
     const robotGroup = new THREE.Group();
@@ -6246,7 +6390,10 @@ loader.load(
           state_id: state.state_id,
           episode_id: state.episode_id,
           pose_reset_to_default: poseResetToDefault,
-          sliders_changed_axes: slidersChangedAxes
+          sliders_changed_axes: slidersChangedAxes,
+          // Include user identity
+          user_name: window.userIdentity?.name,
+          user_email: window.userIdentity?.email
         };
         if (RECORDING_MARKED_SAVED && LAST_RECORDING_ID) {
           payload.recording_id  = LAST_RECORDING_ID;
@@ -7035,5 +7182,16 @@ window.addEventListener('pagehide', () => {
 
 <div id="bigCursor" aria-hidden="true"><div class="ring"></div><div class="dot"></div></div>
 <!-- The REC indicator is injected into #viewport via JS so it stays anchored on the card -->
+
+<!-- User Identity Modal -->
+<div class="user-identity-modal" id="userIdentityModal">
+  <div class="user-identity-card">
+    <h2 class="user-identity-title">Welcome!</h2>
+    <p class="user-identity-subtitle">Please enter your name and email to begin</p>
+    <input type="text" id="userNameInput" class="user-identity-input" placeholder="Your Name" />
+    <input type="email" id="userEmailInput" class="user-identity-input" placeholder="Your Email" />
+    <button id="userIdentitySubmit" class="user-identity-submit">Continue</button>
+  </div>
+</div>
 
 </body></html>

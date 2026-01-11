@@ -35,6 +35,7 @@ class FlushManager:
         episodes_pending_save: set,
         save_episode_callback,
         required_responses_per_critical_state: int,
+        calculate_episode_timing_callback,
     ):
         """Initialize flush manager.
 
@@ -45,6 +46,7 @@ class FlushManager:
             episodes_pending_save: Reference to pending save tracking set
             save_episode_callback: Callback to save episode to dataset
             required_responses_per_critical_state: Number of responses needed for critical states
+            calculate_episode_timing_callback: Callback to calculate timing statistics
 
         """
         self.state_lock = state_lock
@@ -53,6 +55,7 @@ class FlushManager:
         self.episodes_pending_save = episodes_pending_save
         self.save_episode_callback = save_episode_callback
         self.required_responses_per_critical_state = required_responses_per_critical_state
+        self.calculate_episode_timing_callback = calculate_episode_timing_callback
 
         # Flush worker infrastructure
         self.flush_queue = queue.Queue()
@@ -124,8 +127,11 @@ class FlushManager:
                         # Release lock before slow I/O operation
                         print(f"💾 Flushing {num_states} states for episode {episode_id}...")
 
-                        # Call save callback (this may take time - no lock held)
-                        self.save_episode_callback(buffer_copy)
+                        # Calculate timing statistics for the flush
+                        episode_timing = self.calculate_episode_timing_callback(episode_id, buffer_copy)
+
+                        # Call save callback with timing stats
+                        self.save_episode_callback(buffer_copy, episode_timing)
 
                         print(f"✅ Successfully flushed episode {episode_id} ({num_states} states)")
 

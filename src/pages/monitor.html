@@ -810,6 +810,9 @@
                 <p style="margin-top: 10px; font-size: 14px; color: #666;">
                     Review the proposed action with robot visualization before executing
                 </p>
+                <div id="pre-exec-user-info" style="margin-top: 8px; padding: 8px; background: #f3f4f6; border-radius: 6px; font-size: 13px; color: #374151;">
+                    <!-- User info will be inserted here -->
+                </div>
             </div>
             <div class="pre-execution-modal-body">
                 <!-- Top row: Current observation -->
@@ -1949,6 +1952,18 @@
         }
 
         async function showPreExecutionModal(data) {
+            // Display user info
+            const userInfoEl = document.getElementById('pre-exec-user-info');
+            if (data.submitted_by && data.submitted_by.length > 0) {
+                const users = data.submitted_by.map(u => 
+                    `<strong>${u.name || 'Unknown'}</strong> (${u.email || 'no email'})`
+                ).join(', ');
+                userInfoEl.innerHTML = `📝 <strong>Submitted by:</strong> ${users}`;
+                userInfoEl.style.display = 'block';
+            } else {
+                userInfoEl.style.display = 'none';
+            }
+            
             // Load current observation image
             if (data.current_image_url) {
                 preExecCurrentImage.src = data.current_image_url;

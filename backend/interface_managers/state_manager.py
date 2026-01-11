@@ -123,6 +123,10 @@ class StateManager:
         self.current_serving_episode = None
         self.episodes_completed = set()
         self.next_state_id = 0
+        
+        # Episode timing tracking
+        self.episode_start_times = {}  # episode_id -> Unix timestamp
+        self.episode_start_times_iso = {}  # episode_id -> ISO format
 
         # Episode finalization
         self.episode_finalize_grace_s = episode_finalize_grace_s
@@ -186,6 +190,7 @@ class StateManager:
             episodes_pending_save=self._episodes_pending_save,
             save_episode_callback=self._save_episode_callback,
             required_responses_per_critical_state=self.required_responses_per_critical_state,
+            calculate_episode_timing_callback=self._calculate_episode_timing,
         )
 
     # =========================
@@ -261,13 +266,28 @@ class StateManager:
             # Poses of each object in self.object will be computed when we call set_last_state_to_critical
             # "object_poses"
             # No other fields; segmentation, and all others, no longer supported
+            # Timing tracking
+            "state_created_at": time.time(),
+            "state_created_at_iso": None,  # Will be set below
+            "state_completed_at": None,
+            "state_completed_at_iso": None,
+            "user_timings": {},  # email -> {"first_served_at": timestamp, "first_served_at_iso": str, "submitted_at": timestamp, "submitted_at_iso": str, "duration_seconds": float}
         }
+        
+        # Set ISO timestamp
+        import datetime
+        state_info["state_created_at_iso"] = datetime.datetime.now().isoformat()
 
         with self.state_lock:
             # Initialize episode containers if needed
             if episode_id not in self.pending_states_by_episode:
                 self.pending_states_by_episode[episode_id] = {}
                 self.completed_states_by_episode[episode_id] = {}
+                
+                # Track episode start time (first state)
+                self.episode_start_times[episode_id] = time.time()
+                self.episode_start_times_iso[episode_id] = datetime.datetime.now().isoformat()
+                print(f"📅 Episode {episode_id} started at {self.episode_start_times_iso[episode_id]}")
 
             # Add state to pending states
             self.pending_states_by_episode[episode_id][state_id] = state_info
@@ -541,11 +561,14 @@ class StateManager:
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
 
-    def get_latest_state(self) -> dict:
+    def get_latest_state(self, user_email: str = None) -> dict:
         """Get a pending state from current serving episode. 
         
         Only serves states that have been approved by the monitor admin.
         This ensures jitter states don't affect what users see.
+        
+        Args:
+            user_email: Email of user requesting state (for timing tracking)
         """
 
         with self.state_lock:
@@ -589,6 +612,23 @@ class StateManager:
                 return {
                     "status": "no_ready_states",
                     "blocked_critical_states": True,
+                }
+            
+            # Track when this user first sees this state (for timing)
+            if user_email:
+                import datetime
+                if "user_timings" not in state_info:
+                    state_info["user_timings"] = {}
+                
+                # Always update to latest serve time (handles page reloads - resets timer)
+                now = time.time()
+                now_iso = datetime.datetime.now().isoformat()
+                state_info["user_timings"][user_email] = {
+                    "first_served_at": now,
+                    "first_served_at_iso": now_iso,
+                    "submitted_at": None,
+                    "submitted_at_iso": None,
+                    "duration_seconds": None,
                 }
 
             # Return the latest approved state for labeling
@@ -636,6 +676,29 @@ class StateManager:
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
             state_info["actions"].append(goal_positions)
             
+            # Track user identity for this submission
+            user_name = response_data.get("user_name")
+            user_email = response_data.get("user_email")
+            if "user_submissions" not in state_info:
+                state_info["user_submissions"] = []
+            state_info["user_submissions"].append({
+                "name": user_name,
+                "email": user_email,
+                "action_index": len(state_info["actions"]) - 1,  # Index of the action just appended
+            })
+            
+            # Track submission timing for this user
+            import datetime
+            if user_email and "user_timings" in state_info and user_email in state_info["user_timings"]:
+                now = time.time()
+                now_iso = datetime.datetime.now().isoformat()
+                timing = state_info["user_timings"][user_email]
+                timing["submitted_at"] = now
+                timing["submitted_at_iso"] = now_iso
+                if timing["first_served_at"]:
+                    timing["duration_seconds"] = now - timing["first_served_at"]
+                    print(f"⏱️  {user_name} ({user_email}) completed in {timing['duration_seconds']:.1f}s")
+            
             # Track actual number of unique worker submissions (not including autofill)
             if "actual_num_submissions" not in state_info:
                 state_info["actual_num_submissions"] = 0
@@ -651,6 +714,13 @@ class StateManager:
 
             # Handle completion
             if state_info["responses_received"] >= required_responses:
+                # Record state completion time (when all actions received)
+                import datetime
+                state_info["state_completed_at"] = time.time()
+                state_info["state_completed_at_iso"] = datetime.datetime.now().isoformat()
+                state_completion_duration = state_info["state_completed_at"] - state_info["state_created_at"]
+                print(f"📊 State {state_id} completed in {state_completion_duration:.1f}s (from creation to all actions received)")
+                
                 # Build action tensor for all submissions
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
@@ -1712,6 +1782,20 @@ class StateManager:
             count_selected = sum(1 for a in available_actions if torch.equal(a, selected_action))
             true_propensity = count_selected / actual_total_submissions
             
+            # Find which user(s) submitted this action
+            user_submissions = state_info.get("user_submissions", [])
+            action_users = []
+            for i, action in enumerate(available_actions):
+                if torch.equal(action, selected_action):
+                    # Find user who submitted this action
+                    for user_sub in user_submissions:
+                        if user_sub["action_index"] == i:
+                            action_users.append({
+                                "name": user_sub["name"],
+                                "email": user_sub["email"]
+                            })
+                            break
+            
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:
                 self._pre_execution_approval_sequence += 1
@@ -1725,9 +1809,13 @@ class StateManager:
                     "view_paths": state_info.get("view_paths"),
                     "approved": None,
                     "sequence": self._pre_execution_approval_sequence,
+                    "submitted_by": action_users,  # List of users who submitted this action
                 }
                 
             print(f"⏸️  Waiting for pre-approval decision (state {state_id}, action {num_reviewed + 1})")
+            if action_users:
+                user_names = ", ".join([u["name"] for u in action_users if u["name"]])
+                print(f"   Submitted by: {user_names}")
             
             # Block until admin makes decision
             approved = None
@@ -1749,6 +1837,7 @@ class StateManager:
                 "propensity": true_propensity,  # Use propensity based on original submission counts
                 "selector_metadata": selection_metadata,
                 "approval": approval_value,
+                "submitted_by": action_users,  # Track who submitted this action
             })
             
             if approved:
@@ -1928,9 +2017,104 @@ class StateManager:
             self.episodes_completed.add(episode_id)  # for monitoring
 
             buffer = self.completed_states_buffer_by_episode[episode_id]
-            self._save_episode_callback(buffer)
+            
+            # Calculate episode timing
+            episode_timing = self._calculate_episode_timing(episode_id, buffer)
+            
+            # Save episode with timing data
+            self._save_episode_callback(buffer, episode_timing)
 
             del self.completed_states_buffer_by_episode[episode_id]
+
+    def _calculate_episode_timing(self, episode_id: int, buffer: list) -> dict:
+        """Calculate comprehensive timing statistics for an episode.
+        
+        Returns dict with:
+        - episode_start_time, episode_end_time (Unix timestamps)
+        - episode_start_time_iso, episode_end_time_iso (ISO strings)
+        - total_episode_duration_seconds
+        - per_user_stats: {email: {total_time, avg_time, num_submissions, min_time, max_time}}
+        - per_state_stats: {state_id: {avg_time, num_users, state_duration}}
+        - overall_avg_submission_time, overall_avg_state_duration
+        """
+        import datetime
+        
+        episode_end_time = time.time()
+        episode_end_time_iso = datetime.datetime.now().isoformat()
+        episode_start_time = self.episode_start_times.get(episode_id, episode_end_time)
+        episode_start_time_iso = self.episode_start_times_iso.get(episode_id, episode_end_time_iso)
+        
+        total_episode_duration = episode_end_time - episode_start_time
+        
+        # Calculate per-user and per-state statistics from completed states
+        per_user_times = {}  # email -> [duration1, duration2, ...]
+        per_state_times = {}  # state_id -> {"durations": [d1, d2, ...], "state_duration": s}
+        
+        for state_info in buffer:
+            state_id = state_info.get("state_id")
+            user_timings = state_info.get("user_timings", {})
+            
+            # Per-user timing
+            for email, timing_info in user_timings.items():
+                duration = timing_info.get("duration_seconds")
+                if duration is not None:
+                    if email not in per_user_times:
+                        per_user_times[email] = []
+                    per_user_times[email].append(duration)
+            
+            # Per-state timing
+            if state_id is not None:
+                if state_id not in per_state_times:
+                    per_state_times[state_id] = {"durations": [], "state_duration": None}
+                
+                # Collect all user durations for this state
+                for timing_info in user_timings.values():
+                    duration = timing_info.get("duration_seconds")
+                    if duration is not None:
+                        per_state_times[state_id]["durations"].append(duration)
+                
+                # State completion duration (from creation to all responses received)
+                state_created = state_info.get("state_created_at")
+                state_completed = state_info.get("state_completed_at")
+                if state_created and state_completed:
+                    per_state_times[state_id]["state_duration"] = state_completed - state_created
+        
+        # Aggregate per-user stats
+        per_user_stats = {}
+        for email, durations in per_user_times.items():
+            per_user_stats[email] = {
+                "total_time": sum(durations),
+                "avg_time": sum(durations) / len(durations) if durations else 0,
+                "num_submissions": len(durations),
+                "min_time": min(durations) if durations else 0,
+                "max_time": max(durations) if durations else 0,
+            }
+        
+        # Aggregate per-state stats
+        per_state_stats = {}
+        for state_id, state_data in per_state_times.items():
+            durations = state_data["durations"]
+            per_state_stats[state_id] = {
+                "avg_time": sum(durations) / len(durations) if durations else 0,
+                "num_users": len(durations),
+                "state_duration": state_data["state_duration"],
+            }
+        
+        # Overall averages
+        all_submission_times = [d for durations in per_user_times.values() for d in durations]
+        all_state_durations = [s["state_duration"] for s in per_state_times.values() if s["state_duration"] is not None]
+        
+        return {
+            "episode_start_time": episode_start_time,
+            "episode_start_time_iso": episode_start_time_iso,
+            "episode_end_time": episode_end_time,
+            "episode_end_time_iso": episode_end_time_iso,
+            "total_episode_duration_seconds": total_episode_duration,
+            "per_user_stats": per_user_stats,
+            "per_state_stats": per_state_stats,
+            "overall_avg_submission_time": sum(all_submission_times) / len(all_submission_times) if all_submission_times else 0,
+            "overall_avg_state_duration": sum(all_state_durations) / len(all_state_durations) if all_state_durations else 0,
+        }
 
     def _auto_fill_end_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Auto-fill an critical state labeled as "end." with multiple copies of its current position.

@@ -34,8 +34,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
     @app.route("/api/get-state")
     def get_state():
-
-        state = crowd_interface.get_latest_state()
+        # Extract user email from request to track timing
+        user_email = request.args.get('user_email', None)
+        
+        state = crowd_interface.get_latest_state(user_email=user_email)
 
         # Check if this is a status response (no real state)
         if isinstance(state, dict) and state.get("status"):

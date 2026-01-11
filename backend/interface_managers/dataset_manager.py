@@ -266,9 +266,178 @@ class DatasetManager:
         
         with open(propensity_log_path, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
+    
+    def log_user_approvals_for_state(
+        self,
+        episode_index: int,
+        state_id: int,
+        execution_history: list[dict],
+    ) -> None:
+        """Log which users' submissions were approved/rejected for a state."""
+        # Use dataset name in log filename for unique naming per run
+        dataset_name = self.dataset.repo_id.replace('/', '_')
+        user_approval_log_path = self.dataset.root / f"user_approval_log_{dataset_name}.jsonl"
+        
+        # Group by approval status
+        accepted_users = []
+        rejected_users = []
+        
+        for execution in execution_history:
+            submitted_by = execution.get("submitted_by", [])
+            approval = execution.get("approval")
+            
+            for user in submitted_by:
+                user_info = {
+                    "name": user.get("name"),
+                    "email": user.get("email"),
+                }
+                
+                if approval == 1:  # Approved
+                    accepted_users.append(user_info)
+                elif approval == -1:  # Rejected
+                    rejected_users.append(user_info)
+        
+        log_entry = {
+            "type": "state_approval",
+            "episode_index": episode_index,
+            "state_id": state_id,
+            "timestamp": time.time(),
+            "accepted_users": accepted_users,
+            "rejected_users": rejected_users,
+            "num_accepted": len(accepted_users),
+            "num_rejected": len(rejected_users),
+            "acceptance_rate": len(accepted_users) / (len(accepted_users) + len(rejected_users)) if (len(accepted_users) + len(rejected_users)) > 0 else None,
+        }
+        
+        with open(user_approval_log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        
+        # Print summary
+        accepted_names = [u["name"] for u in accepted_users if u.get("name")]
+        rejected_names = [u["name"] for u in rejected_users if u.get("name")]
+        print(f"📊 State {state_id}: Accepted: {accepted_names}, Rejected: {rejected_names}, {log_entry['num_accepted']}/{log_entry['num_accepted'] + log_entry['num_rejected']} accepted ({log_entry['acceptance_rate']:.1%})")
+    
+    def log_episode_user_summary(self, episode_index: int, buffer: dict, episode_timing: dict = None) -> None:
+        """Log per-user and overall acceptance rates for an episode, plus timing statistics.
+        
+        Args:
+            episode_index: Episode number
+            buffer: Dict of state_id -> state_info
+            episode_timing: Optional dict with timing stats from state_manager
+        """
+        # Use dataset name in log filename for unique naming per run
+        dataset_name = self.dataset.repo_id.replace('/', '_')
+        user_approval_log_path = self.dataset.root / f"user_approval_log_{dataset_name}.jsonl"
+        
+        # Track stats per user
+        user_stats = {}  # email -> {name, accepted, rejected}
+        
+        for state_id in sorted(buffer.keys()):
+            state = buffer[state_id]
+            execution_history = state.get("execution_history", [])
+            
+            for execution in execution_history:
+                submitted_by = execution.get("submitted_by", [])
+                approval = execution.get("approval")
+                
+                for user in submitted_by:
+                    email = user.get("email", "unknown")
+                    name = user.get("name", "Unknown")
+                    
+                    if email not in user_stats:
+                        user_stats[email] = {"name": name, "accepted": 0, "rejected": 0}
+                    
+                    if approval == 1:
+                        user_stats[email]["accepted"] += 1
+                    elif approval == -1:
+                        user_stats[email]["rejected"] += 1
+        
+        # Compute acceptance rates
+        user_rates = []
+        total_accepted = 0
+        total_rejected = 0
+        
+        for email, stats in user_stats.items():
+            total = stats["accepted"] + stats["rejected"]
+            rate = stats["accepted"] / total if total > 0 else None
+            
+            user_entry = {
+                "name": stats["name"],
+                "email": email,
+                "accepted": stats["accepted"],
+                "rejected": stats["rejected"],
+                "total": total,
+                "acceptance_rate": rate,
+            }
+            
+            # Add timing stats if available
+            if episode_timing and email in episode_timing.get("per_user_stats", {}):
+                user_timing = episode_timing["per_user_stats"][email]
+                user_entry.update({
+                    "total_time_seconds": user_timing["total_time"],
+                    "avg_time_seconds": user_timing["avg_time"],
+                    "num_submissions": user_timing["num_submissions"],
+                    "min_time_seconds": user_timing["min_time"],
+                    "max_time_seconds": user_timing["max_time"],
+                })
+            
+            user_rates.append(user_entry)
+            total_accepted += stats["accepted"]
+            total_rejected += stats["rejected"]
+        
+        # Overall rate
+        overall_total = total_accepted + total_rejected
+        overall_rate = total_accepted / overall_total if overall_total > 0 else None
+        
+        log_entry = {
+            "type": "episode_summary",
+            "episode_index": episode_index,
+            "timestamp": time.time(),
+            "user_stats": user_rates,
+            "overall_accepted": total_accepted,
+            "overall_rejected": total_rejected,
+            "overall_acceptance_rate": overall_rate,
+        }
+        
+        # Add episode timing stats if available
+        if episode_timing:
+            log_entry["timing"] = {
+                "episode_start_time": episode_timing["episode_start_time"],
+                "episode_start_time_iso": episode_timing["episode_start_time_iso"],
+                "episode_end_time": episode_timing["episode_end_time"],
+                "episode_end_time_iso": episode_timing["episode_end_time_iso"],
+                "total_episode_duration_seconds": episode_timing["total_episode_duration_seconds"],
+                "overall_avg_submission_time": episode_timing["overall_avg_submission_time"],
+                "overall_avg_state_duration": episode_timing["overall_avg_state_duration"],
+                "per_state_stats": episode_timing["per_state_stats"],
+            }
+            
+            # Print timing summary
+            print(f"\n⏱️  === Episode {episode_index} Timing Summary ===")
+            print(f"📅 Duration: {episode_timing['total_episode_duration_seconds']:.1f}s ({episode_timing['episode_start_time_iso']} → {episode_timing['episode_end_time_iso']})")
+            print(f"⚡ Avg submission time: {episode_timing['overall_avg_submission_time']:.1f}s")
+            print(f"📊 Avg state completion: {episode_timing['overall_avg_state_duration']:.1f}s")
+            print(f"\n👥 Per-user timing:")
+            for user_entry in user_rates:
+                if "avg_time_seconds" in user_entry:
+                    print(f"  • {user_entry['name']}: {user_entry['avg_time_seconds']:.1f}s avg ({user_entry['num_submissions']} submissions)")
+        
+        with open(user_approval_log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        
+        # Print summary
+        print(f"\n📊 Episode {episode_index} User Approval Summary:")
+        for user in user_rates:
+            print(f"   {user['name']} ({user['email']}): {user['accepted']}/{user['total']} accepted ({user['acceptance_rate']:.1%})")
+        print(f"   Overall: {total_accepted}/{overall_total} accepted ({overall_rate:.1%})\n")
 
-    def save_episode(self, buffer):
-        """Save episode from completed states buffer to dataset."""
+    def save_episode(self, buffer, episode_timing=None):
+        """Save episode from completed states buffer to dataset.
+        
+        Args:
+            buffer: Dict of state_id -> state_info
+            episode_timing: Optional dict with episode timing statistics
+        """
         episode_index = self.dataset.meta.total_episodes
         propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
 
@@ -329,6 +498,13 @@ class DatasetManager:
 
             self.dataset.add_frame(frame)
             self._delete_obs_from_disk(state.get("obs_path"))
+            
+            # Log user approval stats for each state
+            if execution_history:
+                self.log_user_approvals_for_state(episode_index, state_id, execution_history)
+
+        # Log episode-wide user summary with timing
+        self.log_episode_user_summary(episode_index, buffer, episode_timing)
 
         print(f"💾 Calling dataset.save_episode() for episode {episode_index}...")
         print(f"   Episode buffer has {len(self.dataset.episode_buffer.get('action', []))} frames")

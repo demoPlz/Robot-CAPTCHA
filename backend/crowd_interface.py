@@ -470,13 +470,16 @@ class CrowdInterface:
         """
         return self.state_manager.set_last_state_to_critical()
 
-    def get_latest_state(self) -> dict:
+    def get_latest_state(self, user_email: str = None) -> dict:
         """Get the latest pending critical state for labeling.
 
         Delegates to StateManager.
+        
+        Args:
+            user_email: Optional user email for timing tracking
 
         """
-        return self.state_manager.get_latest_state()
+        return self.state_manager.get_latest_state(user_email=user_email)
 
     def record_response(self, response_data: dict):
         """Record a user response for a state.
