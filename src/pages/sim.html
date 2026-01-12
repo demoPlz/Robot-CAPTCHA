@@ -1532,6 +1532,7 @@
   background: #ffffff;
   border-radius: 0 0 8px 8px;
   padding: 12px;
+  box-sizing: border-box;
 }
 
 #exampleDock video{
@@ -1541,12 +1542,13 @@
   object-fit: contain;           /* contain to show full video */
   background: #000;
   border-radius: 4px;
+  box-sizing: border-box;
 }
 
 #exampleDock .close-btn {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 16px;
+  right: 16px;
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -1561,12 +1563,28 @@
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.1);
   transition: all 0.2s ease;
-  z-index: 1;
+  z-index: 3;
 }
 
 #exampleDock .close-btn:hover {
   background: #f3f4f6;
   transform: scale(1.1);
+}
+
+#exampleDock .resize-handle {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 0%, transparent 50%, #9ca3af 50%, #9ca3af 100%);
+  border-radius: 0 0 4px 0;
+  z-index: 3;
+}
+
+#exampleDock .resize-handle:hover {
+  background: linear-gradient(135deg, transparent 0%, transparent 50%, #6b7280 50%, #6b7280 100%);
 }
 
 #exampleDock .placeholder{
@@ -3178,13 +3196,19 @@ function createExampleDockOnce(){
   
   exampleVideo = document.createElement('video');
   exampleVideo.muted = true;
-  exampleVideo.loop = true;
+  exampleVideo.loop = false;
   exampleVideo.autoplay = true;
   exampleVideo.playsInline = true;
   exampleVideo.preload = 'auto';
+  exampleVideo.controls = true; // Show progress bar and play/pause controls
+  
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'resize-handle';
+  resizeHandle.setAttribute('aria-label', 'Resize video');
   
   videoContainer.appendChild(closeBtn);
   videoContainer.appendChild(exampleVideo);
+  videoContainer.appendChild(resizeHandle);
   exampleDock.appendChild(dragHandle);
   exampleDock.appendChild(videoContainer);
   document.getElementById('page-wrapper').appendChild(exampleDock);
@@ -3217,6 +3241,32 @@ function createExampleDockOnce(){
     if (isDragging) {
       isDragging = false;
       exampleDock.classList.remove('dragging');
+    }
+  });
+  
+  // Make it resizable from bottom-right corner
+  let isResizing = false;
+  let resizeStartWidth = 0;
+  let resizeStartX = 0;
+  
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    resizeStartWidth = exampleDock.offsetWidth;
+    resizeStartX = e.clientX;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return;
+    const deltaX = e.clientX - resizeStartX;
+    const newWidth = Math.max(320, Math.min(1200, resizeStartWidth + deltaX)); // Min 320px, max 1200px
+    exampleDock.style.width = `${newWidth}px`;
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (isResizing) {
+      isResizing = false;
     }
   });
   
@@ -3977,10 +4027,11 @@ loader.load(
       // Just update the video element that's already in the structure
       exampleVideo.innerHTML = '';
       exampleVideo.muted = true;
-      exampleVideo.loop = true;
+      exampleVideo.loop = false;
       exampleVideo.autoplay = true;
       exampleVideo.playsInline = true;
       exampleVideo.preload = 'auto';
+      exampleVideo.controls = true;
       exampleVideo.crossOrigin = 'anonymous';
 
       const src = document.createElement('source');
