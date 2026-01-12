@@ -1793,7 +1793,7 @@ async function getInitialState() {
     return data;
   } catch (error) {
     console.error("Could not fetch initial state:", error);
-    showServerNotStarted();
+    showWaitingForStatesMessage('Waiting for next state...');
     // Hide interactive UI when server is not running
     const uiElems = document.querySelectorAll("button, .lil-gui, #viewport");
     uiElems.forEach(el=>{
@@ -3685,6 +3685,13 @@ loader.load(
     // Store user identity globally for use in submission
     window.userIdentity = userIdentity;
 
+    // Track submitted states per user (for Netlify one-submission-per-state restriction)
+    window.submittedStates = new Set();
+    
+    // Check if user is from Netlify (crowdsourcing) or localhost (expert)
+    window.isFromNetlify = location.hostname !== 'localhost' && location.hostname !== '127.0.0.1';
+    console.log(`[MODE] User is from: ${window.isFromNetlify ? 'Netlify (crowdsourcing)' : 'localhost (expert)'}`);
+
     // Create a wrapper group to position the robot
     const robotGroup = new THREE.Group();
     const ROBOT_Z_OFFSET = 0.005; // Raise by 0.025 units
@@ -3912,7 +3919,7 @@ loader.load(
     // If the data collection server isn't available, stop building UI
     if (!state || Object.keys(state).length === 0 || !cameraModels) {
       // Ensure the status overlay is visible and abort UI construction
-      showServerNotStarted();
+      showWaitingForStatesMessage('Waiting for next state...');
       return; // ← prevents creating sliders/buttons and starting animation
     }
     
@@ -6466,6 +6473,17 @@ loader.load(
 
       // ===== Normal submit-goal flow (unchanged below) =====
 
+      // Check if user has already submitted for this state (Netlify only)
+      const stateKey = `${state.episode_id}_${state.state_id}`;
+      if (window.isFromNetlify && window.submittedStates.has(stateKey)) {
+        console.log('⚠️  User has already submitted for this state');
+        alert('You have already submitted an action for this state. Waiting for next state...');
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Submit';
+        verifyButtonUsed = false;
+        return;
+      }
+
       // 1) Use the intended goal pose
       const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
 
@@ -6519,6 +6537,11 @@ loader.load(
         if (response.ok) {
           console.log('✅ goal sent (final goal joints)');
           
+          // Track this submission (Netlify users can only submit once per state)
+          if (window.isFromNetlify) {
+            window.submittedStates.add(stateKey);
+          }
+          
           // Check if we're in MTurk mode (via URL parameter)
           const urlParams = new URLSearchParams(window.location.search);
           const isMTurkMode = urlParams.get('mturk') === '1';
@@ -6532,8 +6555,14 @@ loader.load(
             confirmBtn.textContent = '✅ Submitted';
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
+          } else if (window.isFromNetlify) {
+            // Netlify crowdsourcing mode: show waiting screen (user can only submit once per state)
+            confirmBtn.textContent = '✅ Submitted';
+            confirmBtn.disabled = true;
+            confirmBtn.style.background = '#22c55e';
+            showWaitingForStatesMessage('Waiting for next state...');
           } else {
-            // Normal mode: refresh to load next task
+            // Localhost expert mode: refresh to load next task (can submit multiple times)
             window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
           }
         } else {
