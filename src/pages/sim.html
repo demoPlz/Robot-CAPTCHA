@@ -1441,51 +1441,39 @@
   right: 12px;
   top: 50%;
   transform: translateY(-50%);
-  width: auto; height: auto;
-  display: inline-flex; 
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  color: #ffffff;
-  font-size: 20px;
-  cursor: pointer; 
+  background: #fff;
+  color: #3b82f6;
+  border: 1px solid #3b82f6;
+  border-radius: 0;
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
   user-select: none;
-  padding: 4px;
   transition: all 0.2s ease;
   z-index: 10010;
-}
-
-/* Only pulse when never activated and not during interaction */
-.prompt-example-toggle.never-activated{
-  animation: pulse-glow 1.2s ease-in-out infinite;
-}
-
-/* Pause animation during interaction for performance */
-.prompt-example-toggle.never-activated.paused{
-  animation-play-state: paused;
+  white-space: nowrap;
 }
 
 .prompt-example-toggle:hover{ 
-  color: rgba(255,255,255,0.8); 
-  transform: translateY(-50%) scale(1.1);
-  animation: none; /* Stop pulsing on hover */
+  transform: translateY(-50%) translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  background: #f8fafc;
 }
 .prompt-example-toggle:active{ 
-  transform: translateY(-50%) scale(0.95); 
-  animation: none; /* Stop pulsing when clicked */
+  transform: translateY(-50%) translateY(0);
 }
 .prompt-example-toggle[disabled]{ 
-  opacity:.5; 
-  cursor:not-allowed;
-  animation: none; /* Stop pulsing when disabled */
+  background: #f3f4f6;
+  color: #9ca3af;
+  border-color: #d1d5db;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .prompt-example-toggle.active{
-  color: rgba(255,255,255,1);
-  filter: drop-shadow(0 0 8px rgba(255,255,255,0.4));
-  background: rgba(255,255,255,0.3);
-  border-color: rgba(255,255,255,0.5);
-  animation: none; /* Stop pulsing when active */
+  background: #eff6ff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
 /* Example video dock - positioned to overlay hints panel */
@@ -3120,9 +3108,7 @@ if (isMTurkMode) {
 hintsPanel.innerHTML = `
   <h3>Hints</h3>
   <ol>
-    <li>Use the UI to suggest the <b>immediate next goal</b> pose for the robot to travel to.</li>
-    <li>You are only asked to suggest the immediate next goal! <b>You can either choose to move the arm, or open/close the gripper.</b>
-      Other users will take care of what to do afterwards.</li>
+    <li>Use the UI to suggest the <b>goal position</b> for the robot to travel to according the specified <b>Task</b>.</li>
     <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
     <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and
       adjust accordingly if necessary.</li>
@@ -3930,7 +3916,7 @@ loader.load(
     const promptFromServer = state.prompt;
     
     // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}<br><b>Imitate the example video (click <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.3);font-style:normal;font-weight:600;">i</span>).</b>`;
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}`;
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state
@@ -3979,11 +3965,7 @@ loader.load(
       exampleToggle.type = 'button';
       exampleToggle.title = 'Show example video';
       exampleToggle.setAttribute('aria-pressed', 'false');
-      exampleToggle.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 50 50" fill="currentColor" aria-hidden="true">
-          <path d="M25,2C12.297,2,2,12.297,2,25s10.297,23,23,23s23-10.297,23-23S37.703,2,25,2z M25,11c1.657,0,3,1.343,3,3s-1.343,3-3,3 s-3-1.343-3-3S23.343,11,25,11z M29,38h-2h-4h-2v-2h2V23h-2v-2h2h4v2v13h2V38z"></path>
-        </svg>
-      `;
+      exampleToggle.textContent = 'Example Video';
       promptBar.appendChild(exampleToggle);
 
       // Reserve space on the prompt bar only when the toggle exists
