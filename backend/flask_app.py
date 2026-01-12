@@ -34,45 +34,51 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
     @app.route("/api/get-state")
     def get_state():
-        # Extract user email from request to track timing
-        user_email = request.args.get('user_email', None)
-        
-        state = crowd_interface.get_latest_state(user_email=user_email)
+        try:
+            # Extract user email from request to track timing
+            user_email = request.args.get('user_email', None)
+            
+            state = crowd_interface.get_latest_state(user_email=user_email)
 
-        # Check if this is a status response (no real state)
-        if isinstance(state, dict) and state.get("status"):
-            # Return status response directly but include calibration data
-            payload = dict(state)
-            payload["gripper_tip_calib"] = crowd_interface.calibration.get_gripper_tip_calib()
-            payload["camera_poses"] = crowd_interface.calibration.get_camera_poses()
-            payload["camera_models"] = crowd_interface.calibration.get_camera_models()
+            # Check if this is a status response (no real state)
+            if isinstance(state, dict) and state.get("status"):
+                # Return status response directly but include calibration data
+                payload = dict(state)
+                payload["gripper_tip_calib"] = crowd_interface.calibration.get_gripper_tip_calib()
+                payload["camera_poses"] = crowd_interface.calibration.get_camera_poses()
+                payload["camera_models"] = crowd_interface.calibration.get_camera_models()
+                response = jsonify(payload)
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+
+            # Process as a real state
+            payload = crowd_interface.state_to_json(state)
+
+            # Prefer text_prompt (manual or VLM), otherwise simple fallback
+            text = payload.get("text_prompt")
+            if isinstance(text, str) and text.strip():
+                payload["prompt"] = text.strip()
+            else:
+                payload["prompt"] = f"{crowd_interface.task_text or 'crowdsourced_task'}"
+
+            # Tell the frontend what to do with demo videos
+            payload["demo_video"] = crowd_interface.video_manager.get_demo_video_config()
+            # Tell frontend which mode we're in (focus group vs crowdsourcing)
+            payload["crowdsourcing_mode"] = crowd_interface.use_mturk
+
             response = jsonify(payload)
+            # Prevent caching
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
             return response
-
-        # Process as a real state
-        payload = crowd_interface.state_to_json(state)
-
-        # Prefer text_prompt (manual or VLM), otherwise simple fallback
-        text = payload.get("text_prompt")
-        if isinstance(text, str) and text.strip():
-            payload["prompt"] = text.strip()
-        else:
-            payload["prompt"] = f"{crowd_interface.task_text or 'crowdsourced_task'}"
-
-        # Tell the frontend what to do with demo videos
-        payload["demo_video"] = crowd_interface.video_manager.get_demo_video_config()
-        # Tell frontend which mode we're in (focus group vs crowdsourcing)
-        payload["crowdsourcing_mode"] = crowd_interface.use_mturk
-
-        response = jsonify(payload)
-        # Prevent caching
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
+        except Exception as e:
+            print(f"❌ ERROR in /api/get-state: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/test")
     def test():

@@ -135,6 +135,9 @@ class CrowdInterface:
         self.max_animation_users = max_animation_users
         self.usd_path = usd_path
 
+        # --- MTurk integration ---
+        self.use_mturk = use_mturk
+
         # --- Objects ---
         self.objects = objects
         self.object_mesh_paths = object_mesh_paths
