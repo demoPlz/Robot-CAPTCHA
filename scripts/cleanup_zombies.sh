@@ -43,39 +43,70 @@ kill_by_pattern() {
     echo ""
 }
 
-# Function to kill processes on specific port
+# Function to kill processes on specific port (current user only)
 kill_by_port() {
     local port=$1
     local description=$2
     
     echo -e "${YELLOW}Checking port ${port}: ${description}${NC}"
     
-    # Find process using the port
-    local pid=$(lsof -ti:$port 2>/dev/null || true)
+    # Try multiple times to kill our own processes
+    local max_attempts=5
+    local attempt=1
     
-    if [ -n "$pid" ]; then
-        echo "  Found PID $pid using port $port"
-        local proc_info=$(ps -p $pid -o pid,ppid,cmd --no-headers 2>/dev/null || echo "")
-        if [ -n "$proc_info" ]; then
-            echo "  → Killing PID $pid: $(echo $proc_info | cut -c 1-100)"
-            kill -9 $pid 2>/dev/null || true
-            KILLED_COUNT=$((KILLED_COUNT + 1))
-            echo -e "${GREEN}  ✓ Port $port freed${NC}"
+    while [ $attempt -le $max_attempts ]; do
+        # Find process using the port (current user only)
+        local current_pid=$(lsof -ti:$port 2>/dev/null || true)
+        
+        if [ -z "$current_pid" ]; then
+            if [ $attempt -eq 1 ]; then
+                echo "  Port $port is free (or used by another user)"
+            else
+                echo -e "${GREEN}  ✓ Port $port freed after $((attempt-1)) attempts${NC}"
+            fi
+            echo ""
+            return 0
         fi
+        
+        echo "  Attempt $attempt/$max_attempts: Killing PID $current_pid"
+        kill -9 $current_pid 2>/dev/null || true
+        KILLED_COUNT=$((KILLED_COUNT + 1))
+        
+        # Wait for process to fully die
+        sleep 0.5
+        
+        attempt=$((attempt + 1))
+    done
+    
+    # Final check
+    local final_pid=$(lsof -ti:$port 2>/dev/null || true)
+    if [ -z "$final_pid" ]; then
+        echo -e "${GREEN}  ✓ Port $port freed${NC}"
+        echo ""
+        return 0
     else
-        echo "  Port $port is free"
+        echo -e "${YELLOW}  ⚠ Port $port still in use (might be another user's process)${NC}"
+        echo -e "${YELLOW}    Flask will auto-select a different port${NC}"
+        echo ""
+        return 0  # Don't fail - let Flask find another port
     fi
-    echo ""
 }
 
 # 1. Kill Flask server on port 9000
-kill_by_port 9000 "Flask server"
+if ! kill_by_port 9000 "Flask server"; then
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${RED}✗ CRITICAL: Could not free port 9000${NC}"
+    echo -e "${RED}  Manual intervention required:${NC}"
+    echo -e "${RED}  Run: sudo lsof -ti:9000 | xargs kill -9${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    exit 1
+fi
 
-# 2. Kill Flask/Werkzeug servers
-kill_by_pattern "werkzeug.*9000" "Werkzeug servers"
+# 2. Kill Flask/Werkzeug servers (any port)
+kill_by_pattern "werkzeug" "Werkzeug servers"
 
-# 3. Kill collect_data.py processes
-kill_by_pattern "collect_data.py" "Main data collection script"
+# 3. Kill collect_data.py processes (main parent process)
+kill_by_pattern "python.*collect_data.py" "Main data collection script"
 
 # 4. Kill flask_app.py processes
 kill_by_pattern "flask_app.py" "Flask app processes"
@@ -119,5 +150,4 @@ else
     echo -e "${GREEN}✓ No zombie processes found - system is clean${NC}"
 fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "You can now run your data collection script."
+
