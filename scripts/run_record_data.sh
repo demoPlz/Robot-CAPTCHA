@@ -7,6 +7,8 @@ echo "🧹 Running cleanup..."
 
 echo ""
 echo "🚀 Starting data collection..."
+echo "   (Flask will auto-select an available port)"
+echo "   (Cloudflared tunnel will be started automatically)"
 echo ""
 
 python backend/collect_data.py \
