@@ -28,6 +28,12 @@ class CrowdInterfaceConfig:
 
         self.required_approvals_per_critical_state: int = 3
         
+        # ========== Asynchronous Data Collection Mode ==========
+        # When enabled, admin collects states with immediate execution (as if required=1),
+        # then all collected states are served to users asynchronously for remaining labels
+        self.asynchronous_mode: bool = True
+        self.async_admin_responses_per_state: int = 1  # Responses needed from admin before robot executes (typically 1)
+        
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
         # MTurk max_assignments will be: required_responses_per_critical_state - num_expert_workers
@@ -423,6 +429,9 @@ class CrowdInterfaceConfig:
             # Autofill
             "autofill_critical_states": self.autofill_critical_states,
             "num_autofill_actions": self.num_autofill_actions,
+            # Asynchronous mode
+            "asynchronous_mode": self.asynchronous_mode,
+            "async_admin_responses_per_state": self.async_admin_responses_per_state,
             # UI
             "use_manual_prompt": self.use_manual_prompt,
             "show_demo_videos": self.show_demo_videos,
