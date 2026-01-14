@@ -46,6 +46,8 @@ class StateManager:
         required_approvals_per_critical_state: int,
         autofill_critical_states: bool,
         num_autofill_actions: int,
+        asynchronous_mode: bool,
+        async_admin_responses_per_state: int,
         use_manual_prompt: bool,
         use_sim: bool,
         task_text: str | None,
@@ -78,6 +80,8 @@ class StateManager:
             required_responses_per_critical_state: Number of responses needed for critical states
             autofill_critical_states: Whether to autofill critical states
             num_autofill_actions: Number of actions to autofill - 1
+            asynchronous_mode: Whether async mode is enabled (admin collects, then users label)
+            async_admin_responses_per_state: Responses needed from admin before robot executes in async mode
             use_manual_prompt: Whether manual prompting is enabled
             use_sim: Whether sim is enabled
             task_text: Task text for state info
@@ -107,6 +111,8 @@ class StateManager:
         self.required_approvals_per_critical_state = required_approvals_per_critical_state
         self.autofill_critical_states = autofill_critical_states
         self.num_autofill_actions = num_autofill_actions
+        self.asynchronous_mode = asynchronous_mode
+        self.async_admin_responses_per_state = async_admin_responses_per_state
         self.use_manual_prompt = use_manual_prompt
         self.use_sim = use_sim
         self.task_text = task_text
@@ -128,6 +134,13 @@ class StateManager:
         # Episode timing tracking
         self.episode_start_times = {}  # episode_id -> Unix timestamp
         self.episode_start_times_iso = {}  # episode_id -> ISO format
+        
+        # Asynchronous mode state pool
+        # When async mode finalized, states moved here for random serving
+        self.async_state_pool = {}  # (episode_id, state_id) -> state_info
+        self.async_user_assignments = {}  # user_email -> list of (episode_id, state_id) in fixed random order
+        self.async_user_submissions = {}  # user_email -> set of (episode_id, state_id) tuples already submitted
+        self.async_pool_finalized = False  # True when admin phase complete and pool is ready
         
         # Warning suppression
         self._no_user_email_warning_shown = False
@@ -576,10 +589,54 @@ class StateManager:
         Only serves states that have been approved by the monitor admin.
         This ensures jitter states don't affect what users see.
         
+        In async mode, serves random states from the finalized pool.
+        
         Args:
             user_email: Email of user requesting state (for timing tracking)
         """
-
+        
+        # ASYNC MODE: Check if pool is finalized and if user is admin
+        if self.asynchronous_mode:
+            # Detect admin by checking if request comes from localhost (no X-Forwarded-For)
+            from flask import request as flask_request
+            is_admin = not flask_request.headers.get('X-Forwarded-For') if flask_request else False
+            
+            if not self.async_pool_finalized:
+                if not is_admin:
+                    # Non-admin users cannot access during admin phase
+                    return {
+                        "status": "admin_phase",
+                        "message": "Data collection in progress. Please wait for labeling phase to begin."
+                    }
+            else:
+                # Pool is finalized - serve from async pool
+                state_info = self.get_async_pooled_state(user_email)
+                if state_info:
+                    # Track timing for async served state
+                    if user_email:
+                        import datetime
+                        if "user_timings" not in state_info:
+                            state_info["user_timings"] = {}
+                        
+                        # Only set timing if this user hasn't seen this state before
+                        if user_email not in state_info["user_timings"]:
+                            now = time.time()
+                            now_iso = datetime.datetime.now().isoformat()
+                            state_info["user_timings"][user_email] = {
+                                "first_served_at": now,
+                                "first_served_at_iso": now_iso,
+                                "submitted_at": None,
+                                "submitted_at_iso": None,
+                                "duration_seconds": None,
+                            }
+                            print(f"⏱️  Started timing for {user_email} on async state at {now_iso}")
+                    
+                    return state_info.copy()
+                else:
+                    # User has labeled all available states
+                    return {"status": "no_pending_states", "message": "You have labeled all available states"}
+        
+        # SYNC MODE or ASYNC ADMIN PHASE: Serve from pending_states (existing logic)
         with self.state_lock:
             episode_id = self.current_serving_episode
             
@@ -589,11 +646,35 @@ class StateManager:
             
             # Find the latest APPROVED critical state
             pending_states = self.pending_states_by_episode[episode_id]
-            approved_critical_states = [
-                (state_id, state_info)
-                for state_id, state_info in pending_states.items()
-                if state_info.get("critical", False) and state_info.get("approval_status") == "approved"
-            ]
+            
+            # In async mode during admin phase, exclude admin-complete states (already labeled by admin)
+            if self.asynchronous_mode and not self.async_pool_finalized:
+                from flask import request as flask_request
+                is_admin = not flask_request.headers.get('X-Forwarded-For') if flask_request else False
+                
+                if is_admin:
+                    # Admin should skip admin-complete states and move to next unlabeled state
+                    approved_critical_states = [
+                        (state_id, state_info)
+                        for state_id, state_info in pending_states.items()
+                        if state_info.get("critical", False) 
+                        and state_info.get("approval_status") == "approved"
+                        and not state_info.get("admin_complete", False)  # Skip states already labeled by admin
+                    ]
+                else:
+                    # Non-admin (shouldn't happen in admin phase, but fallback)
+                    approved_critical_states = [
+                        (state_id, state_info)
+                        for state_id, state_info in pending_states.items()
+                        if state_info.get("critical", False) and state_info.get("approval_status") == "approved"
+                    ]
+            else:
+                # Sync mode or async user phase - show all approved states
+                approved_critical_states = [
+                    (state_id, state_info)
+                    for state_id, state_info in pending_states.items()
+                    if state_info.get("critical", False) and state_info.get("approval_status") == "approved"
+                ]
             
             if not approved_critical_states:
                 # No approved states yet - check if there are pending approval states
@@ -672,14 +753,65 @@ class StateManager:
 
             state_info = self.pending_states_by_episode[episode_id][state_id]
 
-            required_responses = (
-                self.required_responses_per_critical_state
-                if state_info["critical"]
-                else self.required_responses_per_state
-            )
-
+            # Determine required responses based on mode and user type
+            # Track if this is from admin (will be set by caller in flask_app.py)
+            is_admin_submission = response_data.get("is_admin", False)
+            
+            # Check if this is a gripper-only action (no position change)
             joint_positions = response_data["joint_positions"]
             gripper_action = response_data["gripper"]
+            
+            # Define home position: [0, 60°, 75°, -60°, 0°, 0°, 2°] in radians
+            import math
+            HOME_POSITION_DEG = [0, 60, 75, -60, 0, 0, 2]
+            HOME_POSITION_RAD = [deg * math.pi / 180.0 for deg in HOME_POSITION_DEG]
+            
+            # Detect gripper-only: compare with previous state's joint positions
+            is_gripper_only = False
+            is_home_position = False
+            
+            if self.asynchronous_mode and is_admin_submission and state_info["critical"]:
+                # Get previous joint positions from state_info
+                current_joint_positions = state_info.get("joint_positions", {})
+                # Check if all joint positions are the same (only gripper changed)
+                position_changed = False
+                for joint_name in JOINT_NAMES[:-1]:  # Exclude gripper (last joint)
+                    current_val = current_joint_positions.get(joint_name, 0.0)
+                    submitted_val = joint_positions.get(joint_name, [0.0])[0] if isinstance(joint_positions.get(joint_name), list) else joint_positions.get(joint_name, 0.0)
+                    if abs(float(submitted_val) - float(current_val)) > 0.001:  # 0.001 radian threshold
+                        position_changed = True
+                        break
+                
+                is_gripper_only = not position_changed
+                if is_gripper_only:
+                    print(f"🤏 Gripper-only action detected for state {state_id} - auto-filling all slots")
+                
+                # Check if submitted action matches home position exactly
+                home_match = True
+                for i, joint_name in enumerate(JOINT_NAMES[:-1]):  # Exclude gripper
+                    submitted_val = joint_positions.get(joint_name, [0.0])[0] if isinstance(joint_positions.get(joint_name), list) else joint_positions.get(joint_name, 0.0)
+                    if abs(float(submitted_val) - HOME_POSITION_RAD[i]) > 0.001:  # 0.001 radian threshold
+                        home_match = False
+                        break
+                
+                is_home_position = home_match
+                if is_home_position:
+                    print(f"🏠 Home position action detected for state {state_id} - auto-filling all slots")
+            
+            if self.asynchronous_mode and state_info["critical"] and is_admin_submission:
+                if is_gripper_only or is_home_position:
+                    # Gripper-only or home position: instantly fill all slots
+                    required_responses = self.required_responses_per_critical_state
+                else:
+                    # Normal async mode admin: only need async_admin_responses_per_state responses before executing
+                    required_responses = self.async_admin_responses_per_state
+            else:
+                # Sync mode OR async mode user responses: use full requirement
+                required_responses = (
+                    self.required_responses_per_critical_state
+                    if state_info["critical"]
+                    else self.required_responses_per_state
+                )
 
             state_info["responses_received"] += 1
 
@@ -733,6 +865,13 @@ class StateManager:
                         print(f"⏱️  {user_name} ({user_email}) completed in {timing['duration_seconds']:.1f}s")
                     else:
                         print(f"⚠️  {user_name} ({user_email}) submission received but no start time tracked")
+                
+                # Track submission in async mode (mark as submitted so they can't submit again)
+                if self.asynchronous_mode and self.async_pool_finalized:
+                    state_key = (episode_id, state_id)
+                    if user_email in self.async_user_submissions:
+                        self.async_user_submissions[user_email].add(state_key)
+                        print(f"✅ Marked state ({episode_id}, {state_id}) as submitted by {user_email}")
             
             # Track actual number of unique worker submissions (not including autofill)
             if "actual_num_submissions" not in state_info:
@@ -746,6 +885,22 @@ class StateManager:
                 for _ in range(clones_to_add):
                     state_info["actions"].append(goal_positions.clone())
                 state_info["responses_received"] += clones_to_add
+            
+            # Additional autofill for gripper-only or home position actions in async mode
+            if (is_gripper_only or is_home_position) and self.asynchronous_mode and is_admin_submission:
+                # Fill remaining slots with the same action
+                clones_needed = required_responses - state_info["responses_received"]
+                for _ in range(clones_needed):
+                    state_info["actions"].append(goal_positions.clone())
+                state_info["responses_received"] += clones_needed
+                action_type = "gripper-only" if is_gripper_only else "home position"
+                print(f"   Auto-filled {clones_needed} more slots for {action_type} action")
+                
+                # Mark so it won't be added to async pool
+                if is_gripper_only:
+                    state_info["gripper_only_autofilled"] = True
+                if is_home_position:
+                    state_info["home_position_autofilled"] = True
 
             # Handle completion
             if state_info["responses_received"] >= required_responses:
@@ -769,23 +924,66 @@ class StateManager:
 
                 state_info["action_to_save"] = all_actions
 
-                # Save to completed states buffer (for forming training set)
-                if episode_id not in self.completed_states_buffer_by_episode:
-                    self.completed_states_buffer_by_episode[episode_id] = {}
-                self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+                # In async mode: only move to completed when FULLY labeled (not just admin responses)
+                # Check if this is truly complete or just admin-complete
+                fully_complete = state_info["responses_received"] >= self.required_responses_per_critical_state
+                
+                if fully_complete:
+                    # Fully labeled - save to completed states buffer
+                    if episode_id not in self.completed_states_buffer_by_episode:
+                        self.completed_states_buffer_by_episode[episode_id] = {}
+                    self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
 
-                # Save to completed states (for monitoring)
-                if episode_id not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[episode_id] = {}
-                self.completed_states_by_episode[episode_id][state_id] = state_info
+                    # Save to completed states (for monitoring)
+                    if episode_id not in self.completed_states_by_episode:
+                        self.completed_states_by_episode[episode_id] = {}
+                    self.completed_states_by_episode[episode_id][state_id] = state_info
 
-                # Remove from pending
-                del self.pending_states_by_episode[episode_id][state_id]
+                    # Remove from pending (this triggers episode save when all pending are done)
+                    del self.pending_states_by_episode[episode_id][state_id]
+                else:
+                    # Admin-complete in async mode - mark as ready for async serving but keep in pending
+                    state_info["admin_complete"] = True
+                    state_info["awaiting_user_labels"] = True
+                    print(f"   State {state_id} admin-complete, awaiting {self.required_responses_per_critical_state - state_info['responses_received']} more user labels")
+                    
+                    # Add to completed states (for execution approval) but ALSO keep in pending (for user labels)
+                    if episode_id not in self.completed_states_by_episode:
+                        self.completed_states_by_episode[episode_id] = {}
+                    self.completed_states_by_episode[episode_id][state_id] = state_info
+                    # DON'T delete from pending - keep it there for user labeling
+                    
+                    # Set latest_goal NOW for immediate execution
+                    if state_info.get("critical") and state_info.get("execution_history"):
+                        self.latest_goal = state_info["execution_history"][0]["action"]
+                        print(f"🤖 Set latest_goal for immediate execution with admin action")
                 
                 # Flag for pre-approval loop if critical
+                # In async mode: auto-approve admin submissions, queue user submissions for review
                 if state_info["critical"]:
-                    should_run_pre_approval = True
-                    state_info_copy = state_info.copy()
+                    if self.asynchronous_mode and is_admin_submission:
+                        # Auto-approve admin submission in async mode - skip pre-approval
+                        print(f"✅ Auto-approving admin submission for state {state_id} (async mode)")
+                        # Don't run pre-approval loop - proceed directly to post-approval
+                        should_run_pre_approval = False
+                        # Mark as pre-approved and ready for post-approval (critical state approval)
+                        state_info["execution_history"] = [{
+                            "action": state_info["actions"][0],
+                            "propensity": 1.0,
+                            "approval": 1,  # Auto-approved
+                            "executed": False,
+                            "submitted_by": state_info.get("user_submissions", [])[:1]  # First submission (admin)
+                        }]
+                        state_info["pre_approval_loop_complete"] = True
+                    elif self.asynchronous_mode and self.async_pool_finalized and not is_admin_submission:
+                        # Async user submission: queue for one-by-one pre-approval review
+                        print(f"📋 Queueing async user submission for state {state_id} for pre-approval review")
+                        should_run_pre_approval = True
+                        state_info_copy = state_info.copy()
+                    else:
+                        # Sync mode or async admin phase: normal pre-approval
+                        should_run_pre_approval = True
+                        state_info_copy = state_info.copy()
 
         # Run pre-approval loop in background thread (only for completed critical states)
         if should_run_pre_approval and state_info_copy:
@@ -2255,3 +2453,151 @@ class StateManager:
         """
         return self.flush_manager.get_flush_status(episode_id)
 
+
+    # =========================
+    # Asynchronous Mode Management
+    # =========================
+
+    def finalize_admin_phase(self) -> dict:
+        """Finalize admin data collection phase and prepare for async labeling.
+        
+        Marks all admin-complete states as ready for async serving. States remain in 
+        pending_states_by_episode until they receive all required user labels.
+        
+        Returns:
+            dict with status and counts
+        """
+        if not self.asynchronous_mode:
+            return {"status": "error", "message": "Not in asynchronous mode"}
+        
+        if self.async_pool_finalized:
+            return {"status": "error", "message": "Admin phase already finalized"}
+        
+        with self.state_lock:
+            # Count admin-complete states that are ready for async serving
+            # These are states that got admin response but need more user labels
+            states_ready = 0
+            states_skipped = 0
+            
+            for episode_id, states in self.pending_states_by_episode.items():
+                for state_id, state_info in states.items():
+                    if state_info.get("critical", False) and state_info.get("admin_complete", False):
+                        # Check if this was a gripper-only or home position state (already fully labeled)
+                        is_gripper_only = state_info.get("gripper_only_autofilled", False)
+                        is_home_position = state_info.get("home_position_autofilled", False)
+                        
+                        if is_gripper_only or is_home_position:
+                            # These are already fully complete and will be in completed_states
+                            states_skipped += 1
+                        else:
+                            # Mark as available for async serving
+                            state_info["async_pool_ready"] = True
+                            
+                            # Create pool key for tracking user assignments
+                            pool_key = (episode_id, state_id)
+                            self.async_state_pool[pool_key] = state_info  # Reference, not copy
+                            states_ready += 1
+            
+            self.async_pool_finalized = True
+            
+            print(f"🔄 Async admin phase finalized: {states_ready} states ready for user labeling")
+            if states_skipped > 0:
+                print(f"   Skipped {states_skipped} auto-filled states (gripper-only or home position)")
+            print(f"   States remain in pending until fully labeled")
+            
+            return {
+                "status": "success",
+                "states_in_pool": states_ready,
+                "states_skipped": states_skipped,
+                "message": f"Admin phase complete. {states_ready} states ready for labeling"
+            }
+    
+    def get_async_pooled_state(self, user_email: str) -> dict | None:
+        """Get next state from user's fixed random order.
+        
+        Each user gets a fixed random permutation of states on first access.
+        They progress through this order sequentially and cannot skip or refresh.
+        
+        Args:
+            user_email: Email of user requesting state
+            
+        Returns:
+            State info dict or None if no states available
+        """
+        if not self.asynchronous_mode or not self.async_pool_finalized:
+            return None
+        
+        if not user_email:
+            print("⚠️  No user_email provided for async pool - cannot track assignments")
+            return None
+        
+        with self.state_lock:
+            # Initialize user's fixed random order on first access
+            if user_email not in self.async_user_assignments:
+                import random
+                all_keys = list(self.async_state_pool.keys())
+                shuffled_keys = all_keys.copy()
+                random.shuffle(shuffled_keys)
+                self.async_user_assignments[user_email] = shuffled_keys
+                self.async_user_submissions[user_email] = set()
+                print(f"🎲 New user {user_email}: Generated fixed random order of {len(shuffled_keys)} states")
+            
+            # Get user's fixed order and submitted states
+            user_order = self.async_user_assignments[user_email]
+            user_submitted = self.async_user_submissions[user_email]
+            
+            # Find next unsubmitted state in user's order
+            for state_key in user_order:
+                if state_key not in user_submitted:
+                    episode_id, state_id = state_key
+                    state_info = self.async_state_pool[state_key]
+                    
+                    print(f"📋 Async: Serving state ({episode_id}, {state_id}) to {user_email}")
+                    print(f"   Progress: {len(user_submitted)}/{len(user_order)} submitted")
+                    
+                    return state_info
+            
+            # User has submitted to all states in their order
+            print(f"✅ {user_email} has completed all {len(user_order)} states")
+            return None
+    
+    def get_async_pool_status(self) -> dict:
+        """Get current status of async pool."""
+        with self.state_lock:
+            total_states = len(self.async_state_pool)
+            
+            # Calculate completion status for each state
+            states_needing_labels = 0
+            states_completed = 0
+            
+            for pool_key, state_info in self.async_state_pool.items():
+                responses_received = state_info.get("responses_received", 0)
+                if responses_received < self.required_responses_per_critical_state:
+                    states_needing_labels += 1
+                else:
+                    states_completed += 1
+            
+            # User statistics
+            total_users = len(self.async_user_assignments)
+            users_maxed_out = sum(
+                1 for seen_set in self.async_user_assignments.values()
+                if len(seen_set) >= total_states
+            )
+            
+            return {
+                "async_mode": self.asynchronous_mode,
+                "pool_finalized": self.async_pool_finalized,
+                "total_states": total_states,
+                "states_needing_labels": states_needing_labels,
+                "states_completed": states_completed,
+                "total_users": total_users,
+                "users_maxed_out": users_maxed_out,
+            }
+
+    def reset_async_pool(self):
+        """Reset async pool (for testing or restarting admin phase)."""
+        with self.state_lock:
+            self.async_state_pool.clear()
+            self.async_user_assignments.clear()
+            self.async_pool_finalized = False
+            print("🔄 Async pool reset")

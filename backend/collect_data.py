@@ -53,6 +53,9 @@ from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_con
 from lerobot.common.robot_devices.utils import safe_disconnect
 from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
+import socket
+import subprocess
+import time
 from werkzeug.serving import make_server
 
 
@@ -220,12 +223,55 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
 
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     _stop_display_only(listener, cfg.display_cameras)
+    
+    # Auto-finalize async pool if in async mode
+    if _CROWD_CONFIG.asynchronous_mode:
+        log_say("Finalizing admin phase and preparing async pool", cfg.play_sounds)
+        result = crowd_interface.state_manager.finalize_admin_phase()
+        if result.get("status") == "success":
+            states_count = result.get("states_in_pool", 0)
+            log_say(f"Async pool ready: {states_count} states available for user labeling", cfg.play_sounds)
+            print(f"📊 Async pool status: {states_count} states ready")
+            print(f"   Users can now label via Netlify")
+            
+            # Wait for users to complete all labeling
+            print(f"\n⏳ Waiting for users to complete async labeling...")
+            print(f"   (Press Ctrl+C to stop waiting and exit)")
+            
+            import time
+            check_interval = 5  # Check every 5 seconds
+            last_status = None
+            
+            try:
+                while True:
+                    status = crowd_interface.state_manager.get_async_pool_status()
+                    total = status.get("total_states", 0)
+                    completed = status.get("states_completed", 0)
+                    in_progress = status.get("states_in_progress", 0)
+                    
+                    # Only print when status changes to avoid spam
+                    current_status = (completed, in_progress)
+                    if current_status != last_status:
+                        print(f"   📊 Progress: {completed}/{total} states completed, {in_progress} in progress")
+                        last_status = current_status
+                    
+                    # Check if all states are fully labeled
+                    if completed >= total and total > 0:
+                        print(f"\n✅ All {total} states have been labeled by users!")
+                        break
+                    
+                    time.sleep(check_interval)
+            except KeyboardInterrupt:
+                print(f"\n⚠️  User interrupted - exiting with partial labeling")
+                print(f"   {completed}/{total} states completed")
+        else:
+            print(f"⚠️  Async finalization failed: {result.get('message')}")
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
         crowd_interface.dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
 
-    log_say("Users have finished labeling. Exiting", cfg.play_sounds)
+    log_say("Data collection session complete. Exiting", cfg.play_sounds)
 
     return dataset
 
@@ -245,6 +291,34 @@ def control_robot(cfg: ControlPipelineConfig):
     logging.info(f"[Crowd] Task name: {_CROWD_CONFIG.task_name}")
 
     # Use the crowd interface config to create CrowdInterface
+    # Find an available port starting from 9000
+    def find_free_port(start_port=9000, max_attempts=100):
+        for port in range(start_port, start_port + max_attempts):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(('0.0.0.0', port))
+                sock.close()
+                return port
+            except OSError:
+                continue
+        raise RuntimeError(f"No free port found in range {start_port}-{start_port + max_attempts}")
+    
+    port = find_free_port()
+    print(f"\n🌐 Starting Flask server on port {port}")
+    
+    # Write port to config file for localhost frontend
+    import json
+    from datetime import datetime
+    config_file = Path(__file__).parent.parent / "public" / "backend-config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_file, "w") as f:
+        json.dump({
+            "backendUrl": f"http://127.0.0.1:{port}",
+            "updatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "port": port
+        }, f, indent=2)
+    print(f"📝 Updated {config_file} with port {port}")
+    
     crowd_interface = CrowdInterface(**_CROWD_CONFIG.to_crowd_interface_kwargs())
     crowd_interface.init_cameras()
     
@@ -253,9 +327,77 @@ def control_robot(cfg: ControlPipelineConfig):
 
     app = create_flask_app(crowd_interface)
     # Use a threaded WSGI server to handle multiple requests concurrently
-    http_server = make_server("0.0.0.0", 9000, app, threaded=True)
+    http_server = make_server("0.0.0.0", port, app, threaded=True)
     server_thread = Thread(target=http_server.serve_forever, name="flask-wsgi", daemon=True)
     server_thread.start()
+    
+    # Start cloudflared tunnel pointing to the Flask port
+    print(f"🚇 Starting cloudflared tunnel for port {port}...")
+    subprocess.Popen(
+        ["pkill", "-f", "cloudflared"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    ).wait()
+    time.sleep(0.5)
+    
+    tunnel_log = Path("/tmp/cloudflared.log")
+    tunnel_log.unlink(missing_ok=True)
+    
+    tunnel_process = subprocess.Popen(
+        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+        stdout=open(tunnel_log, "w"),
+        stderr=subprocess.STDOUT
+    )
+    
+    # Wait for tunnel URL to appear
+    print("⏳ Waiting for tunnel URL...")
+    tunnel_url = None
+    for _ in range(30):  # Wait up to 15 seconds
+        time.sleep(0.5)
+        if tunnel_log.exists():
+            content = tunnel_log.read_text()
+            import re
+            match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
+            if match:
+                tunnel_url = match.group(0)
+                break
+    
+    if tunnel_url:
+        print(f"✅ Tunnel active: {tunnel_url}")
+        print(f"🚀 Auto-deploying frontend to Netlify...")
+        
+        # Temporarily update backend-config.json with tunnel URL for build
+        with open(config_file, "w") as f:
+            json.dump({
+                "backendUrl": tunnel_url,
+                "updatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            }, f, indent=2)
+        
+        # Auto-deploy to Netlify
+        deploy_result = subprocess.run(
+            ["bash", "-c", "cd " + str(Path(__file__).parent.parent) + " && npm run build && npx netlify deploy --prod --dir=dist"],
+            capture_output=True,
+            text=True
+        )
+        
+        # Restore localhost config after deployment
+        with open(config_file, "w") as f:
+            json.dump({
+                "backendUrl": f"http://127.0.0.1:{port}",
+                "updatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "port": port
+            }, f, indent=2)
+        
+        if deploy_result.returncode == 0:
+            print("✅ Frontend deployed to Netlify successfully")
+            print(f"✅ Localhost config restored to port {port}")
+        else:
+            print("⚠️  Netlify deployment failed (you can deploy manually with: ./scripts/deploy_with_tunnel.sh)")
+            if deploy_result.stderr:
+                print(f"   Error: {deploy_result.stderr[:200]}")
+    else:
+        print("⚠️  Could not detect tunnel URL, check /tmp/cloudflared.log")
+    print()
 
     robot = make_robot_from_config(cfg.robot)
 

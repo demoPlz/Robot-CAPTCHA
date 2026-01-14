@@ -1,4 +1,5 @@
 {
-  "backendUrl": "https://rolling-vault-enjoyed-provision.trycloudflare.com",
-  "updatedAt": "2026-01-12T22:29:32Z"
+  "backendUrl": "http://127.0.0.1:9006",
+  "updatedAt": "2026-01-14T00:04:20Z",
+  "port": 9006
 }

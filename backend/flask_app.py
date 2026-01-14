@@ -145,10 +145,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Generate or retrieve session ID from request headers or IP
             session_id = request.headers.get("X-Session-ID", request.remote_addr or "unknown")
 
-            # Record this as a response to the correct state for this session
-            # The frontend now includes state_id in the request data
-            crowd_interface.record_response(data)
-            
             # Notify MTurk manager of assignment submission (if MTurk enabled)
             # Distinguish expert (localhost direct) vs MTurk (via tunnel) workers
             episode_id = data["episode_id"]
@@ -165,6 +161,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
             # MTurk worker: has forwarded header OR non-localhost direct access
             is_mturk_worker = forwarded_for or cf_connecting_ip or remote_addr not in ["127.0.0.1", "::1", "localhost"]
+            
+            # Mark admin submissions for async mode handling
+            data["is_admin"] = not is_mturk_worker
+            
+            # Record this as a response to the correct state for this session
+            # The frontend now includes state_id in the request data
+            crowd_interface.record_response(data)
             
             if is_mturk_worker:
                 origin = forwarded_for or cf_connecting_ip or remote_addr
@@ -889,6 +892,42 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             else:
                 return jsonify({"status": "error", "message": "Events not initialized"}), 400
         except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    # =========================
+    # Asynchronous Mode Endpoints
+    # =========================
+
+    @app.route("/api/async/finalize-admin", methods=["POST"])
+    def finalize_admin_phase():
+        """Finalize admin data collection phase and prepare for async user labeling."""
+        try:
+            result = crowd_interface.state_manager.finalize_admin_phase()
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error finalizing admin phase: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/async/status", methods=["GET"])
+    def async_pool_status():
+        """Get status of async state pool."""
+        try:
+            status = crowd_interface.state_manager.get_async_pool_status()
+            return jsonify(status)
+        except Exception as e:
+            print(f"❌ Error getting async status: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/async/reset", methods=["POST"])
+    def reset_async_pool():
+        """Reset async pool (for testing)."""
+        try:
+            crowd_interface.state_manager.reset_async_pool()
+            return jsonify({"status": "success", "message": "Async pool reset"})
+        except Exception as e:
+            print(f"❌ Error resetting async pool: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/start-episode", methods=["POST"])

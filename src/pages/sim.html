@@ -1701,8 +1701,18 @@ import {
 // Simple API Configuration - use Flask backend directly
 async function getCurrentCloudflaredUrl() {
   try {
-    // For local development, use localhost backend directly
+    // For local development, read port from backend-config.json (Flask writes it)
     if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      try {
+        const response = await fetch('/backend-config.json');
+        const data = await response.json();
+        if (data.backendUrl && data.backendUrl.startsWith('http://127.0.0.1')) {
+          console.log('[DEV] Using dynamic localhost backend:', data.backendUrl);
+          return data.backendUrl;
+        }
+      } catch (e) {
+        console.warn('[DEV] Could not read backend-config.json, using default port 9000');
+      }
       console.log('[DEV] Using localhost backend');
       return 'http://127.0.0.1:9000';
     }
@@ -1793,7 +1803,7 @@ async function getInitialState() {
     return data;
   } catch (error) {
     console.error("Could not fetch initial state:", error);
-    showWaitingForStatesMessage('Waiting for next state...');
+    showWaitingForStatesMessage('Waiting for new states...');
     // Hide interactive UI when server is not running
     const uiElems = document.querySelectorAll("button, .lil-gui, #viewport");
     uiElems.forEach(el=>{
@@ -2420,12 +2430,13 @@ const CanvasRecording = (() => {
       const v = cell.view;
       if (!v || !v.container) continue;
 
-      // Gripper HUD (status pill + toggle) - skip if disabled
+      // Gripper HUD (status pill + toggle) - skip if disabled or on Netlify
       // Use window scope to access variables defined later in the page
+      const isNetlify = window.isNetlifyEnvironment || false;
       const taskCompleted = (typeof window.taskCompletedSelected !== 'undefined') ? window.taskCompletedSelected : false;
       const atDefaults = (typeof window.slidersAtDefault === 'function') ? window.slidersAtDefault() : true;
       const gripDisabled = taskCompleted || !atDefaults;
-      if (v.hudGrip && !gripDisabled) drawGripHUD(ctx, v, cell.x, cell.y);
+      if (v.hudGrip && !gripDisabled && !isNetlify) drawGripHUD(ctx, v, cell.x, cell.y);
 
       // Reset icon (24x24 viewBox)
       if (v.hudResetEl) drawIconButton(ctx, v, v.hudResetEl, cell.x, cell.y, RESET_SVG_PATH, 24);
@@ -3602,15 +3613,13 @@ loader.load(
   async robot => {
 
     // Set API_BASE_URL dynamically based on environment
+    const isNetlifyEnvironment = !(location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    window.isNetlifyEnvironment = isNetlifyEnvironment;  // Make available globally
+    
     if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-      if (location.port === '5173' || location.port === '5174') {
-        // Running on Vite dev server - get backend URL
-        API_BASE_URL = await getCurrentCloudflaredUrl();
-        console.log('[DEBUG] Using backend URL for Vite dev server:', API_BASE_URL);
-      } else {
-        // Running on production build locally
-        API_BASE_URL = 'http://127.0.0.1:9000';
-      }
+      // Always read from backend-config.json for localhost
+      API_BASE_URL = await getCurrentCloudflaredUrl();
+      console.log('[DEBUG] Using dynamic backend URL for localhost:', API_BASE_URL);
     } else {
       // Running on deployed Netlify - get tunnel URL
       API_BASE_URL = await getCurrentCloudflaredUrl();
@@ -3618,6 +3627,7 @@ loader.load(
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
+    console.log('Environment: ', isNetlifyEnvironment ? 'Netlify (gripper UI hidden)' : 'Localhost (gripper UI visible)');
 
     // ====== User Identity Prompt ======
     // Check if user identity is already stored
@@ -3919,7 +3929,7 @@ loader.load(
     // If the data collection server isn't available, stop building UI
     if (!state || Object.keys(state).length === 0 || !cameraModels) {
       // Ensure the status overlay is visible and abort UI construction
-      showWaitingForStatesMessage('Waiting for next state...');
+      showWaitingForStatesMessage('Waiting for new states...');
       return; // ← prevents creating sliders/buttons and starting animation
     }
     
@@ -4181,12 +4191,13 @@ loader.load(
 
     function updateGripArrowVisibility() {
       // Hide arrows when animating OR when robot is moved (same as gripper HUD)
-      // Only check disabled state if the required variables/functions exist
+      // Also hide on Netlify (production)
+      const isNetlify = window.isNetlifyEnvironment || false;
       let disabled = false;
       if (typeof window.taskCompletedSelected !== 'undefined' && typeof slidersAtDefault === 'function') {
         disabled = window.taskCompletedSelected || !slidersAtDefault();
       }
-      const showArrows = !animating && !disabled;
+      const showArrows = !animating && !disabled && !isNetlify;
       gripArrows.forEach(arrow => {
         if (arrow) arrow.visible = showArrows;
       });
@@ -6477,7 +6488,7 @@ loader.load(
       const stateKey = `${state.episode_id}_${state.state_id}`;
       if (window.isFromNetlify && window.submittedStates.has(stateKey)) {
         console.log('⚠️  User has already submitted for this state');
-        alert('You have already submitted an action for this state. Waiting for next state...');
+        alert('You have already submitted an action for this state. Waiting for new states...');
         confirmBtn.disabled = false;
         confirmBtn.textContent = 'Submit';
         verifyButtonUsed = false;
@@ -6560,7 +6571,7 @@ loader.load(
             confirmBtn.textContent = '✅ Submitted';
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
-            showWaitingForStatesMessage('Waiting for next state...');
+            showWaitingForStatesMessage('Waiting for new states...');
           } else {
             // Localhost expert mode: refresh to load next task (can submit multiple times)
             window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
@@ -7325,7 +7336,7 @@ window.addEventListener('pagehide', () => {
 <!-- User Identity Modal -->
 <div class="user-identity-modal" id="userIdentityModal">
   <div class="user-identity-card">
-    <h2 class="user-identity-title">Welcome!</h2>
+    <h2 class="user-identity-title">Welcome</h2>
     <p class="user-identity-subtitle">Please enter your name and email to begin</p>
     <input type="text" id="userNameInput" class="user-identity-input" placeholder="Your Name" />
     <input type="email" id="userEmailInput" class="user-identity-input" placeholder="Your Email" />

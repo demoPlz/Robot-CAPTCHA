@@ -67,6 +67,9 @@ class CrowdInterface:
         jitter_threshold: float = 0.01,
         autofill_critical_states: bool = False,
         num_autofill_actions: int | None = None,
+        # Asynchronous mode
+        asynchronous_mode: bool = False,
+        async_admin_responses_per_state: int = 1,
         use_manual_prompt: bool = False,
         # --- saving critical-state cam_main frames ---
         save_maincam_sequence: bool = False,
@@ -176,6 +179,10 @@ class CrowdInterface:
             self.num_autofill_actions = int(num_autofill_actions)
         # Clamp to [1, required_responses_per_critical_state]
         self.num_autofill_actions = max(1, min(self.num_autofill_actions, self.required_responses_per_critical_state))
+        
+        # Asynchronous mode settings
+        self.asynchronous_mode = asynchronous_mode
+        self.async_admin_responses_per_state = async_admin_responses_per_state
 
         # Episode-based state management (shared with StateManager via reference)
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int}}
@@ -335,6 +342,8 @@ class CrowdInterface:
             required_approvals_per_critical_state=self.required_approvals_per_critical_state,
             autofill_critical_states=self.autofill_critical_states,
             num_autofill_actions=self.num_autofill_actions,
+            asynchronous_mode=self.asynchronous_mode,
+            async_admin_responses_per_state=self.async_admin_responses_per_state,
             use_manual_prompt=self.use_manual_prompt,
             use_sim=self.use_sim,
             task_text=self.task_text,
@@ -397,6 +406,24 @@ class CrowdInterface:
 
         # Remove tensor fields that frontend doesn't need
         out.pop("actions", None)
+        
+        # Remove any other non-JSON-serializable fields
+        import torch
+        import math
+        def make_serializable(obj):
+            """Recursively convert tensors and other non-serializable objects."""
+            if isinstance(obj, torch.Tensor):
+                return obj.tolist()
+            elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None  # Convert NaN/Inf to null in JSON
+            elif isinstance(obj, dict):
+                return {k: make_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_serializable(item) for item in obj]
+            return obj
+        
+        # Convert any remaining tensors (though actions should be removed already)
+        out = make_serializable(out)
 
         # Remove internal/disk paths that shouldn't be exposed to client
         out.pop("obs_path", None)  # don't expose obs cache paths
