@@ -257,10 +257,22 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                     
                     # Check if all states are fully labeled
                     if completed >= total and total > 0:
-                        print(f"\n✅ All {total} states have been labeled by users!")
-                        print(f"⏳ Waiting 10 seconds for dataset to save...")
-                        time.sleep(10)
-                        break
+                        # Check if pre-approvals are still pending
+                        pending_queue = status.get("pending_approvals_queue", 0)
+                        active_approval = status.get("active_approval", False)
+                        running_threads = status.get("running_approval_threads", 0)
+                        
+                        if pending_queue > 0 or active_approval or running_threads > 0:
+                            # Still have pre-approvals to process
+                            if current_status != last_status:
+                                print(f"⏸️  Waiting for pre-approvals: queue={pending_queue}, active={active_approval}, threads={running_threads}")
+                        else:
+                            # All states labeled AND all pre-approvals complete
+                            print(f"\n✅ All {total} states have been labeled by users!")
+                            print(f"✅ All pre-approvals completed!")
+                            print(f"⏳ Waiting 10 seconds for dataset to save...")
+                            time.sleep(10)
+                            break
                     
                     time.sleep(check_interval)
             except KeyboardInterrupt:

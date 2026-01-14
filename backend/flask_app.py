@@ -692,7 +692,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "video_prompt": pending.get("video_prompt"),  # Video prompt ID
                 }
             )
-            print(f"📤 Sending pre-approval data: submitted_by={pending.get('submitted_by', [])}")
             return response
         except Exception as e:
             print(f"❌ Error in pending-pre-execution-approval endpoint: {e}")

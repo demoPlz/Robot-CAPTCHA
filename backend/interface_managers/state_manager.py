@@ -987,11 +987,10 @@ class StateManager:
                     self.completed_states_by_episode[episode_id][state_id] = state_info
                     
                     # Start pre-approval thread BEFORE removing from pending to avoid race condition
-                    # Make a copy of the fully completed state for the pre-approval thread
                     if state_info.get("critical") and should_run_pre_approval and state_info_copy:
                         thread = Thread(
                             target=self._run_pre_approval_loop_wrapper,
-                            args=(state_info.copy(), episode_id, state_id),
+                            args=(state_info_copy, episode_id, state_id),
                             daemon=True,
                         )
                         self._pre_approval_threads[(episode_id, state_id)] = thread
@@ -1046,20 +1045,11 @@ class StateManager:
                         (key, thread) for key, thread in self._pre_approval_threads.items()
                         if key[0] == episode_id and thread.is_alive()
                     ]
-                    print(f"🔍 Checking for running threads: found {len(running_threads)} threads")
-                    print(f"   All thread keys: {list(self._pre_approval_threads.keys())}")
                     if running_threads:
                         print(f"⏸️  Episode {episode_id} has {len(running_threads)} pre-approval threads running - will schedule finalization when they complete")
                     else:
                         print(f"📦 Episode {episode_id} has no pending states and no running threads - scheduling finalization (grace period: {self.episode_finalize_grace_s}s)")
                         self._schedule_episode_finalize_after_grace(episode_id)
-            
-        with self.state_lock:
-                # Handle episode completion (redundant check for safety)
-                # Primary check happens above when state is deleted from pending
-                # This catch-all ensures finalization is triggered even if missed earlier
-                if episode_id in self.pending_states_by_episode and not self.pending_states_by_episode[episode_id]:
-                    self._schedule_episode_finalize_after_grace(episode_id)
 
     def get_pending_states_info(self) -> dict:
         """Get episode-based state information for monitoring."""
@@ -1354,6 +1344,7 @@ class StateManager:
                 "sequence": self.pending_pre_execution_approval["sequence"],
                 "text_prompt": self.pending_pre_execution_approval.get("text_prompt"),
                 "video_prompt": self.pending_pre_execution_approval.get("video_prompt"),
+                "submitted_by": self.pending_pre_execution_approval.get("submitted_by", []),
             }
 
     def approve_pre_execution(self, episode_id: int, state_id: int) -> bool:
@@ -2014,10 +2005,46 @@ class StateManager:
         try:
             self._run_pre_approval_loop(state_info, episode_id, state_id)
         finally:
-            # Clean up thread tracking
-            key = (episode_id, state_id)
-            if key in self._pre_approval_threads:
-                del self._pre_approval_threads[key]
+            # Clean up thread tracking - find and remove this thread's key
+            # Thread keys can be (episode_id, state_id) or (episode_id, state_id, response_num)
+            import threading
+            current = threading.current_thread()
+            thread_to_remove = None
+            for key in list(self._pre_approval_threads.keys()):
+                if key[0] == episode_id and key[1] == state_id:
+                    # Check if this is the current thread
+                    if self._pre_approval_threads[key] == current:
+                        thread_to_remove = key
+                        break
+            
+            if thread_to_remove:
+                del self._pre_approval_threads[thread_to_remove]
+            
+            # Check if this was the last thread for this episode and trigger finalization if ready
+            with self.state_lock:
+                # Check if episode has no pending states
+                if episode_id not in self.pending_states_by_episode or not self.pending_states_by_episode[episode_id]:
+                    # Check if there are any other threads still running for this episode
+                    remaining_threads = [
+                        thread for key, thread in self._pre_approval_threads.items()
+                        if key[0] == episode_id and thread.is_alive()
+                    ]
+                    
+                    if not remaining_threads:
+                        # No pending states and no running threads - check if we should finalize
+                        with self.pre_execution_approval_lock:
+                            has_pending_approval = (
+                                self.pending_pre_execution_approval is not None and
+                                self.pending_pre_execution_approval.get("episode_id") == episode_id
+                            )
+                            has_queued_approvals = any(
+                                req.get("episode_id") == episode_id 
+                                for req in self.pre_execution_approval_queue
+                            )
+                        
+                        if not has_pending_approval and not has_queued_approvals:
+                            print(f"🏁 Last pre-approval thread completed for episode {episode_id} - scheduling finalization")
+                            self._schedule_episode_finalize_after_grace(episode_id)
 
     def _run_pre_approval_loop(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Phase 1: Sample actions one-by-one for pre-approval until stopping condition met.
@@ -2653,7 +2680,6 @@ class StateManager:
             return None
         
         if not user_email:
-            print("⚠️  No user_email provided for async pool - cannot track assignments")
             return None
         
         with self.state_lock:
@@ -2710,6 +2736,14 @@ class StateManager:
                 if len(seen_set) >= total_states
             )
             
+            # Pre-approval status
+            with self.pre_execution_approval_lock:
+                queue_length = len(self.pre_execution_approval_queue)
+                has_active_approval = self.pending_pre_execution_approval is not None
+            
+            # Count running pre-approval threads
+            running_threads = sum(1 for thread in self._pre_approval_threads.values() if thread.is_alive())
+            
             return {
                 "async_mode": self.asynchronous_mode,
                 "pool_finalized": self.async_pool_finalized,
@@ -2718,6 +2752,9 @@ class StateManager:
                 "states_completed": states_completed,
                 "total_users": total_users,
                 "users_maxed_out": users_maxed_out,
+                "pending_approvals_queue": queue_length,
+                "active_approval": has_active_approval,
+                "running_approval_threads": running_threads,
             }
 
     def reset_async_pool(self):
