@@ -36,7 +36,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     def get_state():
         try:
             # Extract user email from request to track timing
-            user_email = request.args.get('user_email', None)
+            user_email = request.args.get('user_email', None) or None  # Convert empty string to None
             
             state = crowd_interface.get_latest_state(user_email=user_email)
 
@@ -676,7 +676,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Convert action list to joint positions for robot rendering
             action = pending["action"]  # This is already joint positions as a list
             
-            return jsonify(
+            response = jsonify(
                 {
                     "status": "pending",
                     "episode_id": pending["episode_id"],
@@ -687,8 +687,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "view_urls": view_urls,  # Static views for rendering
                     "camera_poses": crowd_interface.calibration.get_camera_poses(),
                     "camera_models": crowd_interface.calibration.get_camera_models(),
+                    "submitted_by": pending.get("submitted_by", []),  # User info
+                    "text_prompt": pending.get("text_prompt"),  # Text prompt for the state
+                    "video_prompt": pending.get("video_prompt"),  # Video prompt ID
                 }
             )
+            print(f"📤 Sending pre-approval data: submitted_by={pending.get('submitted_by', [])}")
+            return response
         except Exception as e:
             print(f"❌ Error in pending-pre-execution-approval endpoint: {e}")
             import traceback

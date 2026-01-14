@@ -45,7 +45,13 @@ def load_dataset(repo_id: str, root: str = None) -> LeRobotDataset:
     
     # Use edit_mode=True to skip version checks
     # Pass root directly as the dataset location
-    dataset = LeRobotDataset(repo_id, root=root, edit_mode=True)
+    # For local-only datasets, set revision to avoid HuggingFace Hub checks
+    try:
+        dataset = LeRobotDataset(repo_id, root=root, edit_mode=True, revision="v2.0")
+    except Exception as e:
+        print(f"Failed to load with version check, trying without: {e}")
+        # Try loading without version specification
+        dataset = LeRobotDataset(repo_id, root=root, edit_mode=True)
     print(f"Loaded {len(dataset)} frames across {dataset.meta.total_episodes} episodes")
     return dataset
 

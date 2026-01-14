@@ -5384,6 +5384,11 @@ loader.load(
       hud.className = 'grip-hud';
       hud.setAttribute('role','group');
       hud.setAttribute('aria-label','Grip control');
+      
+      // Hide gripper HUD for Netlify users
+      if (window.isNetlifyEnvironment) {
+        hud.style.display = 'none';
+      }
 
       const badge = document.createElement('span');
       badge.className = 'badge free';
@@ -6563,12 +6568,12 @@ loader.load(
               window.parent.postMessage({ type: 'submission_complete' }, '*');
             }
             // Update button to show completion
-            confirmBtn.textContent = '✅ Submitted';
+            confirmBtn.textContent = 'Submitted';
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
           } else if (window.isFromNetlify) {
             // Netlify crowdsourcing mode: refresh to load next state
-            confirmBtn.textContent = '✅ Submitted';
+            confirmBtn.textContent = 'Submitted';
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
             // Refresh immediately to get next state from async pool

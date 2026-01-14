@@ -258,6 +258,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                     # Check if all states are fully labeled
                     if completed >= total and total > 0:
                         print(f"\n✅ All {total} states have been labeled by users!")
+                        print(f"⏳ Waiting 10 seconds for dataset to save...")
+                        time.sleep(10)
                         break
                     
                     time.sleep(check_interval)
