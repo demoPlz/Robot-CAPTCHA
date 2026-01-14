@@ -1962,13 +1962,29 @@
         }
 
         async function showPreExecutionModal(data) {
-            // Display user info
+            // Display user info and prompt
             const userInfoEl = document.getElementById('pre-exec-user-info');
+            let infoHtml = '';
+            
             if (data.submitted_by && data.submitted_by.length > 0) {
                 const users = data.submitted_by.map(u => 
                     `<strong>${u.name || 'Unknown'}</strong> (${u.email || 'no email'})`
                 ).join(', ');
-                userInfoEl.innerHTML = `📝 <strong>Submitted by:</strong> ${users}`;
+                infoHtml += `📝 <strong>Submitted by:</strong> ${users}<br>`;
+            }
+            
+            if (data.text_prompt || data.video_prompt !== null) {
+                infoHtml += `💬 <strong>Prompt:</strong> `;
+                if (data.text_prompt) {
+                    infoHtml += `"${data.text_prompt}"`;
+                }
+                if (data.video_prompt !== null && data.video_prompt !== undefined) {
+                    infoHtml += ` (Video ${data.video_prompt})`;
+                }
+            }
+            
+            if (infoHtml) {
+                userInfoEl.innerHTML = infoHtml;
                 userInfoEl.style.display = 'block';
             } else {
                 userInfoEl.style.display = 'none';
