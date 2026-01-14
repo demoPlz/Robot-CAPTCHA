@@ -2418,7 +2418,8 @@ class StateManager:
                 and self.pending_approval_state["state_id"] == state_id
             ):
                 print(f"✅ Auto-approved state {state_id} (marked as end)")
-                self.pending_approval_state = None
+                # Set approved to True so the waiting thread sees it as approval, not demotion
+                self.pending_approval_state["approved"] = True
 
         if not self.pending_states_by_episode[episode_id]:
             self._schedule_episode_finalize_after_grace(episode_id)
@@ -2549,6 +2550,11 @@ class StateManager:
             # Find next unsubmitted state in user's order
             for state_key in user_order:
                 if state_key not in user_submitted:
+                    # Check if state still exists in pool
+                    if state_key not in self.async_state_pool:
+                        print(f"⚠️  State {state_key} not in pool, skipping")
+                        continue
+                    
                     episode_id, state_id = state_key
                     state_info = self.async_state_pool[state_key]
                     
@@ -2558,7 +2564,7 @@ class StateManager:
                     return state_info
             
             # User has submitted to all states in their order
-            print(f"✅ {user_email} has completed all {len(user_order)} states")
+            print(f"✅ {user_email} has completed all {len(user_order)} states in async pool")
             return None
     
     def get_async_pool_status(self) -> dict:

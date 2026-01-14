@@ -1786,7 +1786,7 @@ async function getInitialState() {
     console.log('[DEBUG] Successfully fetched initial state');
     
     // Check if we got a status response indicating no ready states
-    if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode')) {
+    if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode' || data.status === 'admin_phase')) {
       // Server is running but no ready states - hide the server not started message
       hideServerNotStarted();
       
@@ -1834,7 +1834,7 @@ function startBackgroundStateCheck() {
         const data = await response.json();
         
         // Check if backend has switched to "no states" mode
-        if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode')) {
+        if (data.status && (data.status === 'no_ready_states' || data.status === 'no_pending_states' || data.status === 'no_pending_states_in_episode' || data.status === 'admin_phase')) {
           console.warn('⚠️  Backend ran out of states! Discarding current work and showing wait screen...');
           stopBackgroundStateCheck();
           
@@ -1919,7 +1919,7 @@ function startRegularPollingForStates() {
         const data = await response.json();
         
         // Check if we now have a real state
-        if (!data.status || (data.status !== 'no_ready_states' && data.status !== 'no_pending_states' && data.status !== 'no_pending_states_in_episode')) {
+        if (!data.status || (data.status !== 'no_ready_states' && data.status !== 'no_pending_states' && data.status !== 'no_pending_states_in_episode' && data.status !== 'admin_phase')) {
           console.log('✅ New state available! Refreshing page...');
           stopPolling();
           hideWaitingMessage();
@@ -6567,11 +6567,14 @@ loader.load(
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
           } else if (window.isFromNetlify) {
-            // Netlify crowdsourcing mode: show waiting screen (user can only submit once per state)
+            // Netlify crowdsourcing mode: refresh to load next state
             confirmBtn.textContent = '✅ Submitted';
             confirmBtn.disabled = true;
             confirmBtn.style.background = '#22c55e';
-            showWaitingForStatesMessage('Waiting for new states...');
+            // Refresh immediately to get next state from async pool
+            setTimeout(() => {
+              window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+            }, 500); // Small delay to show success feedback
           } else {
             // Localhost expert mode: refresh to load next task (can submit multiple times)
             window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());

@@ -413,9 +413,12 @@ class CrowdInterface:
         def make_serializable(obj):
             """Recursively convert tensors and other non-serializable objects."""
             if isinstance(obj, torch.Tensor):
-                return obj.tolist()
-            elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                return None  # Convert NaN/Inf to null in JSON
+                # Convert tensor to list, then recursively process to handle NaN/Inf
+                return make_serializable(obj.tolist())
+            elif isinstance(obj, float):
+                if math.isnan(obj) or math.isinf(obj):
+                    return None  # Convert NaN/Inf to null in JSON
+                return obj
             elif isinstance(obj, dict):
                 return {k: make_serializable(v) for k, v in obj.items()}
             elif isinstance(obj, (list, tuple)):
