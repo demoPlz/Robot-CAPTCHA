@@ -2708,6 +2708,12 @@ class StateManager:
                     episode_id, state_id = state_key
                     state_info = self.async_state_pool[state_key]
                     
+                    # Skip if state is already full
+                    responses_received = state_info.get("responses_received", 0)
+                    if responses_received >= self.required_responses_per_critical_state:
+                        print(f"⏭️  State ({episode_id}, {state_id}) already full ({responses_received}/{self.required_responses_per_critical_state}), skipping for {user_email}")
+                        continue
+                    
                     return state_info
             
             # User has submitted to all states in their order
