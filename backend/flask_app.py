@@ -1654,6 +1654,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             goal_joints = data.get("goal_joints")
             duration = data.get("duration", 3.0)
             gripper_action = data.get("gripper_action")  # NEW: extract gripper action
+            episode_id = data.get("episode_id")  # NEW: extract episode_id
+            state_id = data.get("state_id")  # NEW: extract state_id
 
             # Validate input
             if not goal_pose and not goal_joints:
@@ -1665,6 +1667,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 goal_joints=goal_joints,
                 duration=duration,
                 gripper_action=gripper_action,
+                episode_id=episode_id,
+                state_id=state_id,
             )
 
             if result.get("status") == "error":

@@ -275,10 +275,26 @@ class PersistentWorkerManager:
         goal_joints: list = None,
         duration: float = 3.0,
         gripper_action: str = None,
+        state_config: Dict = None,
     ) -> Dict[str, Any]:
-        """Start animation for specific user."""
+        """Start animation for specific user.
+        
+        Args:
+            user_id: User slot ID
+            goal_pose: Target pose (deprecated)
+            goal_joints: Target joint positions
+            duration: Animation duration
+            gripper_action: Gripper action (open/close)
+            state_config: Specific state configuration for initial conditions (async mode)
+        """
         if not self.animation_initialized:
             return {"status": "error", "message": "Animation not initialized"}
+
+        # Debug: Check what state_config we're sending
+        if state_config:
+            print(f"📤 Manager sending state_config: robot_joints[0:3]={state_config.get('robot_joints', 'MISSING')[:3] if isinstance(state_config.get('robot_joints'), list) else 'INVALID'}")
+        else:
+            print(f"⚠️ Manager sending NO state_config")
 
         command = {
             "action": "start_user_animation",
@@ -287,6 +303,7 @@ class PersistentWorkerManager:
             "goal_joints": goal_joints,
             "duration": duration,
             "gripper_action": gripper_action,
+            "state_config": state_config,
         }
 
         return self._send_command(command)
@@ -297,8 +314,14 @@ class PersistentWorkerManager:
 
         return self._send_command(command)
 
-    def update_state_and_sync_animations(self, config: Dict[str, Any], state_id: str = None) -> Dict[str, str]:
-        """Update simulation state and synchronize all animation environments."""
+    def update_state_and_sync_animations(self, config: Dict[str, Any], state_id: str = None, store_config: bool = True) -> Dict[str, str]:
+        """Update simulation state and synchronize all animation environments.
+        
+        Args:
+            config: Simulation configuration
+            state_id: Unique state identifier
+            store_config: If True, stores config in worker for later use (sync mode)
+        """
         if not self.worker_ready:
             raise RuntimeError("Worker not ready. Call start_worker() first.")
 
@@ -306,12 +329,12 @@ class PersistentWorkerManager:
         output_dir = f"{self.output_base_dir}/{state_id}"
 
         # First update the base state and capture static images
-        command = {"action": "update_and_capture", "config": config, "output_dir": output_dir, "state_id": state_id}
+        command = {"action": "update_and_capture", "config": config, "output_dir": output_dir, "state_id": state_id, "store_config": store_config}
 
         result = self._send_command(command)
 
-        # Then synchronize all animation environments to the new state
-        if self.animation_initialized and result.get("status") == "success":
+        # Then synchronize all animation environments to the new state (only in sync mode)
+        if store_config and self.animation_initialized and result.get("status") == "success":
             try:
                 sync_command = {"action": "sync_animation_environments", "config": config}
                 sync_result = self._send_command(sync_command)
@@ -331,8 +354,18 @@ class PersistentWorkerManager:
         goal_joints: list = None,
         duration: float = 3.0,
         gripper_action: str = None,
+        state_config: Dict = None,
     ) -> Dict[str, Any]:
-        """Start animation for a session (manages user slots automatically)"""
+        """Start animation for a session (manages user slots automatically)
+        
+        Args:
+            session_id: Session identifier
+            goal_pose: Target pose (deprecated)
+            goal_joints: Target joint positions
+            duration: Animation duration
+            gripper_action: Gripper action (open/close)
+            state_config: Specific state configuration for initial conditions (async mode)
+        """
         if not self.animation_initialized:
             return {"status": "error", "message": "Animation not initialized"}
 
@@ -345,7 +378,7 @@ class PersistentWorkerManager:
         # Check if session is in cached replay (doesn't need new slot)
         if session_id in self.cached_sessions:
             user_id = self.cached_sessions[session_id]
-            result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action)
+            result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action, state_config)
             # Cached replay uses no slot, just return success
             return result
 
@@ -356,7 +389,7 @@ class PersistentWorkerManager:
         user_id = self.available_slots.pop()
 
         # Start animation
-        result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action)
+        result = self.start_user_animation(user_id, goal_pose, goal_joints, duration, gripper_action, state_config)
 
         # Extract inner result if wrapped
         inner_result = result.get("result", result)

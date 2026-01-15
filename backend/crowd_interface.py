@@ -793,13 +793,17 @@ class CrowdInterface:
         goal_joints: list = None,
         duration: float = 3.0,
         gripper_action: str = None,
+        episode_id: str = None,
+        state_id: int = None,
     ) -> dict:
         """Start animation for a user session.
 
         Delegates to SimManager.
 
         """
-        return self.sim_manager.start_animation(session_id, goal_pose, goal_joints, duration, gripper_action)
+        return self.sim_manager.start_animation(
+            session_id, goal_pose, goal_joints, duration, gripper_action, episode_id, state_id
+        )
 
     def stop_animation(self, session_id: str) -> dict:
         """Stop animation for a user session.

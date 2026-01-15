@@ -120,7 +120,6 @@ class PersistentWorker:
                 # Remove signal file to acknowledge
                 os.remove(command_signal_file)
 
-                print(f"Received command: {command.get('action', 'unknown')}")
                 return command
 
             except Exception as e:
@@ -133,7 +132,6 @@ class PersistentWorker:
         """Process a command and return result."""
         action = command.get("action")
         
-        print(f"📥 Processing command: {action}")
         sys.stdout.flush()
 
         try:
@@ -167,13 +165,15 @@ class PersistentWorker:
                 # Update state and capture images (fast path)
                 config = command["config"]
                 output_dir = command["output_dir"]
+                store_config = command.get("store_config", True)  # Default True for backward compat
 
                 if not self.isaac_worker.simulation_initialized:
                     # Fallback to full initialization if needed
                     result = self.isaac_worker.capture_static_images(config, output_dir)
                 else:
                     # Fast state update
-                    result = self.isaac_worker.update_and_capture(config, output_dir)
+                    self.isaac_worker.update_state(config, store_config=store_config)
+                    result = self.isaac_worker.capture_current_state_images(output_dir)
 
                 return {"status": "success", "action": action, "result": result}
 
@@ -214,10 +214,15 @@ class PersistentWorker:
                 user_id = command["user_id"]
                 goal_joints = command.get("goal_joints")
                 duration = command.get("duration", 3.0)
-                gripper_action = command.get("gripper_action")  # NEW: gripper action parameter
+                gripper_action = command.get("gripper_action")
+                state_config = command.get("state_config")  # NEW: state_config for async mode
 
                 result = self.isaac_worker.start_user_animation(
-                    user_id=user_id, goal_joints=goal_joints, duration=duration, gripper_action=gripper_action
+                    user_id=user_id,
+                    goal_joints=goal_joints,
+                    duration=duration,
+                    gripper_action=gripper_action,
+                    state_config=state_config
                 )
 
                 return {"status": "success" if "error" not in result else "error", "action": action, "result": result}
@@ -300,8 +305,6 @@ class PersistentWorker:
             # Create signal file to indicate result is ready
             result_signal_file = f"{self.result_file}.signal"
             Path(result_signal_file).touch()
-
-            print(f"Sent result: {result.get('status', 'unknown')}")
 
         except Exception as e:
             print(f"Error sending result: {e}")

@@ -248,6 +248,19 @@ class SimManager:
                 if view_paths:
                     state_info["view_paths"] = view_paths
                     state_info["sim_ready"] = True
+                    # Store the sim config for this specific state (for async mode animation)
+                    # CRITICAL: Preserve joint order using JOINT_NAMES
+                    joint_positions_dict = state_info.get("joint_positions", {})
+                    robot_joints_ordered = [joint_positions_dict.get(name, 0.0) for name in JOINT_NAMES]
+                    
+                    state_info["sim_config"] = {
+                        "robot_joints": robot_joints_ordered,
+                        "left_carriage_external_force": state_info.get("left_carriage_external_force", 0),
+                        "object_poses": state_info.get("object_poses", {}),
+                        "drawer_joint_positions": state_info.get("drawer_joint_positions", {}),
+                    }
+                    print(f"✓ Stored sim_config for state (ep={episode_id}, state={state_id})")
+                    print(f"   robot_joints[0:3]={robot_joints_ordered[0:3]}")
                     return True
 
             print(f"⚠️ Isaac capture failed: {result}")
@@ -268,10 +281,42 @@ class SimManager:
         goal_joints: list = None,
         duration: float = 3.0,
         gripper_action: str = None,
+        episode_id: str = None,
+        state_id: int = None,
     ) -> dict:
-        """Start animation for a user session."""
+        """Start animation for a user session.
+        
+        Args:
+            session_id: User session identifier
+            goal_pose: Target pose (deprecated)
+            goal_joints: Target joint positions
+            duration: Animation duration
+            gripper_action: Gripper action (open/close)
+            episode_id: Episode ID of the state being animated
+            state_id: State ID of the state being animated
+        """
         if not self.use_sim or not self.isaac_manager:
             return {"status": "error", "message": "Simulation not available"}
+
+        # Retrieve state config if episode_id and state_id are provided (async mode)
+        state_config = None
+        if episode_id is not None and state_id is not None:
+            with self.state_lock:
+                # Try pending states first
+                ep = self.pending_states_by_episode.get(episode_id)
+                if ep and state_id in ep:
+                    state_config = ep[state_id].get("sim_config")
+                    if state_config:
+                        print(f"🎯 Animation requested for state (ep={episode_id}, state={state_id})")
+                        print(f"   Retrieved config: robot_joints={state_config.get('robot_joints', 'MISSING')[:3] if isinstance(state_config.get('robot_joints'), list) else 'INVALID'}..., objects={list(state_config.get('object_poses', {}).keys())}")
+                    else:
+                        print(f"⚠️ Animation requested for state (ep={episode_id}, state={state_id}) but NO sim_config found!")
+                        print(f"   Available keys in state_info: {list(ep[state_id].keys())}")
+                else:
+                    if not ep:
+                        print(f"⚠️ Episode {episode_id} not found in pending_states")
+                    else:
+                        print(f"⚠️ State {state_id} not found in episode {episode_id}")
 
         try:
             result = self.isaac_manager.start_user_animation_managed(
@@ -280,6 +325,7 @@ class SimManager:
                 goal_joints=goal_joints,
                 duration=duration,
                 gripper_action=gripper_action,
+                state_config=state_config,
             )
 
             return result

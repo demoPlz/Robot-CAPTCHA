@@ -57,7 +57,6 @@ class AnimationFrameCache:
         self.frames.clear()
         self.frame_count = 0
         self.is_complete = False
-        print(f"📹 Starting frame generation for user {self.user_id} - {self.total_frames} frames at {self.fps} FPS")
 
     def add_frame(self, frame_index: int, camera_data: dict):
         """Add a frame to the cache
@@ -73,13 +72,9 @@ class AnimationFrameCache:
             self.is_complete = True
             if self.generation_start_time is not None:
                 generation_time = time.time() - self.generation_start_time
-                print(
-                    f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames in {generation_time:.2f}s"
-                )
+                print(f"✓ Animation generated: {self.frame_count} frames in {generation_time:.2f}s")
             else:
-                print(
-                    f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames (no timing available)"
-                )
+                print(f"✓ Animation generated: {self.frame_count} frames")
 
     def get_current_replay_frame(self) -> dict | None:
         """Get the current frame for replay based on elapsed time."""
@@ -487,19 +482,27 @@ class IsaacSimWorker:
         
         print(f"✅ Disabled {disabled_count} physics components in {environment_path} (VRAM saved!)")
 
-    def set_drawer_joints(self, user_id=0):
+    def set_drawer_joints(self, user_id=0, config=None):
         """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position.
 
         Args:
             user_id: User ID to determine which environment's drawer to update (default=0 for /World)
+            config: Configuration dict containing drawer_joint_positions. If None, uses last_sync_config.
 
         """
         import numpy as np
         import omni.usd
         from pxr import Gf
 
+        # Use provided config or fallback to last_sync_config (sync mode)
+        config_to_use = config if config is not None else self.last_sync_config
+        
+        if config_to_use is None:
+            print(f"[Worker] ⚠️ No config available for drawer update (user {user_id})")
+            return
+
         # Get drawer joint positions from config
-        drawer_joint_positions = self.last_sync_config.get("drawer_joint_positions", {})
+        drawer_joint_positions = config_to_use.get("drawer_joint_positions", {})
 
         if not drawer_joint_positions:
             # No drawer positions specified, keep at default (closed)
@@ -631,8 +634,13 @@ class IsaacSimWorker:
                 print(f"[Worker] ⚠️ Failed to set tray position: {e}")
                 traceback.print_exc()
 
-    def update_state(self, config):
+    def update_state(self, config, store_config=True):
         """Update robot joints and object poses without recreating simulation.
+        
+        Args:
+            config: Configuration dict with robot_joints, object_poses, etc.
+            store_config: If True, stores config as last_sync_config (sync mode).
+                        If False, skips storing (async mode - uses per-state configs).
 
         CRITICAL SEQUENCE with GLOBAL GRAVITY CONTROL:
         0. Disable gravity GLOBALLY (safe - doesn't invalidate ArticulationView)
@@ -658,13 +666,14 @@ class IsaacSimWorker:
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
 
-        # Store the config
-        self.last_sync_config = config.copy()
-        self.last_sync_config["robot_joints"] = np.array(self.last_sync_config["robot_joints"])
+        # Store the config only if requested (sync mode)
+        if store_config:
+            self.last_sync_config = config.copy()
+            self.last_sync_config["robot_joints"] = np.array(self.last_sync_config["robot_joints"])
 
         # Detect grasp to determine gripper state
-        robot_joints = self.last_sync_config["robot_joints"]
-        gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
+        robot_joints = np.array(config["robot_joints"])
+        gripper_external_force = config.get("left_carriage_external_force", 0)
         grasped = abs(gripper_external_force) > 30  # GRASPED_THRESHOLD
 
         # STEP 0: Disable gravity globally (objects won't fall during positioning)
@@ -1215,9 +1224,19 @@ class IsaacSimWorker:
         print(f"✓ Applied clean offset {offset} to environment {environment_path}")
         return True
 
-    def start_user_animation(self, user_id, goal_joints, duration=3.0, gripper_action=None):
-        """Start animation for specific user using direct joint control First execution generates all frames headlessly,
-        subsequent requests replay cached frames."""
+    def start_user_animation(self, user_id, goal_joints, duration=3.0, gripper_action=None, state_config=None):
+        """Start animation for specific user using direct joint control.
+        
+        First execution generates all frames headlessly, subsequent requests replay cached frames.
+        
+        Args:
+            user_id: User slot ID
+            goal_joints: Target joint positions
+            duration: Animation duration
+            gripper_action: Gripper action (open/close/grasp)
+            state_config: Specific state configuration for initial conditions (async mode).
+                        If None, uses last_sync_config (sync mode).
+        """
         if user_id not in self.user_environments:
             return {"error": f"User {user_id} environment not found"}
 
@@ -1237,7 +1256,7 @@ class IsaacSimWorker:
             # Use cached frames for instant replay
             cache = self.frame_caches[user_id]
             cache.reset_replay()
-            print(f"🎬 Using cached animation for user {user_id} - {cache.frame_count} pre-generated frames")
+            print(f"� Replaying cached animation for user {user_id}")
 
             # Mark as active animation for the replay system
             self.active_animations[user_id] = {
@@ -1255,11 +1274,11 @@ class IsaacSimWorker:
             }
 
         # First time or different animation - need to generate frames
-        print(f"🎬 Generating new animation frames for user {user_id}")
+        config_source = "state-config" if state_config else "global-config"
+        print(f"🎬 Generating animation for user {user_id} (using {config_source})")
 
         # STEP 1: Stop any existing animation for this user to ensure clean start
         if user_id in self.active_animations:
-            print(f"🔄 Stopping existing animation for user {user_id} to start fresh")
             self.active_animations[user_id]["active"] = False
             del self.active_animations[user_id]
 
@@ -1276,26 +1295,21 @@ class IsaacSimWorker:
         self.frame_generation_in_progress.add(user_id)
 
         # STEP 5: CRITICAL - Reset ENTIRE environment (robot + objects) to fresh synchronized state
-        print(f"🆕 PERFORMING FULL FRESH RESET for user {user_id} before animation")
-        self._reset_user_environment_to_sync_state(user_id)  # ATTENTION
+        self._reset_user_environment_to_sync_state(user_id, state_config)  # NEW: pass state_config
 
-        # STEP 6: Get the fresh initial state from the latest synchronized state
-        initial_joints = self.last_sync_config["robot_joints"]
+        # STEP 6: Get the fresh initial state from the specific state config or latest synchronized state
+        config_to_use = state_config if state_config is not None else self.last_sync_config
+        if config_to_use is None:
+            return {"error": "No config available for animation (neither state_config nor last_sync_config)"}
+        initial_joints = config_to_use["robot_joints"]
 
         if gripper_action is not None:
             if gripper_action in ("grasp", "close"):
                 goal_joints[-1] = -0.044  # TEST: Negative value to force tighter closure
-                print(f"🤏 Gripper action: {gripper_action} -> setting left gripper to closed (-0.044)")
             elif gripper_action == "open":
                 goal_joints[-1] = 0.044
-                print(f"✋ Gripper action: {gripper_action} -> setting left gripper to open (0.044)")
-            else:
-                print(f"⚠️ Unknown gripper action: {gripper_action}, keeping original gripper position")
-
-        print(f"🆕 FRESH START - Initial: {initial_joints}, Goal: {goal_joints}")
 
         # STEP 7: Set up CHUNKED frame generation (non-blocking)
-        print(f"📹 Setting up chunked frame generation for {duration}s animation at {fps} FPS")
 
         try:
             cache.start_generation()
@@ -1313,9 +1327,7 @@ class IsaacSimWorker:
                 "generation_complete": False,
             }
 
-            print(
-                f"✅ Chunked generation setup complete for user {user_id} - will generate {cache.total_frames} frames incrementally"
-            )
+            print(f"   ➡️ {cache.total_frames} frames")
 
             # Return immediately - frames will be generated in background by worker loop
             return {
@@ -1658,8 +1670,13 @@ class IsaacSimWorker:
         self.frame_generation_in_progress.clear()
         print("✅ All frame caches cleaned up")
 
-    def _reset_user_environment_to_sync_state(self, user_id):
-        """Reset a user's environment back to the last synchronized state.
+    def _reset_user_environment_to_sync_state(self, user_id, state_config=None):
+        """Reset a user's environment back to a specific state configuration.
+
+        Args:
+            user_id: User slot ID
+            state_config: Specific state configuration to reset to (async mode).
+                        If None, uses last_sync_config (sync mode).
 
         - User 0: Resets robot + objects using stored object references
         - Cloned users: Resets robot + objects using scene registry objects
@@ -1679,9 +1696,21 @@ class IsaacSimWorker:
             env_data = self.user_environments[user_id]
             robot = env_data["robot"]
 
+            # Use provided state_config if available, otherwise fallback to last_sync_config (sync mode)
+            config_to_use = state_config if state_config is not None else self.last_sync_config
+            
+            if config_to_use is None:
+                print(f"⚠️ WARNING: No config available for reset (user {user_id})")
+                return
+            
+            # Debug: Show which config source we're using
+            config_source = "state-specific" if state_config is not None else "global (last_sync)"
+            robot_joints_preview = config_to_use["robot_joints"][:3] if hasattr(config_to_use["robot_joints"], "__getitem__") else "N/A"
+            print(f"🔄 Resetting user {user_id} using {config_source} config: joints[0:3]={robot_joints_preview}")
+
             # Detect grasp to determine gripper state
-            initial_joints = self.last_sync_config["robot_joints"]
-            gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
+            initial_joints = config_to_use["robot_joints"]
+            gripper_external_force = config_to_use.get("left_carriage_external_force", 0)
             grasped = abs(gripper_external_force) > 30
             robot_joints = initial_joints.copy()
 
@@ -1706,7 +1735,7 @@ class IsaacSimWorker:
             print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
 
             # STEP 3: Reset objects
-            object_states = self.last_sync_config.get(
+            object_states = config_to_use.get(
                 "object_poses",
                 {
                     "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
@@ -1785,22 +1814,18 @@ class IsaacSimWorker:
                             # TODO this might not work for tennis ball
 
             # STEP 4: Reset drawer position
-            print(f"[Worker] 🗄️  Resetting drawer to synced state for user {user_id}")
-            self.set_drawer_joints(user_id=user_id)
+            self.set_drawer_joints(user_id=user_id, config=config_to_use)
 
             # STEP 5: Let physics settle in zero-G
-            print(f"[Worker] ⏱️  Settling physics (zero-G)...")
             for step in range(10):
                 self.world.step(render=True)
 
             # STEP 6: Show robot
-            print(f"[Worker] 👁️  Showing robot")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["show"]()
 
             # STEP 7: Close gripper with physics if object was grasped (BEFORE re-enabling gravity!)
             if grasped:
-                print(f"[Worker] 🤏 Closing gripper to secure grasp (gravity still OFF)...")
                 from omni.isaac.core.utils.types import ArticulationAction
 
                 target_q = robot_joints.copy()
@@ -1965,11 +1990,21 @@ class IsaacSimWorker:
         """Handle runtime commands from backend."""
         action = command.get("action")
 
-        if action == "start_animation":
+        if action == "start_user_animation":
+            # Debug: Check what state_config we received
+            state_config = command.get("state_config")
+            if state_config:
+                print(f"📦 Worker received state_config: robot_joints[0:3]={state_config.get('robot_joints', 'MISSING')[:3] if isinstance(state_config.get('robot_joints'), list) else 'INVALID'}")
+            else:
+                print(f"⚠️ Worker received NO state_config in command")
+                print(f"   Command keys: {list(command.keys())}")
+            
             return self.start_user_animation(
                 user_id=command["user_id"],
                 goal_joints=command.get("goal_joints"),
                 duration=command.get("duration", 3.0),
+                gripper_action=command.get("gripper_action"),
+                state_config=state_config,
             )
 
         elif action == "stop_animation":

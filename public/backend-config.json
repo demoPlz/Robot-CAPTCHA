@@ -1,5 +1,5 @@
 {
-  "backendUrl": "http://127.0.0.1:9006",
-  "updatedAt": "2026-01-15T18:50:47Z",
-  "port": 9006
+  "backendUrl": "http://127.0.0.1:9001",
+  "updatedAt": "2026-01-15T22:04:49Z",
+  "port": 9001
 }

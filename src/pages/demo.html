@@ -4360,14 +4360,26 @@ loader.load(
         
         console.log('Gripper action:', gripperAction, '(gripDir:', gripDir, ')');
         
+        // Include episode_id and state_id for async mode state-specific config
+        const requestPayload = {
+          goal_joints: goalJoints,
+          duration: 3.0,  // 3 second animation
+          gripper_action: gripperAction
+        };
+        
+        // Add state identification for async mode (per-state config)
+        if (window.__INIT_STATE?.episode_id !== undefined && window.__INIT_STATE?.state_id !== undefined) {
+          requestPayload.episode_id = window.__INIT_STATE.episode_id;
+          requestPayload.state_id = window.__INIT_STATE.state_id;
+          console.log(`🎯 Animation for state: episode=${requestPayload.episode_id}, state=${requestPayload.state_id}`);
+        } else {
+          console.log('⚠️ No episode/state ID available - using global config (sync mode)');
+        }
+        
         const response = await apiFetch('/api/animation/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            goal_joints: goalJoints,
-            duration: 3.0,  // 3 second animation
-            gripper_action: gripperAction
-          })
+          body: JSON.stringify(requestPayload)
         });
         
         const result = await response.json();
