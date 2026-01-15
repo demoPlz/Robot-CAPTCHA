@@ -42,16 +42,19 @@ class DatasetManager:
         self,
         required_responses_per_critical_state: int,
         obs_cache_root: Path,
+        asynchronous_mode: bool = False,
     ):
         """Initialize dataset manager.
 
         Args:
             required_responses_per_critical_state: Number of responses per critical state (for action shape)
             obs_cache_root: Root directory for observation cache
+            asynchronous_mode: Whether async mode is enabled (changes logging behavior)
 
         """
         self.required_responses_per_critical_state = required_responses_per_critical_state
         self._obs_cache_root = obs_cache_root
+        self.asynchronous_mode = asynchronous_mode
 
         # Dataset state
         self.dataset = None
@@ -272,8 +275,20 @@ class DatasetManager:
         episode_index: int,
         state_id: int,
         execution_history: list[dict],
+        asynchronous_mode: bool = False,
     ) -> None:
-        """Log which users' submissions were approved/rejected for a state."""
+        """Log which users' submissions were approved/rejected for a state.
+        
+        Args:
+            episode_index: Episode index
+            state_id: State ID
+            execution_history: List of execution history entries
+            asynchronous_mode: If True, skip logging (async mode has separate logger)
+        """
+        # Skip in async mode - use AsyncUserLogger instead
+        if asynchronous_mode:
+            return
+        
         # Use dataset name in log filename for unique naming per run
         dataset_name = self.dataset.repo_id.replace('/', '_')
         user_approval_log_path = self.dataset.root / f"user_approval_log_{dataset_name}.jsonl"
@@ -325,6 +340,10 @@ class DatasetManager:
             buffer: Dict of state_id -> state_info
             episode_timing: Optional dict with timing stats from state_manager
         """
+        # Skip in async mode - use AsyncUserLogger instead
+        if self.asynchronous_mode:
+            return
+        
         # Use dataset name in log filename for unique naming per run
         dataset_name = self.dataset.repo_id.replace('/', '_')
         user_approval_log_path = self.dataset.root / f"user_approval_log_{dataset_name}.jsonl"
@@ -501,7 +520,7 @@ class DatasetManager:
             
             # Log user approval stats for each state
             if execution_history:
-                self.log_user_approvals_for_state(episode_index, state_id, execution_history)
+                self.log_user_approvals_for_state(episode_index, state_id, execution_history, asynchronous_mode=self.asynchronous_mode)
 
         # Log episode-wide user summary with timing
         self.log_episode_user_summary(episode_index, buffer, episode_timing)

@@ -933,6 +933,18 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             print(f"❌ Error resetting async pool: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/async/user-summary", methods=["POST"])
+    def generate_async_user_summary():
+        """Generate final summary of async user submissions and performance."""
+        try:
+            result = crowd_interface.state_manager.generate_async_user_summary()
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error generating async user summary: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/start-episode", methods=["POST"])
     def start_episode():

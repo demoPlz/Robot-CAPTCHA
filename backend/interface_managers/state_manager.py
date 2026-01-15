@@ -13,6 +13,7 @@ from threading import Lock, Thread, Timer
 import torch
 
 from interface_managers.flush_manager import FlushManager
+from interface_managers.async_user_logger import AsyncUserLogger
 
 # Joint names constant (shared with crowd_interface)
 JOINT_NAMES = ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "left_carriage_joint"]
@@ -166,6 +167,20 @@ class StateManager:
         self.sim_manager = sim_manager
         self.action_selector = action_selector_manager
         self.dataset_manager = dataset_manager
+        
+        # Async mode user logger (only active in async mode)
+        self.async_user_logger = None
+        if self.asynchronous_mode:
+            # Initialize logger with dataset directory (if available) or obs cache root
+            if self.dataset_manager is not None and hasattr(self.dataset_manager, 'dataset') and self.dataset_manager.dataset is not None:
+                log_dir = self.dataset_manager.dataset.root
+                print(f"✅ Async user logger using dataset root: {log_dir}")
+            else:
+                # In async mode, dataset_manager may be None - use obs_cache_root instead
+                log_dir = self._obs_cache_root
+                print(f"✅ Async user logger using obs_cache_root: {log_dir}")
+            self.async_user_logger = AsyncUserLogger(log_dir)
+            print(f"📊 Async logs will be written to: {log_dir}/async_user_submissions.jsonl")
 
         # Callbacks for external operations
         self._persist_views_callback = persist_views_callback
@@ -830,12 +845,15 @@ class StateManager:
             # Track user identity for this submission
             user_name = response_data.get("user_name")
             user_email = response_data.get("user_email")
+            used_animation = response_data.get("used_animation", False)  # Track if user clicked animation
+            
             if "user_submissions" not in state_info:
                 state_info["user_submissions"] = []
             state_info["user_submissions"].append({
                 "name": user_name,
                 "email": user_email,
                 "action_index": len(state_info["actions"]) - 1,  # Index of the action just appended
+                "used_animation": used_animation,  # NEW: Track animation usage
             })
             
             # Track submission timing for this user
@@ -2117,7 +2135,8 @@ class StateManager:
                         if user_sub["action_index"] == i:
                             action_users.append({
                                 "name": user_sub["name"],
-                                "email": user_sub["email"]
+                                "email": user_sub["email"],
+                                "used_animation": user_sub.get("used_animation", False)
                             })
                             break
             
@@ -2184,6 +2203,78 @@ class StateManager:
                 print(f"✅ Action {num_reviewed + 1} approved ({num_approved} total approved)")
             else:
                 print(f"❌ Action {num_reviewed + 1} rejected")
+            
+            # Log async user submissions (only for user submissions, not admin/autofill)
+            async_logger_active = self.async_user_logger is not None
+            async_mode_active = self.asynchronous_mode
+            pool_finalized = self.async_pool_finalized
+            print(f"🔍 [ASYNC LOGGER CHECK] logger={async_logger_active}, mode={async_mode_active}, finalized={pool_finalized}")
+            
+            if self.async_user_logger and self.asynchronous_mode and self.async_pool_finalized:
+                print(f"🔍 [ASYNC LOGGER] Processing {len(action_users)} users for logging")
+                for user in action_users:
+                    user_email = user.get("email")
+                    user_name = user.get("name", "Unknown")
+                    
+                    if not user_email:
+                        print(f"🔍 [ASYNC LOGGER] Skipping user with no email")
+                        continue
+                    
+                    # Filter out localhost expert submissions
+                    if "127.0.0.1" in user_email or "localhost" in user_email.lower():
+                        print(f"🔍 [ASYNC LOGGER] Skipping localhost expert: {user_email}")
+                        continue
+                    
+                    print(f"🔍 [ASYNC LOGGER] Logging submission for {user_name} ({user_email})")
+                    
+                    # Get user's timing info for this state
+                    duration_seconds = 0.0
+                    used_animation = user.get("used_animation", False)
+                    
+                    if user_email in state_info.get("user_timings", {}):
+                        timing = state_info["user_timings"][user_email]
+                        duration_seconds = timing.get("duration_seconds", 0.0)
+                    
+                    # Calculate user's current approval rate
+                    user_approved = 0
+                    user_rejected = 0
+                    
+                    # Count all previously reviewed submissions for this user
+                    with self.state_lock:
+                        for ep_id in self.completed_states_buffer_by_episode:
+                            for s_id in self.completed_states_buffer_by_episode[ep_id]:
+                                s_info = self.completed_states_buffer_by_episode[ep_id][s_id]
+                                exec_history = s_info.get("execution_history", [])
+                                for exec_entry in exec_history:
+                                    for submitted_user in exec_entry.get("submitted_by", []):
+                                        if submitted_user.get("email") == user_email:
+                                            if exec_entry.get("approval") == 1:
+                                                user_approved += 1
+                                            elif exec_entry.get("approval") == -1:
+                                                user_rejected += 1
+                    
+                    # Include current submission
+                    if approved:
+                        user_approved += 1
+                    else:
+                        user_rejected += 1
+                    
+                    user_total = user_approved + user_rejected
+                    user_approval_rate = user_approved / user_total if user_total > 0 else None
+                    
+                    # Log this submission
+                    self.async_user_logger.log_submission(
+                        user_email=user_email,
+                        user_name=user_name,
+                        episode_id=episode_id,
+                        state_id=state_id,
+                        duration_seconds=duration_seconds,
+                        used_animation=used_animation,
+                        approval_status=approval_value,
+                        current_approval_rate=user_approval_rate,
+                        current_approval_count=user_approved,
+                        current_total_count=user_total,
+                    )
             
             # After recording decision, clear current and activate next from queue
             with self.pre_execution_approval_lock:
@@ -2770,3 +2861,26 @@ class StateManager:
             self.async_user_assignments.clear()
             self.async_pool_finalized = False
             print("🔄 Async pool reset")
+    
+    def generate_async_user_summary(self):
+        """Generate final summary of async user performance.
+        
+        Call this after all async data collection is complete to generate
+        comprehensive statistics about user submissions, approval rates,
+        animation usage, and timing.
+        
+        Returns:
+            dict: Summary statistics
+        """
+        if not self.async_user_logger:
+            print("⚠️  Async user logger not initialized (not in async mode)")
+            return {"error": "Not in async mode"}
+        
+        print("📊 Generating final async user summary...")
+        self.async_user_logger.generate_final_summary()
+        
+        return {
+            "status": "success",
+            "summary_file": str(self.async_user_logger.summary_log_path),
+            "submission_log": str(self.async_user_logger.submission_log_path),
+        }

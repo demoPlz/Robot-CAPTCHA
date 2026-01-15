@@ -9,7 +9,7 @@ Rotate the gripper to align with grasp angle, and adjust the positioning.
 Rotate the gripper to align with grasp angle.
 Lower the gripper to prepare for grasp.
 Close gripper to grasp.
-Raise the gripper such that the gripper and the the cube clear the height of the edge of the drawer.
+Raise the gripper such that the gripper and the cube clear the height of the middle drawer's handle.
 Move horizontally such that the gripper is above the opened drawer.
 Open gripper to release object into the drawer.
 Move horizontally left to be slightly left of the drawer.

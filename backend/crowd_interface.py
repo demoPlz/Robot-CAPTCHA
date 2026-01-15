@@ -285,6 +285,7 @@ class CrowdInterface:
         self.dataset_manager = DatasetManager(
             required_responses_per_critical_state=self.required_responses_per_critical_state,
             obs_cache_root=self._obs_cache_root,
+            asynchronous_mode=asynchronous_mode,
         )
 
         # Action selector manager
@@ -636,6 +637,13 @@ class CrowdInterface:
         
         # Update state manager's task_text
         self.state_manager.task_text = self.task_text
+        
+        # Update async logger's output directory to dataset root (if async mode and logger exists)
+        if self.state_manager.async_user_logger and self.dataset_manager.dataset:
+            from interface_managers.async_user_logger import AsyncUserLogger
+            dataset_root = self.dataset_manager.dataset.root
+            self.state_manager.async_user_logger = AsyncUserLogger(dataset_root)
+            print(f"📊 Async user logger updated to use dataset root: {dataset_root}/async_user_submissions.jsonl")
 
     # =========================
     # Calibration Management (Delegated to CalibrationManager)

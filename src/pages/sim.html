@@ -3917,6 +3917,9 @@ loader.load(
     const state = await getInitialState();
     window.__INIT_STATE = state;  // so the recorder can include state_id/episode_id in its /start payload
     
+    // Track whether animation was used for this state (for async mode logging)
+    let animationUsedForCurrentState = false;
+    
     // After: const state = await getInitialState();
     RECORDING_ALLOWED =
       !!(state?.demo_video?.enabled ?? state?.record_demo_videos ?? state?.flags?.record_demo_videos ?? false);
@@ -5128,6 +5131,9 @@ loader.load(
           const success = await startBackendAnimation();
           
           if (success) {
+            // Track that animation was used for this state
+            animationUsedForCurrentState = true;
+            
             // Update UI for animation mode
             animateBtn.textContent = '■ Stop'; // Change to Stop
             animateBtn.classList.remove('rendering');
@@ -6549,7 +6555,9 @@ loader.load(
           sliders_changed_axes: slidersChangedAxes,
           // Include user identity
           user_name: window.userIdentity?.name,
-          user_email: window.userIdentity?.email
+          user_email: window.userIdentity?.email,
+          // Track animation usage for async mode logging
+          used_animation: animationUsedForCurrentState
         };
         if (RECORDING_MARKED_SAVED && LAST_RECORDING_ID) {
           payload.recording_id  = LAST_RECORDING_ID;
