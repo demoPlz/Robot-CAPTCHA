@@ -2053,6 +2053,11 @@
             // Render robot at proposed action joint positions
             // data.action is already the joint positions array
             if (window.preExecRobotRenderer && data.action) {
+                console.log('🤖 Rendering robots:', {
+                    goalJoints: data.action,
+                    originalJoints: data.original_joint_positions,
+                    hasOriginal: !!(data.original_joint_positions && data.original_joint_positions.length > 0)
+                });
                 await window.preExecRobotRenderer.renderRobotAtAction(
                     data.action,
                     data.original_joint_positions || null,  // Pass original positions for comparison
@@ -3233,6 +3238,14 @@
                                 } else {
                                     // Keep minimal parts visible and apply color
                                     obj.visible = true;
+                                    
+                                    // Clone materials to avoid shared references
+                                    if (Array.isArray(obj.material)) {
+                                        obj.material = obj.material.map(mat => mat.clone());
+                                    } else {
+                                        obj.material = obj.material.clone();
+                                    }
+                                    
                                     const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
                                     materials.forEach(mat => {
                                         if (mat.color) mat.color.setHex(color);
@@ -3248,6 +3261,7 @@
                         
                         // Render original position robot (cyan/blue)
                         if (originalJointPositions && originalJointPositions.length > 0) {
+                            console.log(`[${viewName}] Rendering ORIGINAL position robot (cyan) with joints:`, originalJointPositions);
                             const originalRobot = this.robot.clone();
                             const originalGroup = new THREE.Group();
                             originalGroup.position.z = this.ROBOT_Z_OFFSET;
@@ -3257,9 +3271,12 @@
                             this.setRobotJoints(originalRobot, originalJointPositions);
                             originalRobot.updateMatrixWorld(true);
                             applyRobotStyle(originalRobot, 0x00BFFF); // Cyan/light blue for starting position
+                        } else {
+                            console.log(`[${viewName}] No original joint positions - skipping original robot render`);
                         }
                         
                         // Render goal position robot (gold/yellow)
+                        console.log(`[${viewName}] Rendering GOAL position robot (gold) with joints:`, goalJointPositions);
                         const goalRobot = this.robot.clone();
                         const goalGroup = new THREE.Group();
                         goalGroup.position.z = this.ROBOT_Z_OFFSET;

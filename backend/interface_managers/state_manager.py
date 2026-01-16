@@ -2196,6 +2196,12 @@ class StateManager:
             
             print(f"👤 Action submitted by {len(action_users)} user(s): {action_users}")
             
+            # Get current robot joint positions
+            print(f"🔍 state_info keys: {state_info.keys()}")
+            print(f"🔍 joint_positions in state_info: {state_info.get('joint_positions')}")
+            original_joint_positions_list = list(state_info.get("joint_positions", {}).values())
+            print(f"🤖 Original joint positions list: {original_joint_positions_list}")
+            
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:
                 self._pre_execution_approval_sequence += 1
@@ -2212,7 +2218,7 @@ class StateManager:
                     "submitted_by": action_users,  # List of users who submitted this action
                     "text_prompt": state_info.get("text_prompt"),
                     "video_prompt": state_info.get("video_prompt"),
-                    "original_joint_positions": list(state_info.get("joint_positions", {}).values()),  # Starting position
+                    "original_joint_positions": original_joint_positions_list,  # Starting position
                 }
                 
                 my_sequence = approval_request["sequence"]
