@@ -1606,7 +1606,7 @@
   border-radius: 12px;
   box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  z-index: 9999;
+  z-index: 30000;
   display: none; /* Hidden by default, shown for Netlify users */
   user-select: none;
   transition: all 0.3s ease;
@@ -1632,6 +1632,15 @@
 @keyframes counterPulse {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.1); }
+}
+
+#approvalCounter .counter-name {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.8;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 #approvalCounter .counter-label {
@@ -1689,6 +1698,7 @@
   
   <!-- Approval Counter for Netlify users -->
   <div id="approvalCounter">
+    <div class="counter-name"></div>
     <div class="counter-value">0</div>
     <div class="counter-label">APPROVALS</div>
     <div class="counter-details">0/0 (0%)</div>
@@ -3780,12 +3790,14 @@ loader.load(
     // Initialize approval counter for Netlify users
     if (window.isFromNetlify && window.userIdentity?.email) {
       const counterEl = document.getElementById('approvalCounter');
+      const nameEl = counterEl.querySelector('.counter-name');
       const valueEl = counterEl.querySelector('.counter-value');
       const detailsEl = counterEl.querySelector('.counter-details');
       let lastApprovalCount = 0;
       
-      // Show counter
+      // Show counter and set user name
       counterEl.style.display = 'block';
+      nameEl.textContent = window.userIdentity.email;
       
       // Load cached data from localStorage
       const STORAGE_KEY = 'approval_count_cache';
@@ -3809,13 +3821,7 @@ loader.load(
           const response = await apiFetch(`/api/user/approval-count?user_email=${encodeURIComponent(window.userIdentity.email)}`);
           const data = await response.json();
           
-          if (data.approved !== undefined && data.session_id) {
-            // Check if session changed (backend restarted)
-            if (cachedData && cachedData.session_id !== data.session_id) {
-              console.log('🔄 Backend session changed, clearing old approval data');
-              lastApprovalCount = 0;
-            }
-            
+          if (data.approved !== undefined) {
             const newCount = data.approved;
             
             // Trigger shake animation if count increased
@@ -3833,19 +3839,18 @@ loader.load(
             const rate = Math.round(data.rate * 100);
             detailsEl.textContent = `${data.approved}/${data.total} (${rate}%)`;
             
-            // Save to localStorage
+            // Save to localStorage (persist forever)
             cachedData = {
               approved: data.approved,
               rejected: data.rejected,
               total: data.total,
               rate: data.rate,
-              session_id: data.session_id
+              timestamp: Date.now()
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedData));
           }
         } catch (err) {
-          console.error('Failed to fetch approval count:', err);
-          // Keep showing cached data if offline
+          // Backend offline - keep showing cached data (don't update display)
         }
       }
       
