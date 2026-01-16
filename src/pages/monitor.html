@@ -2055,6 +2055,7 @@
             if (window.preExecRobotRenderer && data.action) {
                 await window.preExecRobotRenderer.renderRobotAtAction(
                     data.action,
+                    data.original_joint_positions || null,  // Pass original positions for comparison
                     data.view_urls,
                     data.camera_poses,
                     data.camera_models,
@@ -3155,7 +3156,7 @@
                 robot.updateMatrixWorld(true);
             }
             
-            async renderRobotAtAction(jointPositions, viewUrls, cameraPoses, cameraModels, viewNames) {
+            async renderRobotAtAction(goalJointPositions, originalJointPositions, viewUrls, cameraPoses, cameraModels, viewNames) {
                 try {
                     await this.loadRobot();
                     await this.loadCalibration();
@@ -3196,21 +3197,84 @@
                         const scene = new THREE.Scene();
                         const camera = this.createCamera(viewName, cameraModel, cameraPose, webglCanvas.width, webglCanvas.height);
                         
-                        // Clone robot for this view
-                        const robotClone = this.robot.clone();
-                        const robotGroup = new THREE.Group();
-                        robotGroup.position.z = this.ROBOT_Z_OFFSET;
-                        robotGroup.add(robotClone);
-                        scene.add(robotGroup);
+                        // Add lighting (matching sim.html)
+                        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+                        scene.add(hemiLight);
+                        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+                        dirLight.position.set(2, 4, 2);
+                        scene.add(dirLight);
+                        
+                        // Define minimal parts to show
+                        const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
+                        
+                        // Helper to check if object is under any minimal root
+                        function isUnderAny(obj, rootSet) {
+                            let p = obj;
+                            while (p) {
+                                if (rootSet.has(p)) return true;
+                                p = p.parent;
+                            }
+                            return false;
+                        }
+                        
+                        // Function to apply color and visibility to robot
+                        const applyRobotStyle = (robotClone, color) => {
+                            const minimalRoots = new Set(
+                                MINIMAL_LINKS.map(n => robotClone.getObjectByName(n)).filter(Boolean)
+                            );
+                            
+                            robotClone.traverse(obj => {
+                                if (!obj.isMesh) return;
+                                
+                                const keepOpaque = isUnderAny(obj, minimalRoots);
+                                if (!keepOpaque) {
+                                    // Hide body parts completely
+                                    obj.visible = false;
+                                } else {
+                                    // Keep minimal parts visible and apply color
+                                    obj.visible = true;
+                                    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+                                    materials.forEach(mat => {
+                                        if (mat.color) mat.color.setHex(color);
+                                        if (mat.emissive) {
+                                            mat.emissive.setHex(color);
+                                            mat.emissiveIntensity = 0.3;
+                                        }
+                                        mat.needsUpdate = true;
+                                    });
+                                }
+                            });
+                        };
+                        
+                        // Render original position robot (cyan/blue)
+                        if (originalJointPositions && originalJointPositions.length > 0) {
+                            const originalRobot = this.robot.clone();
+                            const originalGroup = new THREE.Group();
+                            originalGroup.position.z = this.ROBOT_Z_OFFSET;
+                            originalGroup.add(originalRobot);
+                            scene.add(originalGroup);
+                            
+                            this.setRobotJoints(originalRobot, originalJointPositions);
+                            originalRobot.updateMatrixWorld(true);
+                            applyRobotStyle(originalRobot, 0x00BFFF); // Cyan/light blue for starting position
+                        }
+                        
+                        // Render goal position robot (gold/yellow)
+                        const goalRobot = this.robot.clone();
+                        const goalGroup = new THREE.Group();
+                        goalGroup.position.z = this.ROBOT_Z_OFFSET;
+                        goalGroup.add(goalRobot);
+                        scene.add(goalGroup);
                         
                         // Set robot joints to proposed action positions
-                        this.setRobotJoints(robotClone, jointPositions);
+                        this.setRobotJoints(goalRobot, goalJointPositions);
                         
                         // Update world matrices after setting joints
-                        robotClone.updateMatrixWorld(true);
+                        goalRobot.updateMatrixWorld(true);
+                        applyRobotStyle(goalRobot, 0xffc83d); // Gold for goal position
                         
                         // Get end effector world position and orientation
-                        const eeVis = robotClone.getObjectByName('ee_gripper_link');
+                        const eeVis = goalRobot.getObjectByName('ee_gripper_link');
                         const eePos = new THREE.Vector3();
                         const eeQuat = new THREE.Quaternion();
                         if (eeVis) {
@@ -3273,9 +3337,9 @@
                         scene.add(leftFingerLine);
                         scene.add(rightFingerLine);
                         
-                        // Position lines at finger tips
-                        const leftFingerLink = robotClone.getObjectByName('gripper_left');
-                        const rightFingerLink = robotClone.getObjectByName('gripper_right');
+                        // Position lines at finger tips (using goal robot)
+                        const leftFingerLink = goalRobot.getObjectByName('gripper_left');
+                        const rightFingerLink = goalRobot.getObjectByName('gripper_right');
                         
                         // Finger tip offsets in local coordinates (from calibration)
                         const tipCalib = this.gripperTipCalib;
@@ -3314,43 +3378,6 @@
                         
                         updateFingerLine(leftFingerLink, leftFingerLine, fingerTipLocalLeft);
                         updateFingerLine(rightFingerLink, rightFingerLine, fingerTipLocalRight);
-                        
-                        // Make robot visible with view-dependent transparency
-                        const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
-                        const minimalRoots = new Set(
-                            MINIMAL_LINKS.map(n => robotClone.getObjectByName(n)).filter(Boolean)
-                        );
-                        
-                        // Helper to check if object is under any minimal root
-                        function isUnderAny(obj, rootSet) {
-                            let p = obj;
-                            while (p) {
-                                if (rootSet.has(p)) return true;
-                                p = p.parent;
-                            }
-                            return false;
-                        }
-                        
-                        // Apply transparency to non-minimal parts
-                        robotClone.traverse(obj => {
-                            if (!obj.isMesh) return;
-                            
-                            const keepOpaque = isUnderAny(obj, minimalRoots);
-                            if (!keepOpaque) {
-                                // Hide body parts completely (ignore them)
-                                obj.visible = false;
-                            } else {
-                                // Keep minimal parts visible
-                                obj.visible = true;
-                            }
-                        });
-                        
-                        // Add lighting (matching sim.html)
-                        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
-                        scene.add(hemiLight);
-                        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-                        dirLight.position.set(2, 4, 2);
-                        scene.add(dirLight);
                         
                         // Create renderer
                         const renderer = new THREE.WebGLRenderer({ 

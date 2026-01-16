@@ -553,9 +553,14 @@ class StateManager:
                 return
             info = ep[latest_state_id]
 
-        poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
-            latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
-        )
+        # Skip pose estimation if flag is set (poses already copied from last critical state)
+        if info.get("skip_pose_estimation", False):
+            print(f"⏭️  Skipping pose estimation (reusing poses from previous critical state)")
+            poses_ready = True
+        else:
+            poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
+                latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
+            )
 
         # ---- Phase 2.5: Estimate drawer position if tracking enabled ----
         drawer_positions_ready = False
@@ -1330,13 +1335,31 @@ class StateManager:
                         # Handle pose estimation skip
                         if skip_pose_estimation:
                             # Find last critical state and copy its object poses
-                            ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
-                            critical_states = [sid for sid, sinfo in ep_completed.items() if sinfo.get("critical", False)]
+                            # Check pending, completed_buffer, and completed states (for async mode)
+                            critical_states = []
+                            
+                            # Check pending_states_by_episode (async mode - approved but not submitted yet)
+                            ep_pending = self.pending_states_by_episode.get(episode_id, {})
+                            for sid, sinfo in ep_pending.items():
+                                if sinfo.get("critical", False) and sid < state_id:
+                                    critical_states.append((sid, sinfo))
+                            
+                            # Check completed_states_buffer_by_episode (buffered states)
+                            ep_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
+                            for sid, sinfo in ep_buffer.items():
+                                if sinfo.get("critical", False):
+                                    critical_states.append((sid, sinfo))
+                            
+                            # Check completed_states_by_episode (fully completed states)
+                            ep_completed = self.completed_states_by_episode.get(episode_id, {})
+                            for sid, sinfo in ep_completed.items():
+                                if sinfo.get("critical", False):
+                                    critical_states.append((sid, sinfo))
                             
                             if critical_states:
-                                critical_states.sort()
-                                last_critical_state_id = critical_states[-1]
-                                last_critical_info = ep_completed[last_critical_state_id]
+                                # Sort by state_id and get the most recent
+                                critical_states.sort(key=lambda x: x[0])
+                                last_critical_state_id, last_critical_info = critical_states[-1]
                                 
                                 # Copy object poses from last critical state
                                 if "object_poses" in last_critical_info:
@@ -1393,6 +1416,7 @@ class StateManager:
                 "text_prompt": self.pending_pre_execution_approval.get("text_prompt"),
                 "video_prompt": self.pending_pre_execution_approval.get("video_prompt"),
                 "submitted_by": self.pending_pre_execution_approval.get("submitted_by", []),
+                "original_joint_positions": self.pending_pre_execution_approval.get("original_joint_positions", []),
             }
 
     def approve_pre_execution(self, episode_id: int, state_id: int) -> bool:
@@ -2188,6 +2212,7 @@ class StateManager:
                     "submitted_by": action_users,  # List of users who submitted this action
                     "text_prompt": state_info.get("text_prompt"),
                     "video_prompt": state_info.get("video_prompt"),
+                    "original_joint_positions": list(state_info.get("joint_positions", {}).values()),  # Starting position
                 }
                 
                 my_sequence = approval_request["sequence"]
