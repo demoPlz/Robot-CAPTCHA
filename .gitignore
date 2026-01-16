@@ -31,6 +31,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Monitor authentication (SECURITY - DO NOT COMMIT)
+data/monitor_password.txt
+data/monitor_auth.json
+
 # Local Netlify folder (auto-generated)
 .netlify/
 

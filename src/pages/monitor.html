@@ -528,6 +528,18 @@
     </style>
 </head>
 <body>
+
+<!-- Login Modal -->
+<div id="loginModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.9); z-index: 10000; align-items: center; justify-content: center;">
+    <div style="background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); max-width: 400px; width: 90%;">
+        <h2 style="margin: 0 0 20px 0; color: #333;">Monitor Authentication</h2>
+        <p style="color: #666; margin-bottom: 20px;">Enter password to access monitor</p>
+        <input type="password" id="loginPassword" placeholder="Password" style="width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; box-sizing: border-box;" />
+        <button id="loginButton" style="width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer;">Login</button>
+        <div id="loginError" style="color: red; margin-top: 10px; display: none;">Invalid password</div>
+    </div>
+</div>
+
     <div class="container">
         <!-- Top Section -->
         <div class="top-section">
@@ -890,12 +902,9 @@
         let API_BASE_URL = 'http://127.0.0.1:9000';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-                if (location.port === '5173' || location.port === '5174') {
-                    API_BASE_URL = await getCurrentCloudflaredUrl();
-                    console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
-                } else {
-                    API_BASE_URL = 'http://127.0.0.1:9000';
-                }
+                // Always try to read dynamic port from backend-config.json for localhost
+                API_BASE_URL = await getCurrentCloudflaredUrl();
+                console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
             } else {
                 // Running on Netlify or other production host - get tunnel URL
                 API_BASE_URL = await getCurrentCloudflaredUrl();
@@ -2947,6 +2956,100 @@
     </script>
     
     <script type="module">
+        // ========== AUTHENTICATION ==========
+        const MONITOR_TOKEN_KEY = 'monitor_auth_token';
+        let monitorToken = localStorage.getItem(MONITOR_TOKEN_KEY);
+        
+        // Check if we're on localhost (no auth needed)
+        function isLocalhost() {
+            return location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '::1';
+        }
+        
+        // Check authentication on load - delay rest of script until authenticated
+        // Need to wait for API_BASE_URL to be initialized
+        async function checkAuthOnLoad() {
+            await initializeApiUrl(); // Ensure API_BASE_URL is set
+            
+            if (isLocalhost()) {
+                // Localhost - no auth needed
+            } else if (!monitorToken) {
+                document.getElementById('loginModal').style.display = 'flex';
+            } else {
+                // Verify token by making test request
+                fetch(`${API_BASE_URL}/api/monitor/latest-state`, {
+                    headers: {'X-Monitor-Token': monitorToken}
+                }).then(r => {
+                    if (!r.ok && r.status === 401) {
+                        localStorage.removeItem(MONITOR_TOKEN_KEY);
+                        monitorToken = null;
+                        document.getElementById('loginModal').style.display = 'flex';
+                    }
+                }).catch(() => {}); // Continue even if offline
+            }
+        }
+        checkAuthOnLoad();
+        
+        // Login handler
+        document.getElementById('loginButton').addEventListener('click', async () => {
+            const password = document.getElementById('loginPassword').value;
+            const errorDiv = document.getElementById('loginError');
+            const button = document.getElementById('loginButton');
+            
+            button.disabled = true;
+            button.textContent = 'Logging in...';
+            errorDiv.style.display = 'none';
+            
+            try {
+                await initializeApiUrl(); // Ensure API_BASE_URL is set
+                
+                const response = await fetch(`${API_BASE_URL}/api/monitor/login`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({password})
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.token) {
+                    monitorToken = data.token;
+                    localStorage.setItem(MONITOR_TOKEN_KEY, monitorToken);
+                    document.getElementById('loginModal').style.display = 'none';
+                    location.reload(); // Reload to initialize monitor
+                } else {
+                    errorDiv.textContent = data.message || 'Invalid password';
+                    errorDiv.style.display = 'block';
+                    button.disabled = false;
+                    button.textContent = 'Login';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Connection error: ' + error.message;
+                errorDiv.style.display = 'block';
+                button.disabled = false;
+                button.textContent = 'Login';
+            }
+        });
+        
+        // Enter key submit
+        document.getElementById('loginPassword').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('loginButton').click();
+        });
+        
+        // Wrap fetch to include auth token
+        const originalFetch = window.fetch;
+        window.fetch = async (url, options = {}) => {
+            // Only add token for API requests (skip for localhost and login endpoint)
+            if (typeof url === 'string' && (url.includes('/api/') || url.includes('/api/monitor/'))) {
+                // Don't require token for login endpoint or localhost
+                if (!url.includes('/api/monitor/login') && !isLocalhost()) {
+                    if (!monitorToken) throw new Error('Not authenticated');
+                    options.headers = options.headers || {};
+                    options.headers['X-Monitor-Token'] = monitorToken;
+                }
+            }
+            return originalFetch(url, options);
+        };
+        
+        // ========== MONITOR CODE ==========
         import * as THREE from 'three';
         import URDFLoader from 'urdf-loader';
         

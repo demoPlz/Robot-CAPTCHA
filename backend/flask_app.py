@@ -4,12 +4,56 @@ import json
 import mimetypes
 import os
 import re
+import secrets
+import time
 import traceback
 from pathlib import Path
 
 from crowd_interface import CrowdInterface
 from flask import Flask, Response, jsonify, make_response, request, send_from_directory
 from flask_cors import CORS
+
+# Generate session ID on backend startup
+BACKEND_SESSION_ID = str(int(time.time() * 1000))
+
+# Monitor authentication - token-based with persistent storage
+AUTH_FILE = Path(__file__).parent.parent / "data" / "monitor_auth.json"
+PASSWORD_FILE = Path(__file__).parent.parent / "data" / "monitor_password.txt"
+
+def load_authorized_tokens():
+    """Load authorized tokens from disk (survives backend restart)."""
+    if AUTH_FILE.exists():
+        try:
+            with open(AUTH_FILE) as f:
+                data = json.load(f)
+                return set(data.get("tokens", []))
+        except Exception as e:
+            print(f"⚠️  Failed to load auth tokens: {e}")
+    return set()
+
+def save_authorized_tokens(tokens):
+    """Save authorized tokens to disk."""
+    try:
+        AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUTH_FILE, 'w') as f:
+            json.dump({"tokens": list(tokens)}, f)
+    except Exception as e:
+        print(f"⚠️  Failed to save auth tokens: {e}")
+
+def load_monitor_password():
+    """Load monitor password from gitignored file."""
+    if PASSWORD_FILE.exists():
+        try:
+            with open(PASSWORD_FILE) as f:
+                return f.read().strip()
+        except Exception as e:
+            print(f"⚠️  Failed to load monitor password: {e}")
+    print(f"⚠️  Monitor password file not found: {PASSWORD_FILE}")
+    print(f"   Create it with: echo 'your-password-here' > {PASSWORD_FILE}")
+    return None
+
+authorized_tokens = load_authorized_tokens()
+MONITOR_PASSWORD = load_monitor_password()
 
 
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
@@ -18,7 +62,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     CORS(
         app,
         resources={r"/api/*": {"origins": "*"}},
-        allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID"],
+        allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID", "X-Monitor-Token"],
         methods=["GET", "POST", "OPTIONS"],
         supports_credentials=False,
         expose_headers=["Content-Type"],
@@ -29,8 +73,49 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """Ensure CORS headers are always present for Cloudflare Tunnel compatibility."""
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning, X-Session-ID"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning, X-Session-ID, X-Monitor-Token"
         return response
+
+    def require_monitor_auth(f):
+        """Decorator to require authentication for monitor endpoints."""
+        def wrapper(*args, **kwargs):
+            # Allow localhost without authentication (safe - requires physical access)
+            remote_addr = request.headers.get('X-Forwarded-For', request.remote_addr)
+            if remote_addr and (remote_addr.startswith('127.0.0.1') or remote_addr.startswith('::1') or remote_addr == 'localhost'):
+                return f(*args, **kwargs)
+            
+            # Require token for remote access (Netlify/public internet)
+            token = request.headers.get('X-Monitor-Token')
+            if not token or token not in authorized_tokens:
+                return jsonify({"error": "Unauthorized", "message": "Invalid or missing authentication token"}), 401
+            return f(*args, **kwargs)
+        wrapper.__name__ = f.__name__
+        return wrapper
+
+    @app.route("/api/monitor/login", methods=["POST"])
+    def monitor_login():
+        """Authenticate and generate access token for monitor.html."""
+        try:
+            if MONITOR_PASSWORD is None:
+                return jsonify({
+                    "status": "error",
+                    "message": "Monitor password not configured. Create data/monitor_password.txt"
+                }), 500
+            
+            data = request.get_json() or {}
+            password = data.get("password", "")
+            
+            if password == MONITOR_PASSWORD:
+                token = secrets.token_urlsafe(32)
+                authorized_tokens.add(token)
+                save_authorized_tokens(authorized_tokens)
+                return jsonify({"status": "success", "token": token})
+            else:
+                return jsonify({"status": "error", "message": "Invalid password"}), 403
+        except Exception as e:
+            print(f"❌ Error in monitor login: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/get-state")
     def get_state():
@@ -396,6 +481,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.route("/api/monitor/latest-state", methods=["GET"])
+    @require_monitor_auth
     def monitor_latest_state():
         """Read-only monitoring endpoint for episode-based state monitoring.
 
@@ -469,6 +555,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": f"Monitoring error: {str(e)}"}), 500
 
     @app.route("/api/control/next-episode", methods=["POST"])
+    @require_monitor_auth
     def next_episode():
         """Trigger next episode (equivalent to 'q' keyboard input)"""
         try:
@@ -482,6 +569,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/rerecord", methods=["POST"])
+    @require_monitor_auth
     def rerecord_episode():
         """Trigger re-record episode (equivalent to 'r' keyboard input)"""
         try:
@@ -496,6 +584,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/flush-now", methods=["POST"])
+    @require_monitor_auth
     def flush_now():
         """Flush collected frames to dataset immediately (save without completing trajectory)."""
         try:
@@ -524,6 +613,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/flush-status", methods=["GET"])
+    @require_monitor_auth
     def flush_status():
         """Get status of flush operations."""
         try:
@@ -535,6 +625,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/continue", methods=["POST"])
+    @require_monitor_auth
     def continue_from_checkpoint():
         """Continue data collection from last critical state in dataset."""
         try:
@@ -547,6 +638,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/continue-enabled", methods=["GET"])
+    @require_monitor_auth
     def continue_enabled():
         """Check if continue mode is enabled in config."""
         try:
@@ -560,6 +652,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"enabled": False, "error": str(e)})
 
     @app.route("/api/control/pending-approval", methods=["GET"])
+    @require_monitor_auth
     def get_pending_approval():
         """Get the critical state awaiting approval."""
         try:
@@ -601,6 +694,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/approve-critical", methods=["POST"])
+    @require_monitor_auth
     def approve_critical():
         """Approve a pending critical state."""
         try:
@@ -628,6 +722,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/pending-pre-execution-approval", methods=["GET"])
+    @require_monitor_auth
     def get_pending_pre_execution_approval():
         """Get the action awaiting pre-execution approval"""
         try:
@@ -705,6 +800,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/approve-pre-execution", methods=["POST"])
+    @require_monitor_auth
     def approve_pre_execution():
         """Approve a pending pre-execution action"""
         try:
@@ -729,6 +825,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/reject-pre-execution", methods=["POST"])
+    @require_monitor_auth
     def reject_pre_execution():
         """Reject a pending pre-execution action (triggers resampling)"""
         try:
@@ -753,6 +850,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/reject-critical", methods=["POST"])
+    @require_monitor_auth
     def reject_critical():
         """Reject a pending critical state (triggers undo)"""
         try:
@@ -777,6 +875,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/discard-jitter-states", methods=["POST"])
+    @require_monitor_auth
     def discard_jitter_states():
         """Discard jitter states after the last approved critical state"""
         try:
@@ -800,6 +899,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/pending-undo-classification", methods=["GET"])
+    @require_monitor_auth
     def get_pending_undo_classification():
         """Get the state awaiting undo classification (new state vs old state)"""
         try:
@@ -841,6 +941,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/classify-undo-new-state", methods=["POST"])
+    @require_monitor_auth
     def classify_undo_new_state():
         """Classify post-undo arrival as a new state (requires new action submissions)"""
         try:
@@ -865,6 +966,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/classify-undo-old-state", methods=["POST"])
+    @require_monitor_auth
     def classify_undo_old_state():
         """Classify post-undo arrival as old state (resample from existing actions)"""
         try:
@@ -889,6 +991,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/stop", methods=["POST"])
+    @require_monitor_auth
     def stop_recording():
         """Trigger stop recording (equivalent to 'x' keyboard input)"""
         try:
@@ -959,6 +1062,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 return jsonify({"error": "user_email required"}), 400
             
             result = crowd_interface.state_manager.get_user_approval_count(user_email)
+            result["session_id"] = BACKEND_SESSION_ID  # Include session ID
             return jsonify(result)
         except Exception as e:
             print(f"❌ Error getting user approval count: {e}")
@@ -967,6 +1071,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/control/start-episode", methods=["POST"])
+    @require_monitor_auth
     def start_episode():
         """Skip remaining reset time and start the next episode immediately."""
         try:
@@ -979,6 +1084,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/set-critical", methods=["POST"])
+    @require_monitor_auth
     def set_last_state_critical():
         """Manually mark the last state as critical."""
         try:
@@ -990,6 +1096,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/mark-state-as-end", methods=["POST"])
+    @require_monitor_auth
     def mark_state_as_end():
         """Mark a specific critical state with 'End.' prompt, auto-filling it with current position.
 
@@ -1055,6 +1162,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/save-tutorial-state", methods=["POST"])
+    @require_monitor_auth
     def save_tutorial_state():
         """Save a critical state as a tutorial state for worker qualification testing.
         
@@ -1184,8 +1292,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
     @app.route("/api/control/fast-forward", methods=["POST"])
     def fast_forward():
-            print(f"❌ Error saving tutorial state: {e}")
-            import traceback
+        """Fast forward to skip remaining reset time."""
+        try:
+            crowd_interface.user_input_queue.put('s')
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in fast forward: {e}")
             traceback.print_exc()
             return jsonify({"status": "error", "error": str(e)}), 500
 

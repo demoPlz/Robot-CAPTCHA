@@ -3787,12 +3787,35 @@ loader.load(
       // Show counter
       counterEl.style.display = 'block';
       
+      // Load cached data from localStorage
+      const STORAGE_KEY = 'approval_count_cache';
+      let cachedData = null;
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          cachedData = JSON.parse(stored);
+          // Display cached data immediately
+          valueEl.textContent = cachedData.approved || 0;
+          const rate = Math.round((cachedData.rate || 0) * 100);
+          detailsEl.textContent = `${cachedData.approved || 0}/${cachedData.total || 0} (${rate}%)`;
+          lastApprovalCount = cachedData.approved || 0;
+        }
+      } catch (e) {
+        console.warn('Failed to load cached approval count:', e);
+      }
+      
       async function updateApprovalCount() {
         try {
           const response = await apiFetch(`/api/user/approval-count?user_email=${encodeURIComponent(window.userIdentity.email)}`);
           const data = await response.json();
           
-          if (data.approved !== undefined) {
+          if (data.approved !== undefined && data.session_id) {
+            // Check if session changed (backend restarted)
+            if (cachedData && cachedData.session_id !== data.session_id) {
+              console.log('🔄 Backend session changed, clearing old approval data');
+              lastApprovalCount = 0;
+            }
+            
             const newCount = data.approved;
             
             // Trigger shake animation if count increased
@@ -3809,9 +3832,20 @@ loader.load(
             // Update details with x/y (percentage%)
             const rate = Math.round(data.rate * 100);
             detailsEl.textContent = `${data.approved}/${data.total} (${rate}%)`;
+            
+            // Save to localStorage
+            cachedData = {
+              approved: data.approved,
+              rejected: data.rejected,
+              total: data.total,
+              rate: data.rate,
+              session_id: data.session_id
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedData));
           }
         } catch (err) {
           console.error('Failed to fetch approval count:', err);
+          // Keep showing cached data if offline
         }
       }
       
