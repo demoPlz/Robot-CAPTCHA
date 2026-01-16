@@ -2884,3 +2884,42 @@ class StateManager:
             "summary_file": str(self.async_user_logger.summary_log_path),
             "submission_log": str(self.async_user_logger.submission_log_path),
         }
+    
+    def get_user_approval_count(self, user_email: str) -> dict:
+        """Get approval count for a specific user.
+        
+        Args:
+            user_email: User email address
+            
+        Returns:
+            dict: {"approved": int, "rejected": int, "total": int, "rate": float}
+        """
+        if not user_email:
+            return {"approved": 0, "rejected": 0, "total": 0, "rate": 0.0}
+        
+        user_approved = 0
+        user_rejected = 0
+        
+        # Count all submissions across all completed states
+        with self.state_lock:
+            for ep_id in self.completed_states_buffer_by_episode:
+                for s_id in self.completed_states_buffer_by_episode[ep_id]:
+                    s_info = self.completed_states_buffer_by_episode[ep_id][s_id]
+                    exec_history = s_info.get("execution_history", [])
+                    for exec_entry in exec_history:
+                        for submitted_user in exec_entry.get("submitted_by", []):
+                            if submitted_user.get("email") == user_email:
+                                if exec_entry.get("approval") == 1:
+                                    user_approved += 1
+                                elif exec_entry.get("approval") == -1:
+                                    user_rejected += 1
+        
+        user_total = user_approved + user_rejected
+        approval_rate = user_approved / user_total if user_total > 0 else 0.0
+        
+        return {
+            "approved": user_approved,
+            "rejected": user_rejected,
+            "total": user_total,
+            "rate": approval_rate
+        }

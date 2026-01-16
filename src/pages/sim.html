@@ -1595,6 +1595,73 @@
   background: #0b0d12;
 }
 
+/* Approval Counter (lower right corner for Netlify users) */
+#approvalCounter {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  padding: 16px 24px;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  z-index: 9999;
+  display: none; /* Hidden by default, shown for Netlify users */
+  user-select: none;
+  transition: all 0.3s ease;
+}
+
+#approvalCounter.shake {
+  animation: counterShake 0.6s cubic-bezier(.36,.07,.19,.97) both;
+}
+
+@keyframes counterShake {
+  0%, 100% { transform: translateX(0) scale(1); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-8px) scale(1.05); }
+  20%, 40%, 60%, 80% { transform: translateX(8px) scale(1.05); }
+}
+
+#approvalCounter .counter-icon {
+  font-size: 28px;
+  margin-bottom: 4px;
+  display: inline-block;
+  animation: counterPulse 2s ease-in-out infinite;
+}
+
+@keyframes counterPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+#approvalCounter .counter-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.9;
+  margin-bottom: 2px;
+}
+
+#approvalCounter .counter-value {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+#approvalCounter .counter-details {
+  font-size: 11px;
+  margin-top: 6px;
+  opacity: 0.85;
+  font-weight: 500;
+}
+
+#approvalCounter:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5), 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
 
 </style>
 
@@ -1619,6 +1686,15 @@
   <div id="page-wrapper">
     <div id="viewport"></div>
   </div>
+  
+  <!-- Approval Counter for Netlify users -->
+  <div id="approvalCounter">
+    <div class="counter-icon">✨</div>
+    <div class="counter-label">Approvals</div>
+    <div class="counter-value">0</div>
+    <div class="counter-details">0% approval rate</div>
+  </div>
+  
 <script type="module">
 
 // === High-quality recording profile ==========================================
@@ -3701,6 +3777,51 @@ loader.load(
     // Check if user is from Netlify (crowdsourcing) or localhost (expert)
     window.isFromNetlify = location.hostname !== 'localhost' && location.hostname !== '127.0.0.1';
     console.log(`[MODE] User is from: ${window.isFromNetlify ? 'Netlify (crowdsourcing)' : 'localhost (expert)'}`);
+
+    // Initialize approval counter for Netlify users
+    if (window.isFromNetlify && window.userIdentity?.email) {
+      const counterEl = document.getElementById('approvalCounter');
+      const valueEl = counterEl.querySelector('.counter-value');
+      const detailsEl = counterEl.querySelector('.counter-details');
+      let lastApprovalCount = 0;
+      
+      // Show counter
+      counterEl.style.display = 'block';
+      
+      async function updateApprovalCount() {
+        try {
+          const response = await apiFetch(`/api/user/approval-count?user_email=${encodeURIComponent(window.userIdentity.email)}`);
+          const data = await response.json();
+          
+          if (data.approved !== undefined) {
+            const newCount = data.approved;
+            
+            // Trigger shake animation if count increased
+            if (newCount > lastApprovalCount) {
+              counterEl.classList.remove('shake');
+              void counterEl.offsetWidth; // Force reflow
+              counterEl.classList.add('shake');
+              setTimeout(() => counterEl.classList.remove('shake'), 600);
+            }
+            
+            lastApprovalCount = newCount;
+            valueEl.textContent = newCount;
+            
+            // Update details
+            const rate = Math.round(data.rate * 100);
+            detailsEl.textContent = `${rate}% approval rate (${data.total} total)`;
+          }
+        } catch (err) {
+          console.error('Failed to fetch approval count:', err);
+        }
+      }
+      
+      // Initial fetch
+      updateApprovalCount();
+      
+      // Poll every 5 seconds
+      setInterval(updateApprovalCount, 5000);
+    }
 
     // Create a wrapper group to position the robot
     const robotGroup = new THREE.Group();

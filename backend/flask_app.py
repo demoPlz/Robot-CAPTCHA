@@ -945,6 +945,22 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             import traceback
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/user/approval-count", methods=["GET"])
+    def get_user_approval_count():
+        """Get approval count for current user (for Netlify users)."""
+        try:
+            user_email = request.args.get("user_email")
+            if not user_email:
+                return jsonify({"error": "user_email required"}), 400
+            
+            result = crowd_interface.state_manager.get_user_approval_count(user_email)
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error getting user approval count: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/api/control/start-episode", methods=["POST"])
     def start_episode():
