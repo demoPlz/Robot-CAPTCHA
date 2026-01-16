@@ -1298,8 +1298,17 @@ class StateManager:
                     "previous_critical_obs_path": previous_critical_obs_path,
                 }
 
-    def approve_critical_state(self, episode_id: int, state_id: int) -> bool:
-        """Approve a pending critical state (post-execution approval)."""
+    def approve_critical_state(self, episode_id: int, state_id: int, skip_pose_estimation: bool = False) -> bool:
+        """Approve a pending critical state (post-execution approval).
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID  
+            skip_pose_estimation: If True, reuse object poses from last critical state instead of running pose estimation
+            
+        Returns:
+            bool: True if approval was successful
+        """
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
@@ -1317,6 +1326,27 @@ class StateManager:
                     if state_id in self.pending_states_by_episode[episode_id]:
                         state_info = self.pending_states_by_episode[episode_id][state_id]
                         state_info["approval_status"] = "approved"
+                        
+                        # Handle pose estimation skip
+                        if skip_pose_estimation:
+                            # Find last critical state and copy its object poses
+                            ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
+                            critical_states = [sid for sid, sinfo in ep_completed.items() if sinfo.get("critical", False)]
+                            
+                            if critical_states:
+                                critical_states.sort()
+                                last_critical_state_id = critical_states[-1]
+                                last_critical_info = ep_completed[last_critical_state_id]
+                                
+                                # Copy object poses from last critical state
+                                if "object_poses" in last_critical_info:
+                                    state_info["object_poses"] = last_critical_info["object_poses"].copy()
+                                    state_info["skip_pose_estimation"] = True
+                                    print(f"✅ Reusing object poses from state {last_critical_state_id} (skipped pose estimation)")
+                                else:
+                                    print(f"⚠️  Last critical state {last_critical_state_id} has no object_poses - will run pose estimation")
+                            else:
+                                print(f"⚠️  No previous critical state found - will run pose estimation")
                         
                 # Also mark the executed action as post-execution approved in completed states
                 ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})

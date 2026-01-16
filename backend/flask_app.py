@@ -607,11 +607,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             data = request.json
             episode_id = data.get("episode_id")
             state_id = data.get("state_id")
+            skip_pose_estimation = data.get("skip_pose_estimation", False)
 
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
 
-            success = crowd_interface.state_manager.approve_critical_state(episode_id, state_id)
+            success = crowd_interface.state_manager.approve_critical_state(
+                episode_id, state_id, skip_pose_estimation=skip_pose_estimation
+            )
 
             if not success:
                 return jsonify({"status": "error", "message": "No matching pending approval"}), 400
