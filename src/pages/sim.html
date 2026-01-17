@@ -2515,13 +2515,12 @@ const CanvasRecording = (() => {
       const v = cell.view;
       if (!v || !v.container) continue;
 
-      // Gripper HUD (status pill + toggle) - skip if disabled or on Netlify
+      // Gripper HUD (status pill + toggle) - skip if disabled
       // Use window scope to access variables defined later in the page
-      const isNetlify = window.isNetlifyEnvironment || false;
       const taskCompleted = (typeof window.taskCompletedSelected !== 'undefined') ? window.taskCompletedSelected : false;
       const atDefaults = (typeof window.slidersAtDefault === 'function') ? window.slidersAtDefault() : true;
       const gripDisabled = taskCompleted || !atDefaults;
-      if (v.hudGrip && !gripDisabled && !isNetlify) drawGripHUD(ctx, v, cell.x, cell.y);
+      if (v.hudGrip && !gripDisabled) drawGripHUD(ctx, v, cell.x, cell.y);
 
       // Reset icon (24x24 viewBox)
       if (v.hudResetEl) drawIconButton(ctx, v, v.hudResetEl, cell.x, cell.y, RESET_SVG_PATH, 24);
@@ -3712,7 +3711,7 @@ loader.load(
     }
 
     console.log('Using API Base URL:', API_BASE_URL);
-    console.log('Environment: ', isNetlifyEnvironment ? 'Netlify (gripper UI hidden)' : 'Localhost (gripper UI visible)');
+    console.log('Environment: ', isNetlifyEnvironment ? 'Netlify' : 'Localhost');
 
     // ====== User Identity Prompt ======
     // Check if user identity is already stored

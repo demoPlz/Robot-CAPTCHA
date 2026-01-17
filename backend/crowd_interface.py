@@ -444,6 +444,17 @@ class CrowdInterface:
 
         # --- Attach example video URL (direct file URL; byte-range capable) ---
         if self.video_manager.show_demo_videos:
+            # Detect if request is from Netlify or localhost
+            from flask import request
+            origin = request.headers.get('Origin', '')
+            referer = request.headers.get('Referer', '')
+            
+            # Check if request comes from Netlify frontend
+            is_netlify_origin = (
+                'robot-captcha.netlify.app' in origin or
+                'robot-captcha.netlify.app' in referer
+            )
+            
             # Prefer a VLM-selected clip if available and present
             video_id = state.get("video_prompt")
             chosen_url = None
@@ -452,22 +463,23 @@ class CrowdInterface:
                 if p:
                     # Serve from static demos directory for fast loading
                     video_filename = Path(p).name
-                    # If frontend_url is configured, serve uncompressed videos from Netlify
-                    if self.frontend_url:
+                    # If from Netlify, use Netlify CDN (same origin, no CORS)
+                    # If from localhost, use backend tunnel with high quality videos
+                    if is_netlify_origin and self.frontend_url:
                         chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
                     else:
-                        # Fallback to compressed videos through backend tunnel
-                        chosen_url = f"/demos/{video_filename}"
+                        # Serve high quality through backend tunnel (works for localhost and other origins)
+                        chosen_url = f"/demos_hq/{video_filename}"
 
             # Fallback: latest available .webm
             if not chosen_url:
                 lp, lid = self.video_manager.find_latest_show_video()
                 if lp and lid:
                     video_filename = Path(lp).name
-                    if self.frontend_url:
+                    if is_netlify_origin and self.frontend_url:
                         chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
                     else:
-                        chosen_url = f"/demos/{video_filename}"
+                        chosen_url = f"/demos_hq/{video_filename}"
 
             if chosen_url:
                 out["example_video_url"] = chosen_url
