@@ -56,7 +56,7 @@ class CrowdInterfaceConfig:
         # ========== UI Prompting ==========
         self.use_manual_prompt: bool = True  # Manual text/video prompt selection per state (require monitor.html approval before serving)
         self.show_demo_videos: bool = True  # Display reference videos to users
-        self.frontend_url: str | None = "https://robot-captcha.netlify.app"  # URL where frontend is hosted (e.g., Netlify). If set, demo videos will be served from {frontend_url}/demos_hq/ instead of through backend tunnel
+        self.frontend_url: str | None = None  # Set to None to serve videos through backend (no CORS issues on localhost)
 
         # ========== Tutorial State Capture ==========
         self.enable_tutorial_state_capture: bool = False  # Show UI to save states for tutorial HITs

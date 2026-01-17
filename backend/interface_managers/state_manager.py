@@ -996,7 +996,14 @@ class StateManager:
 
                 # In async mode: only move to completed when FULLY labeled (not just admin responses)
                 # Check if this is truly complete or just admin-complete
-                fully_complete = state_info["responses_received"] >= self.required_responses_per_critical_state
+                if self.asynchronous_mode and state_info.get("critical"):
+                    # Async critical state: complete when we have enough APPROVED actions
+                    num_approved = sum(1 for entry in state_info.get("execution_history", []) 
+                                      if entry.get("approval") == 1)
+                    fully_complete = num_approved >= self.required_responses_per_critical_state
+                else:
+                    # Sync mode or non-critical: complete when we have enough total responses
+                    fully_complete = state_info["responses_received"] >= self.required_responses_per_critical_state
                 
                 if fully_complete:
                     # Fully labeled - save to completed states buffer
