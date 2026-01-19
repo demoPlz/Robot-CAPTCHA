@@ -97,6 +97,9 @@ class CrowdInterface:
         # --- objects ---
         objects: dict[str, str] | None = None,
         object_mesh_paths: dict[str, str] | None = None,
+        # --- pose estimation mode ---
+        use_random_poses: bool = False,
+        random_pose_bounds: dict | None = None,
         # --- action selection ---
         action_selector_mode: str = "random",
         action_selector_epsilon: float = 0.1,
@@ -144,6 +147,14 @@ class CrowdInterface:
         # --- Objects ---
         self.objects = objects
         self.object_mesh_paths = object_mesh_paths
+        
+        # --- Pose estimation mode ---
+        self.use_random_poses = use_random_poses
+        self.random_pose_bounds = random_pose_bounds if random_pose_bounds is not None else {
+            "x_min": -0.3, "x_max": 0.3,
+            "y_min": -0.3, "y_max": 0.3,
+            "z_min": 0.0, "z_max": 0.3
+        }
 
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
@@ -268,6 +279,8 @@ class CrowdInterface:
             calibration_manager=self.calibration,
             state_lock=self.state_lock,
             pending_states_by_episode=self.pending_states_by_episode,
+            use_random_poses=use_random_poses,
+            random_pose_bounds=self.random_pose_bounds,
         )
 
         # Drawer position manager

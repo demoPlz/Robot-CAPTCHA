@@ -44,6 +44,8 @@ class PoseEstimationManager:
         state_lock: Lock,
         pending_states_by_episode: dict,
         pose_camera_name: str = "realsense",  # RealSense D455 is used for pose estimation
+        use_random_poses: bool = False,
+        random_pose_bounds: dict | None = None,
     ):
         """Initialize pose estimation manager.
 
@@ -57,6 +59,8 @@ class PoseEstimationManager:
             pose_camera_name: Name of camera used for pose estimation (default: "realsense" for D455)
                              Used for transforming poses from camera frame to world frame.
                              Requires extrinsics calibration file: data/calib/extrinsics_realsense_d455.npz
+            use_random_poses: If True, skip real pose estimation and use random fixed poses
+            random_pose_bounds: Dict with x_min, x_max, y_min, y_max, z_min, z_max for random pose bounds
 
         """
         self.object_mesh_paths = object_mesh_paths
@@ -65,6 +69,12 @@ class PoseEstimationManager:
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
         self.pose_camera_name = pose_camera_name  # Store camera name for coordinate transformation
+        self.use_random_poses = use_random_poses
+        self.random_pose_bounds = random_pose_bounds if random_pose_bounds is not None else {
+            "x_min": -0.3, "x_max": 0.3,
+            "y_min": -0.3, "y_max": 0.3,
+            "z_min": 0.0, "z_max": 0.3
+        }
 
         # Disk-backed job queue shared with any6d env workers
         self.pose_jobs_root = (obs_cache_root / "pose_jobs").resolve()
@@ -89,10 +99,85 @@ class PoseEstimationManager:
         # === Last known good poses for fallback on estimation failure ===
         # Maps object_name -> {"pos": [x,y,z], "rot": [x,y,z,w]} or None
         self.last_known_poses: dict[str, dict | None] = {}
+        
+        # === Random pose generation for each object (when use_random_poses=True) ===
+        # Store one random pose per object that will be reused for all states
+        self._random_fixed_poses: dict[str, dict] = {}
 
-        # Start workers and results watcher
-        self._start_pose_workers()
-        self._start_pose_results_watcher()
+        # Skip worker initialization if using random poses
+        if self.use_random_poses:
+            print("🎲 Random pose mode enabled - skipping pose estimation workers")
+            self._generate_random_fixed_poses()
+        else:
+            # Start workers and results watcher
+            self._start_pose_workers()
+            self._start_pose_results_watcher()
+
+    # =========================
+    # Random Pose Generation
+    # =========================
+    
+    def _generate_random_fixed_poses(self):
+        """Generate one random pose per object that will be reused for all states.
+        
+        Poses are generated within the bounds specified in random_pose_bounds.
+        """
+        if not self.object_mesh_paths:
+            return
+        
+        # Only generate poses for objects that are tracked
+        objects_to_track = [obj for obj in self.object_mesh_paths.keys() 
+                           if not self.objects or obj in self.objects]
+        
+        print(f"🎲 Generating random fixed poses for {len(objects_to_track)} objects...")
+        
+        for obj in objects_to_track:
+            # Generate random position within bounds
+            x = np.random.uniform(self.random_pose_bounds["x_min"], 
+                                 self.random_pose_bounds["x_max"])
+            y = np.random.uniform(self.random_pose_bounds["y_min"], 
+                                 self.random_pose_bounds["y_max"])
+            z = np.random.uniform(self.random_pose_bounds["z_min"], 
+                                 self.random_pose_bounds["z_max"])
+            
+            # Generate random orientation as quaternion
+            # Use uniform sampling on unit sphere for rotation
+            quat = R.random().as_quat()  # Returns [x, y, z, w]
+            
+            self._random_fixed_poses[obj] = {
+                "pos": [float(x), float(y), float(z)],
+                "rot": quat.tolist()
+            }
+            
+            print(f"   {obj}: pos=[{x:.3f}, {y:.3f}, {z:.3f}], "
+                  f"rot=[{quat[0]:.3f}, {quat[1]:.3f}, {quat[2]:.3f}, {quat[3]:.3f}]")
+        
+        print("✅ Random fixed poses generated")
+    
+    def _apply_random_poses_to_state(self, episode_id: int, state_id: int):
+        """Apply the pre-generated random poses to a state.
+        
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+        """
+        with self.state_lock:
+            ep = self.pending_states_by_episode.get(episode_id)
+            if not ep or state_id not in ep:
+                print(f"⚠️  State disappeared (ep={episode_id}, state={state_id})")
+                return
+            
+            state_info = ep[state_id]
+            
+            # Initialize object_poses dict if not present
+            if "object_poses" not in state_info:
+                state_info["object_poses"] = {}
+            
+            # Copy the random poses to this state
+            for obj, pose in self._random_fixed_poses.items():
+                state_info["object_poses"][obj] = pose.copy()
+            
+            print(f"🎲 Applied random fixed poses to state (ep={episode_id}, state={state_id})")
 
     # =========================
     # Pose Transformation Utilities
@@ -479,6 +564,11 @@ class PoseEstimationManager:
             False -> state disappeared or timed out before all objects reported
 
         """
+        # If using random poses, apply them immediately and return
+        if self.use_random_poses:
+            self._apply_random_poses_to_state(episode_id, state_id)
+            return True
+        
         if not self.object_mesh_paths:
             # Nothing to do; treat as ready.
             return True

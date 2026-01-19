@@ -81,6 +81,16 @@ class CrowdInterfaceConfig:
         # self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
 
         self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
+        
+        # ========== Pose Estimation Mode ==========
+        # When True, skip real pose estimation and use random fixed poses
+        self.use_random_poses: bool = True
+        # Random pose bounds (x, y, z in meters, rotation will be random quaternion)
+        self.random_pose_bounds: dict = {
+            "x_min": -0.3, "x_max": 0.3,
+            "y_min": -0.3, "y_max": 0.3,
+            "z_min": 0.0, "z_max": 0.3
+        }
 
         # Resolve mesh paths for pose estimation (relative to repo root)
         repo_root = Path(__file__).resolve().parent.parent
@@ -213,6 +223,13 @@ class CrowdInterfaceConfig:
             help="Path to USD file for Isaac Sim (relative to repo root)",
         )
 
+        # Pose estimation
+        parser.add_argument(
+            "--use-random-poses",
+            action="store_true",
+            help="Skip real pose estimation and use random fixed poses instead"
+        )
+        
         # Action selection
         parser.add_argument(
             "--action-selector-mode",
@@ -365,6 +382,8 @@ class CrowdInterfaceConfig:
             config.max_animation_users = args.max_animation_users
         if args.usd_path is not None:
             config.usd_path = args.usd_path
+        if args.use_random_poses:
+            config.use_random_poses = True
         if args.action_selector_mode is not None:
             config.action_selector_mode = args.action_selector_mode
         if args.action_selector_epsilon is not None:
@@ -444,6 +463,9 @@ class CrowdInterfaceConfig:
             # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths,
+            # Pose estimation mode
+            "use_random_poses": self.use_random_poses,
+            "random_pose_bounds": self.random_pose_bounds,
             # Action selection
             "action_selector_mode": self.action_selector_mode,
             "action_selector_epsilon": self.action_selector_epsilon,
