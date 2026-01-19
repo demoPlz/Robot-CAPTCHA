@@ -141,6 +141,7 @@ class StateManager:
         self.async_state_pool = {}  # (episode_id, state_id) -> state_info
         self.async_user_assignments = {}  # user_email -> list of (episode_id, state_id) in fixed random order
         self.async_user_submissions = {}  # user_email -> set of (episode_id, state_id) tuples already submitted
+        self.async_user_queue_positions = {}  # user_email -> current index in their assignment queue
         self.async_pool_finalized = False  # True when admin phase complete and pool is ready
         
         # Warning suppression
@@ -2271,6 +2272,44 @@ class StateManager:
                 print(f"✅ Action {num_reviewed + 1} approved ({num_approved} total approved)")
             else:
                 print(f"❌ Action {num_reviewed + 1} rejected")
+                
+                # Handle rejection: give users another chance by re-inserting state in their queue
+                state_key = (episode_id, state_id)
+                for user in action_users:
+                    user_email = user.get("email")
+                    if not user_email:
+                        continue
+                    
+                    # Skip localhost/expert users
+                    if "127.0.0.1" in user_email or "localhost" in user_email.lower():
+                        continue
+                    
+                    # Re-queue this state for the user
+                    with self.state_lock:
+                        if user_email in self.async_user_submissions:
+                            # Remove from submitted set so they can try again
+                            self.async_user_submissions[user_email].discard(state_key)
+                            print(f"♻️  Removed state {state_key} from {user_email}'s submitted set")
+                        
+                        if user_email in self.async_user_assignments and user_email in self.async_user_queue_positions:
+                            user_queue = self.async_user_assignments[user_email]
+                            current_pos = self.async_user_queue_positions[user_email]
+                            
+                            # Calculate how many states are left after current position
+                            remaining_states = len(user_queue) - current_pos - 1
+                            max_offset = min(10, remaining_states)
+                            
+                            if max_offset > 0:
+                                import random
+                                # Insert randomly in next 1 to max_offset positions
+                                insert_offset = random.randint(1, max_offset)
+                                insert_pos = current_pos + insert_offset
+                                user_queue.insert(insert_pos, state_key)
+                                print(f"♻️  Re-queued state {state_key} for {user_email} at position {insert_pos} (offset +{insert_offset}, max was {max_offset})")
+                            else:
+                                # No room to insert ahead, append to end
+                                user_queue.append(state_key)
+                                print(f"♻️  Re-queued state {state_key} for {user_email} at end of queue")
             
             # Log async user submissions (only for user submissions, not admin/autofill)
             async_logger_active = self.async_user_logger is not None
@@ -2850,18 +2889,30 @@ class StateManager:
                 random.shuffle(shuffled_keys)
                 self.async_user_assignments[user_email] = shuffled_keys
                 self.async_user_submissions[user_email] = set()
+                self.async_user_queue_positions[user_email] = 0
                 print(f"🎲 New user {user_email}: Generated fixed random order of {len(shuffled_keys)} states")
             
-            # Get user's fixed order and submitted states
+            # Get user's fixed order, submitted states, and current position
             user_order = self.async_user_assignments[user_email]
             user_submitted = self.async_user_submissions[user_email]
             
-            # Find next unsubmitted state in user's order
-            for state_key in user_order:
+            # Initialize position if not set (for existing users before this update)
+            if user_email not in self.async_user_queue_positions:
+                # Find where they are based on what they've submitted
+                self.async_user_queue_positions[user_email] = len(user_submitted)
+            
+            current_pos = self.async_user_queue_positions[user_email]
+            
+            # Find next unsubmitted state starting from current position
+            for idx in range(current_pos, len(user_order)):
+                state_key = user_order[idx]
+                
                 if state_key not in user_submitted:
                     # Check if state still exists in pool
                     if state_key not in self.async_state_pool:
                         print(f"⚠️  State {state_key} not in pool, skipping")
+                        # Update position and continue
+                        self.async_user_queue_positions[user_email] = idx + 1
                         continue
                     
                     episode_id, state_id = state_key
@@ -2872,11 +2923,15 @@ class StateManager:
                                       if entry.get("approval") == 1)
                     if num_approved >= self.required_responses_per_critical_state:
                         print(f"⏭️  State ({episode_id}, {state_id}) already full ({num_approved}/{self.required_responses_per_critical_state} approved), skipping for {user_email}")
+                        # Update position and continue
+                        self.async_user_queue_positions[user_email] = idx + 1
                         continue
                     
+                    # Found a valid state - update position for next time
+                    self.async_user_queue_positions[user_email] = idx
                     return state_info
             
-            # User has submitted to all states in their order
+            # User has reached the end of their queue
             return None
     
     def get_async_pool_status(self) -> dict:
@@ -2930,6 +2985,8 @@ class StateManager:
         with self.state_lock:
             self.async_state_pool.clear()
             self.async_user_assignments.clear()
+            self.async_user_submissions.clear()
+            self.async_user_queue_positions.clear()
             self.async_pool_finalized = False
             print("🔄 Async pool reset")
     
