@@ -1660,10 +1660,7 @@
 }
 
 #approvalCounter .counter-details {
-  font-size: 11px;
-  margin-top: 6px;
-  opacity: 0.85;
-  font-weight: 500;
+  display: none;
 }
 
 #approvalCounter:hover {
@@ -3807,8 +3804,7 @@ loader.load(
           cachedData = JSON.parse(stored);
           // Display cached data immediately
           valueEl.textContent = cachedData.approved || 0;
-          const rate = Math.round((cachedData.rate || 0) * 100);
-          detailsEl.textContent = `${cachedData.approved || 0}/${cachedData.total || 0} (${rate}%)`;
+          detailsEl.textContent = `${cachedData.approved || 0} approvals`;
           lastApprovalCount = cachedData.approved || 0;
         }
       } catch (e) {
@@ -3834,9 +3830,8 @@ loader.load(
             lastApprovalCount = newCount;
             valueEl.textContent = newCount;
             
-            // Update details with x/y (percentage%)
-            const rate = Math.round(data.rate * 100);
-            detailsEl.textContent = `${data.approved}/${data.total} (${rate}%)`;
+            // Update details with approval count only
+            detailsEl.textContent = `${data.approved} approvals`;
             
             // Save to localStorage (persist forever)
             cachedData = {
