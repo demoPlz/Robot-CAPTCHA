@@ -2867,10 +2867,11 @@ class StateManager:
                     episode_id, state_id = state_key
                     state_info = self.async_state_pool[state_key]
                     
-                    # Skip if state is already full
-                    responses_received = state_info.get("responses_received", 0)
-                    if responses_received >= self.required_responses_per_critical_state:
-                        print(f"⏭️  State ({episode_id}, {state_id}) already full ({responses_received}/{self.required_responses_per_critical_state}), skipping for {user_email}")
+                    # Skip if state is already full - count APPROVED submissions for critical states
+                    num_approved = sum(1 for entry in state_info.get("execution_history", []) 
+                                      if entry.get("approval") == 1)
+                    if num_approved >= self.required_responses_per_critical_state:
+                        print(f"⏭️  State ({episode_id}, {state_id}) already full ({num_approved}/{self.required_responses_per_critical_state} approved), skipping for {user_email}")
                         continue
                     
                     return state_info
@@ -2888,8 +2889,10 @@ class StateManager:
             states_completed = 0
             
             for pool_key, state_info in self.async_state_pool.items():
-                responses_received = state_info.get("responses_received", 0)
-                if responses_received < self.required_responses_per_critical_state:
+                # Count APPROVED submissions for critical states
+                num_approved = sum(1 for entry in state_info.get("execution_history", []) 
+                                  if entry.get("approval") == 1)
+                if num_approved < self.required_responses_per_critical_state:
                     states_needing_labels += 1
                 else:
                     states_completed += 1

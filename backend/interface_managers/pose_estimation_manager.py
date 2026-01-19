@@ -76,22 +76,6 @@ class PoseEstimationManager:
             "z_min": 0.0, "z_max": 0.3
         }
 
-        # Disk-backed job queue shared with any6d env workers
-        self.pose_jobs_root = (obs_cache_root / "pose_jobs").resolve()
-        self.pose_inbox = self.pose_jobs_root / "inbox"
-        self.pose_outbox = self.pose_jobs_root / "outbox"
-        self.pose_tmp = self.pose_jobs_root / "tmp"
-
-        # Create directories
-        for d in (self.pose_inbox, self.pose_outbox, self.pose_tmp):
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-
-        # Clean up stale jobs from previous runs
-        self._cleanup_job_queues()
-
         # Worker process management
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
         self._pose_results_thread: Thread | None = None
@@ -109,6 +93,22 @@ class PoseEstimationManager:
             print("🎲 Random pose mode enabled - skipping pose estimation workers")
             self._generate_random_fixed_poses()
         else:
+            # Disk-backed job queue shared with any6d env workers
+            self.pose_jobs_root = (obs_cache_root / "pose_jobs").resolve()
+            self.pose_inbox = self.pose_jobs_root / "inbox"
+            self.pose_outbox = self.pose_jobs_root / "outbox"
+            self.pose_tmp = self.pose_jobs_root / "tmp"
+
+            # Create directories
+            for d in (self.pose_inbox, self.pose_outbox, self.pose_tmp):
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+
+            # Clean up stale jobs from previous runs
+            self._cleanup_job_queues()
+
             # Start workers and results watcher
             self._start_pose_workers()
             self._start_pose_results_watcher()
