@@ -524,13 +524,23 @@ class StateManager:
                             print(f"✅ Marked action as executed in previous state {prev_critical_state_id}'s execution_history")
                             break
                     
-                    # Find the executed action that was approved post-execution for final_executed_action
-                    for entry in exec_history:
-                        if entry.get("executed", False) and entry.get("post_execution_approved", False):
-                            executed_action = entry["action"]
+                    # Find the executed action for final_executed_action
+                    # In async mode: first entry (admin's action) is the one executed
+                    # In sync mode: look for post_execution_approved flag
+                    if self.asynchronous_mode:
+                        # Async mode: admin's action (first entry) was executed
+                        if exec_history and len(exec_history) > 0:
+                            executed_action = exec_history[0]["action"]
                             prev_state_info["final_executed_action"] = executed_action.tolist() if hasattr(executed_action, "tolist") else list(executed_action)
-                            print(f"✅ Recorded final_executed_action for PREVIOUS state {prev_critical_state_id}")
-                            break
+                            print(f"✅ Recorded final_executed_action for PREVIOUS state {prev_critical_state_id} (admin action)")
+                    else:
+                        # Sync mode: find post-execution approved action
+                        for entry in exec_history:
+                            if entry.get("executed", False) and entry.get("post_execution_approved", False):
+                                executed_action = entry["action"]
+                                prev_state_info["final_executed_action"] = executed_action.tolist() if hasattr(executed_action, "tolist") else list(executed_action)
+                                print(f"✅ Recorded final_executed_action for PREVIOUS state {prev_critical_state_id}")
+                                break
             
             # Also mark in completed_states_by_episode (same state object reference, but just to be safe)
             ep2 = self.completed_states_by_episode.get(latest_episode_id, {})
@@ -905,20 +915,17 @@ class StateManager:
                 state_info["actual_num_submissions"] = 0
             state_info["actual_num_submissions"] += 1
             
-            # In async mode with user submissions, trigger pre-approval immediately for THIS action
-            # Don't wait for all responses - review each action as it comes in
+            # In async mode: trigger immediate pre-approval for each user submission
             should_run_pre_approval_now = False
+            single_action_state_copy = None
             if state_info.get("critical") and self.asynchronous_mode and self.async_pool_finalized and not is_admin_submission:
-                # Async user submission: trigger pre-approval for this single action immediately
                 print(f"📋 Triggering immediate pre-approval for async user submission on state {state_id}")
                 should_run_pre_approval_now = True
-                # Create a snapshot with just this action for pre-approval
+                # Create a copy with only the last action for immediate review
                 single_action_state_copy = state_info.copy()
-                # Only include the most recent action (the one just submitted)
-                single_action_state_copy["actions"] = [state_info["actions"][-1]]
-                # Fix user_submissions to have correct action_index for the snapshot (always 0 since we only have 1 action)
+                single_action_state_copy["actions"] = [state_info["actions"][-1].clone()]  # Deep copy the tensor
                 last_submission = state_info["user_submissions"][-1].copy()
-                last_submission["action_index"] = 0  # In the snapshot, the action is at index 0
+                last_submission["action_index"] = 0
                 single_action_state_copy["user_submissions"] = [last_submission]
 
             # Autofill
@@ -986,19 +993,17 @@ class StateManager:
                         }]
                         state_info["pre_approval_loop_complete"] = True
                     elif self.asynchronous_mode and self.async_pool_finalized and not is_admin_submission:
-                        # Async user submission: already handled by immediate per-action pre-approval
-                        # Don't start another thread here - individual submissions already queued
-                        print(f"ℹ️  Async user submissions for state {state_id} handled by immediate pre-approval")
+                        # Handled by immediate per-action pre-approval above
                         should_run_pre_approval = False
                     else:
                         # Sync mode or async admin phase: normal pre-approval
                         should_run_pre_approval = True
                         state_info_copy = state_info.copy()
 
-                # In async mode: only move to completed when FULLY labeled (not just admin responses)
-                # Check if this is truly complete or just admin-complete
+                # In async mode: check if we have enough APPROVED actions
                 if self.asynchronous_mode and state_info.get("critical"):
-                    # Async critical state: complete when we have enough APPROVED actions
+                    # Immediate per-action review handles approval
+                    # Check if enough APPROVED after each review completes
                     num_approved = sum(1 for entry in state_info.get("execution_history", []) 
                                       if entry.get("approval") == 1)
                     fully_complete = num_approved >= self.required_responses_per_critical_state
@@ -1040,10 +1045,15 @@ class StateManager:
                     state_info["awaiting_user_labels"] = True
                     print(f"   State {state_id} admin-complete, awaiting {self.required_responses_per_critical_state - state_info['responses_received']} more user labels")
                     
-                    # Add to completed states (for execution approval) but ALSO keep in pending (for user labels)
+                    # Add to BOTH completed_states and completed_states_buffer
                     if episode_id not in self.completed_states_by_episode:
                         self.completed_states_by_episode[episode_id] = {}
                     self.completed_states_by_episode[episode_id][state_id] = state_info
+                    
+                    if episode_id not in self.completed_states_buffer_by_episode:
+                        self.completed_states_buffer_by_episode[episode_id] = {}
+                    self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+                    
                     # DON'T delete from pending - keep it there for user labeling
                     
                     # Set latest_goal NOW for immediate execution
@@ -1051,25 +1061,26 @@ class StateManager:
                         self.latest_goal = state_info["execution_history"][0]["action"]
                         print(f"🤖 Set latest_goal for immediate execution with admin action")
 
-        # Trigger immediate pre-approval for async user submissions (single action review)
+        # Check finalization
+        if should_check_finalization:
+            with self.state_lock:
+                remaining_pending = len(self.pending_states_by_episode.get(episode_id, {}))
+        
+        # Trigger immediate pre-approval for async user submissions
         if should_run_pre_approval_now and single_action_state_copy:
             thread = Thread(
                 target=self._run_pre_approval_loop_wrapper,
                 args=(single_action_state_copy, episode_id, state_id),
                 daemon=True,
             )
-            # Use unique key to avoid collision with state-level pre-approval
-            thread_key = (episode_id, state_id, single_action_state_copy["responses_received"])
+            thread_key = (episode_id, state_id, len(state_info.get("execution_history", [])))
             self._pre_approval_threads[thread_key] = thread
             thread.start()
-            print(f"🔄 Started pre-approval thread for async action on state {state_id}")
+            print(f"🔄 Started immediate pre-approval thread for state {state_id}")
         
-        # Now check finalization AFTER immediate pre-approval threads are started
+        # Check if episode is now empty and handle finalization
         if should_check_finalization:
             with self.state_lock:
-                remaining_pending = len(self.pending_states_by_episode.get(episode_id, {}))
-                print(f"📊 Episode {episode_id} now has {remaining_pending} pending states after removing state {state_id}")
-                
                 if episode_id in self.pending_states_by_episode and not self.pending_states_by_episode[episode_id]:
                     # Check if there are any pre-approval threads running for this episode
                     running_threads = [
@@ -2132,29 +2143,46 @@ class StateManager:
         Stopping condition: (num_pre_approvals_completed >= required_approvals_per_critical_state) AND (at least 1 approved)
         
         Args:
-            state_info: State dict with actions list
+            state_info: State dict with actions list (may be single_action_state_copy with only 1 action for immediate mode)
             episode_id: Episode ID
             state_id: State ID
         """
         required_responses = self.required_responses_per_critical_state
-        available_actions = state_info.get("actions", [])[:required_responses]
+        # Use actions directly from passed state_info (may be filtered to single action in immediate mode)
+        available_actions = state_info.get("actions", [])
         
         if not available_actions:
             print(f"⚠️  No actions available for pre-approval loop (state {state_id})")
             return
+        
+        # Check existing execution_history (e.g., admin auto-approved actions)
+        with self.state_lock:
+            existing_history = []
+            for ep_dict in [self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
+                if episode_id in ep_dict and state_id in ep_dict[episode_id]:
+                    existing_history = ep_dict[episode_id][state_id].get("execution_history", [])
+                    break
+        
+        num_existing_approved = sum(1 for e in existing_history if e.get("approval") == 1)
             
         reviewed_actions = []
         num_approved = 0
         
         while True:
-            # Check stopping condition
+            total_approved = num_existing_approved + num_approved
             num_reviewed = len(reviewed_actions)
-            if num_reviewed >= self.required_approvals_per_critical_state and num_approved >= 1:
-                print(f"✅ Pre-approval loop complete: {num_reviewed} reviewed, {num_approved} approved")
+            
+            if total_approved >= self.required_responses_per_critical_state:
+                print(f"✅ Pre-approval loop complete: {num_reviewed} new reviewed, {num_approved} new approved, {total_approved} total approved")
                 break
                 
             # Check if we have more actions to sample
-            remaining_actions_with_dupes = [a for a in available_actions if not any(torch.equal(a, r["action"]) for r in reviewed_actions)]
+            # Filter out: 1) actions reviewed in this loop, 2) actions already in execution_history
+            remaining_actions_with_dupes = [
+                a for a in available_actions 
+                if not any(torch.equal(a, r["action"]) for r in reviewed_actions)
+                and not any(torch.equal(a, e["action"]) for e in existing_history)
+            ]
             if not remaining_actions_with_dupes:
                 print(f"⚠️  No more actions to review (reviewed {num_reviewed}, approved {num_approved})")
                 break
@@ -2394,12 +2422,39 @@ class StateManager:
                 
         # Store all reviewed actions in execution_history and mark loop as complete
         with self.state_lock:
-            # Update in both completed_states_by_episode and completed_states_buffer_by_episode
-            for ep_dict in [self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
-                if episode_id in ep_dict and state_id in ep_dict[episode_id]:
-                    ep_dict[episode_id][state_id]["execution_history"] = reviewed_actions
-                    ep_dict[episode_id][state_id]["num_pre_approvals_completed"] = len(reviewed_actions)
-                    ep_dict[episode_id][state_id]["pre_approval_loop_complete"] = True
+            # Find the state in either completed_states_buffer (preferred) or completed_states
+            state_ref = None
+            if episode_id in self.completed_states_buffer_by_episode and state_id in self.completed_states_buffer_by_episode[episode_id]:
+                state_ref = self.completed_states_buffer_by_episode[episode_id][state_id]
+            elif episode_id in self.completed_states_by_episode and state_id in self.completed_states_by_episode[episode_id]:
+                state_ref = self.completed_states_by_episode[episode_id][state_id]
+            
+            if state_ref is not None:
+                # APPEND new reviews to existing execution_history (don't overwrite admin auto-approvals)
+                existing_history = state_ref.get("execution_history", [])
+                state_ref["execution_history"] = existing_history + reviewed_actions
+                state_ref["num_pre_approvals_completed"] = len(existing_history) + len(reviewed_actions)
+                state_ref["pre_approval_loop_complete"] = True
+                
+                # Also update in the other dict if it exists there (keep them in sync)
+                if episode_id in self.completed_states_by_episode and state_id in self.completed_states_by_episode[episode_id]:
+                    self.completed_states_by_episode[episode_id][state_id] = state_ref
+                if episode_id in self.completed_states_buffer_by_episode and state_id in self.completed_states_buffer_by_episode[episode_id]:
+                    self.completed_states_buffer_by_episode[episode_id][state_id] = state_ref
+            
+            # Check if state is now fully complete (enough approved actions) and remove from pending
+            if episode_id in self.pending_states_by_episode and state_id in self.pending_states_by_episode[episode_id]:
+                state_info_ref = self.pending_states_by_episode[episode_id][state_id]
+                total_approved = sum(1 for entry in state_info_ref.get("execution_history", []) 
+                                    if entry.get("approval") == 1)
+                
+                if total_approved >= self.required_responses_per_critical_state:
+                    print(f"✅ State {state_id} now has {total_approved} approved actions - removing from pending")
+                    del self.pending_states_by_episode[episode_id][state_id]
+                    
+                    # Check if episode is now complete
+                    if not self.pending_states_by_episode.get(episode_id):
+                        print(f"📦 Episode {episode_id} has no more pending states after async labeling")
         
         print(f"📊 Pre-approval complete: {len(reviewed_actions)} actions reviewed, {num_approved} approved")
 
@@ -2746,6 +2801,19 @@ class StateManager:
         all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
 
         state_info["action_to_save"] = all_actions
+        
+        # Create execution_history with all actions auto-approved
+        state_info["execution_history"] = [
+            {
+                "action": position_action.clone(),
+                "propensity": 1.0,
+                "approval": 1,  # Auto-approved
+                "submitted_by": [],  # Auto-filled, no user
+            }
+            for _ in range(self.required_responses_per_critical_state)
+        ]
+        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
+        state_info["pre_approval_loop_complete"] = True
 
         # Mark as approved since we're auto-filling with "End."
         state_info["approval_status"] = "approved"

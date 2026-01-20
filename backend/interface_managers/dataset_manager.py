@@ -224,8 +224,14 @@ class DatasetManager:
             from datasets import Features, Sequence, Value
             from lerobot.common.datasets.utils import get_hf_features_from_features
 
-            # Get original action dimension (per single action)
-            original_action_dim = self.dataset.features["action"]["shape"][-1] // self.required_responses_per_critical_state
+            # Get original single action dimension from final_executed_action (which is always 7)
+            # This is safer than trying to divide the current action shape
+            if "final_executed_action" in self.dataset.features:
+                original_action_dim = self.dataset.features["final_executed_action"]["shape"][0]
+            else:
+                # Fallback: assume 7 joints (6 arm + 1 gripper)
+                original_action_dim = 7
+            
             new_action_shape = (max_action_count * original_action_dim,)
 
             # Update all relevant shapes
@@ -240,6 +246,20 @@ class DatasetManager:
             
             self.dataset.features["executed_approvals"]["shape"] = (max_action_count,)
             self.dataset.meta.features["executed_approvals"]["shape"] = (max_action_count,)
+            
+            # Recreate the HF dataset with updated features
+            if self.dataset.hf_dataset is not None:
+                from lerobot.common.datasets.utils import get_hf_features_from_features, hf_transform_to_torch
+                
+                new_hf_features = get_hf_features_from_features(self.dataset.features)
+                
+                # Create a new empty dataset with the correct features
+                ft_dict = {col: [] for col in new_hf_features}
+                new_hf_dataset = datasets.Dataset.from_dict(ft_dict, features=new_hf_features, split="train")
+                new_hf_dataset.set_transform(hf_transform_to_torch)
+                
+                # Replace the old dataset
+                self.dataset.hf_dataset = new_hf_dataset
             
             print(
                 f"📐 Dynamically updated dataset action shape to {new_action_shape} (max_actions={max_action_count}, joints={original_action_dim})"
@@ -491,15 +511,63 @@ class DatasetManager:
         episode_index = self.dataset.meta.total_episodes
         propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
         
+        # Debug: print buffer contents
+        print(f"🔍 save_episode called with {len(buffer)} states")
+        for s_id, s_info in buffer.items():
+            exec_hist = s_info.get("execution_history", [])
+            print(f"   State {s_id}: critical={s_info.get('critical')}, execution_history length={len(exec_hist)}")
+            
+            # Show all submissions for this state
+            user_subs = s_info.get("user_submissions", [])
+            if user_subs:
+                print(f"      Total user_submissions recorded: {len(user_subs)}")
+                for i, sub in enumerate(user_subs):
+                    name = sub.get("name", "Unknown")
+                    email = sub.get("email", "Unknown")
+                    action_idx = sub.get("action_index", "?")
+                    print(f"         [{i}] {name} ({email}) -> action_index={action_idx}")
+        
         # In async mode: dynamically determine max action count across all states
         if self.asynchronous_mode:
             critical_states = [state for state in buffer.values() if state.get("critical", False)]
             if critical_states:
-                max_action_count = max(
-                    len(state.get("execution_history", []))
-                    for state in critical_states
-                )
-                print(f"📊 Async mode: max_action_count = {max_action_count} across {len(critical_states)} critical states")
+                # Calculate max and collect per-state stats
+                state_action_counts = {}
+                max_action_count = 0
+                max_state_id = None
+                
+                for state in critical_states:
+                    state_id = state.get("state_id")
+                    exec_history = state.get("execution_history", [])
+                    count = len(exec_history)
+                    state_action_counts[state_id] = count
+                    
+                    if count > max_action_count:
+                        max_action_count = count
+                        max_state_id = state_id
+                
+                # Ensure minimum of required_responses_per_critical_state
+                if max_action_count == 0:
+                    print(f"⚠️  All states have empty execution_history, using required_responses_per_critical_state={self.required_responses_per_critical_state}")
+                    max_action_count = self.required_responses_per_critical_state
+                else:
+                    print(f"📊 Async mode dataset sizing:")
+                    print(f"   States: {len(critical_states)} critical states")
+                    for s_id, count in sorted(state_action_counts.items()):
+                        exec_hist = buffer[s_id].get("execution_history", [])
+                        num_approved = sum(1 for e in exec_hist if e.get("approval") == 1)
+                        num_rejected = sum(1 for e in exec_hist if e.get("approval") == -1)
+                        marker = "📌" if s_id == max_state_id else "  "
+                        print(f"   {marker} State {s_id}: {count} total ({num_approved} approved, {num_rejected} rejected)")
+                        
+                        # Debug: show each execution entry
+                        for i, e in enumerate(exec_hist):
+                            submitted = e.get("submitted_by", [])
+                            submitter_info = f"{submitted[0].get('name', 'Unknown')}" if submitted else "Auto-filled"
+                            approval_str = "✓" if e.get("approval") == 1 else "✗" if e.get("approval") == -1 else "?"
+                            print(f"      [{i}] {approval_str} by {submitter_info}")
+                            
+                    print(f"   Max: {max_action_count} actions (state {max_state_id})")
             else:
                 max_action_count = self.required_responses_per_critical_state
             
@@ -545,13 +613,14 @@ class DatasetManager:
                 if execution["approval"] is not None:
                     executed_approvals[i] = float(execution["approval"])
             
-            # Build action_to_save with proper padding for capacity
-            if self.asynchronous_mode and len(execution_history) < action_capacity:
-                # Async mode: pad action_to_save to match action_capacity
+            # Build action_to_save
+            if self.asynchronous_mode:
+                # Async mode: always build from execution_history with padding to capacity
                 all_actions_list = []
                 for execution in execution_history:
                     action_tensor = execution["action"]
-                    all_actions_list.append(action_tensor.numpy() if hasattr(action_tensor, "numpy") else np.array(action_tensor))
+                    action_np = action_tensor.numpy() if hasattr(action_tensor, "numpy") else np.array(action_tensor)
+                    all_actions_list.append(action_np)
                 
                 # Concatenate all actions
                 if all_actions_list:
@@ -559,15 +628,16 @@ class DatasetManager:
                 else:
                     all_actions = np.array([], dtype=np.float32)
                 
-                # Pad to capacity
-                padding_size = (action_capacity - len(execution_history)) * action_dim
-                if padding_size > 0:
-                    padding = np.full(padding_size, np.nan, dtype=np.float32)
-                    all_actions = np.concatenate([all_actions, padding])
+                # Pad to capacity if needed
+                if len(execution_history) < action_capacity:
+                    padding_size = (action_capacity - len(execution_history)) * action_dim
+                    if padding_size > 0:
+                        padding = np.full(padding_size, np.nan, dtype=np.float32)
+                        all_actions = np.concatenate([all_actions, padding])
                 
                 action_to_save = all_actions
             else:
-                # Sync mode or no padding needed: use existing action_to_save
+                # Sync mode: use pre-built action_to_save
                 action_to_save = state["action_to_save"]
 
             # Construct frame with action selection metadata
