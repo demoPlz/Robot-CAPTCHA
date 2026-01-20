@@ -32,7 +32,7 @@ Each frame in the dataset contains the following fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `executed_actions` | `float32[N*7]` | All submitted actions (padded with NaN) |
+| `executed_actions` | `float32[N*7]` | Executed actions (padded with NaN) |
 | `executed_propensities` | `float32[N]` | Propensity score for each action |
 | `executed_approvals` | `float32[N]` | Approval status: 1.0 (approved), -1.0 (rejected), NaN (not executed) |
 | `final_executed_action` | `float32[7]` | The single action that was physically executed by the robot |
