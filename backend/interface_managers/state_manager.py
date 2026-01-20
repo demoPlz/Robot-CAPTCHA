@@ -1054,6 +1054,12 @@ class StateManager:
                         self.completed_states_buffer_by_episode[episode_id] = {}
                     self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
                     
+                    # Set final_executed_action to admin's action (first in execution_history)
+                    if state_info.get("execution_history") and len(state_info["execution_history"]) > 0:
+                        admin_action = state_info["execution_history"][0]["action"]
+                        state_info["final_executed_action"] = admin_action.tolist() if hasattr(admin_action, "tolist") else list(admin_action)
+                        print(f"✅ Set final_executed_action for state {state_id} to admin's action")
+                    
                     # DON'T delete from pending - keep it there for user labeling
                     
                     # Set latest_goal NOW for immediate execution
