@@ -2238,8 +2238,8 @@
                 
                 if (response.ok) {
                     showToast('🆕 Classified as NEW STATE - will collect new actions');
-                    currentUndoClassification = null;
                     hideUndoClassificationModal();
+                    // Let polling clear currentUndoClassification after backend confirms
                 } else {
                     showToast('❌ Failed to classify state', 2000);
                 }
@@ -2272,8 +2272,8 @@
                 
                 if (response.ok) {
                     showToast('♻️ Classified as OLD STATE - resampling actions');
-                    currentUndoClassification = null;
                     hideUndoClassificationModal();
+                    // Let polling clear currentUndoClassification after backend confirms
                 } else {
                     showToast('❌ Failed to classify state', 2000);
                 }
@@ -2306,8 +2306,8 @@
                 
                 if (response.ok) {
                     showToast('🏁 State marked as end (episode will finish)');
-                    currentUndoClassification = null;
                     hideUndoClassificationModal();
+                    // Let polling clear currentUndoClassification after backend confirms
                 } else {
                     showToast('❌ Failed to mark as end', 2000);
                 }
