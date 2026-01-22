@@ -60,23 +60,9 @@ def extract_frame_data(dataset: LeRobotDataset, frame_idx: int) -> dict:
     """Extract relevant data from a single frame."""
     frame = dataset[frame_idx]
     
-    # Basic info - get episode index from the frame itself or from dataset metadata
-    if hasattr(dataset, 'episode_data_index') and 'episode_index' in dataset.episode_data_index:
-        episode_idx = dataset.episode_data_index["episode_index"][frame_idx].item()
-        frame_in_episode = dataset.episode_data_index["frame_index"][frame_idx].item()
-    else:
-        # Fallback: calculate from cumulative lengths
-        episode_idx = 0
-        frame_in_episode = frame_idx
-        if hasattr(dataset, 'cumulative_lengths'):
-            for ep_idx, cum_len in enumerate(dataset.cumulative_lengths):
-                if frame_idx < cum_len:
-                    episode_idx = ep_idx
-                    if ep_idx > 0:
-                        frame_in_episode = frame_idx - dataset.cumulative_lengths[ep_idx - 1]
-                    else:
-                        frame_in_episode = frame_idx
-                    break
+    # Basic info - get episode index from the frame itself
+    episode_idx = frame['episode_index'].item() if 'episode_index' in frame else 0
+    frame_in_episode = frame['frame_index'].item() if 'frame_index' in frame else frame_idx
     
     task = frame.get("task", [""])[0] if "task" in frame else ""
     
