@@ -3198,25 +3198,13 @@ class StateManager:
         user_approved = 0
         user_rejected = 0
         
-        # Count all submissions across all completed states (check both buffer and main storage)
+        # Count all submissions across all completed states
+        # Only check completed_states_buffer_by_episode to avoid double-counting
+        # (states exist in both buffer and completed_states_by_episode, but they're the same objects)
         with self.state_lock:
-            # Check completed_states_buffer_by_episode
             for ep_id in self.completed_states_buffer_by_episode:
                 for s_id in self.completed_states_buffer_by_episode[ep_id]:
                     s_info = self.completed_states_buffer_by_episode[ep_id][s_id]
-                    exec_history = s_info.get("execution_history", [])
-                    for exec_entry in exec_history:
-                        for submitted_user in exec_entry.get("submitted_by", []):
-                            if submitted_user.get("email") == user_email:
-                                if exec_entry.get("approval") == 1:
-                                    user_approved += 1
-                                elif exec_entry.get("approval") == -1:
-                                    user_rejected += 1
-            
-            # Also check completed_states_by_episode (in case buffer was flushed)
-            for ep_id in self.completed_states_by_episode:
-                for s_id in self.completed_states_by_episode[ep_id]:
-                    s_info = self.completed_states_by_episode[ep_id][s_id]
                     exec_history = s_info.get("execution_history", [])
                     for exec_entry in exec_history:
                         for submitted_user in exec_entry.get("submitted_by", []):
