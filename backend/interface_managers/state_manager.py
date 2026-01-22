@@ -190,6 +190,7 @@ class StateManager:
 
         # Goal management
         self.latest_goal = None
+        self.latest_goal_is_undo = False  # Track if latest_goal is from undo
 
         # Active episode tracking
         self._active_episode_id = None
@@ -1063,6 +1064,7 @@ class StateManager:
                     # Set latest_goal NOW for immediate execution
                     if state_info.get("critical") and state_info.get("execution_history"):
                         self.latest_goal = state_info["execution_history"][0]["action"]
+                        self.latest_goal_is_undo = False  # This is a normal admin action, not undo
                         print(f"🤖 Set latest_goal for immediate execution with admin action")
 
         # Check finalization
@@ -1199,14 +1201,19 @@ class StateManager:
             dict with 'action' (list of floats) and 'is_undo' (bool), or None if no goal available
 
         """
-        # PRIORITY: Check if there's an undo goal (from undo_to_previous_critical_state)
+        # PRIORITY: Check if there's a queued goal (from undo or admin immediate execution)
         if self.latest_goal is not None:
             goal_tensor = self.latest_goal
+            is_undo = self.latest_goal_is_undo
             self.latest_goal = None  # Clear after consuming
+            self.latest_goal_is_undo = False  # Reset flag
             
             # Convert to list
             action_list = goal_tensor.tolist() if hasattr(goal_tensor, "tolist") else list(goal_tensor)
-            print(f"↩️  Executing undo motion to previous critical state")
+            if is_undo:
+                print(f"↩️  Executing undo motion to previous critical state")
+            else:
+                print(f"🤖 Executing admin action (immediate execution mode)")
             return action_list
         
         # Phase 2: Execution loop - find first non-executed pre-approved action
@@ -1716,6 +1723,7 @@ class StateManager:
 
             # Set as latest_goal for robot to consume
             self.latest_goal = goal_tensor
+            self.latest_goal_is_undo = True  # Mark as undo action
 
         # ---- Set up pending undo classification (will be triggered after robot arrives) ----
         # Store the previous critical state info for later classification

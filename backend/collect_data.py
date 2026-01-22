@@ -182,7 +182,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             break
 
         # Use crowd dataset's episode count (which may be > 0 if continuing from checkpoint)
-        current_episode_index = crowd_interface.dataset_manager.dataset.meta.total_episodes
+        # NOTE: dataset and crowd_interface.dataset_manager.dataset are the SAME object
+        current_episode_index = dataset.meta.total_episodes
         log_say(f"Recording episode {current_episode_index}", cfg.play_sounds)
         # Ensure immediate-execution only fires for submissions belonging to the
         # *currently active* episode loop.
@@ -220,6 +221,9 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
 
         dataset.save_episode()
         recorded_episodes += 1
+        
+        # Clear the "end" marker for this episode now that it's been saved
+        crowd_interface.state_manager.episodes_marked_as_end.discard(current_episode_index)
 
         if events["stop_recording"]:
             break
