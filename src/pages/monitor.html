@@ -1736,8 +1736,8 @@
                 
                 if (approvalResponse.ok) {
                     showToast('✅ State approved with prompt');
-                    currentApprovalState = null;
                     hideApprovalModal();
+                    // Let polling clear currentApprovalState after backend confirms
                 } else {
                     showToast('❌ Failed to approve state', 2000);
                 }
@@ -1772,8 +1772,8 @@
                 
                 if (response.ok) {
                     showToast('❌ Critical state rejected, undoing...');
-                    currentApprovalState = null;
                     hideApprovalModal();
+                    // Let polling clear currentApprovalState after backend confirms
                 } else {
                     showToast('❌ Failed to reject state', 2000);
                 }
@@ -1808,8 +1808,8 @@
                 if (response.ok) {
                     showToast('🗑️ Jitter states discarded');
                     // Clear the modal since we discarded the pending approval state too
-                    currentApprovalState = null;
                     hideApprovalModal();
+                    // Let polling clear currentApprovalState after backend confirms
                 } else {
                     showToast('❌ Failed to discard states', 2000);
                 }
@@ -1844,8 +1844,8 @@
                 
                 if (response.ok) {
                     showToast('🏁 State marked as end (episode will finish)');
-                    currentApprovalState = null;
                     hideApprovalModal();
+                    // Let polling clear currentApprovalState after backend confirms
                 } else {
                     showToast('❌ Failed to mark as end', 2000);
                 }
@@ -2103,8 +2103,8 @@
                 
                 if (response.ok) {
                     showToast('✅ Action approved - executing...');
-                    currentPreExecutionApproval = null;
                     hidePreExecutionModal();
+                    // Let polling clear currentPreExecutionApproval after backend confirms
                 } else {
                     showToast('❌ Failed to approve action', 2000);
                 }
@@ -2135,8 +2135,8 @@
                 
                 if (response.ok) {
                     showToast('❌ Action rejected - resampling...');
-                    currentPreExecutionApproval = null;
                     hidePreExecutionModal();
+                    // Let polling clear currentPreExecutionApproval after backend confirms
                 } else {
                     showToast('❌ Failed to reject action', 2000);
                 }
