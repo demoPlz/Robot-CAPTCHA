@@ -5620,7 +5620,6 @@ loader.load(
     /* Enable/disable HUD with same gating rules as before */
     function updateGripHUDInteractivity(){
       const disabled = window.taskCompletedSelected || !slidersAtDefault();
-      console.log('[updateGripHUDInteractivity] disabled =', disabled, 'window.taskCompletedSelected =', window.taskCompletedSelected, 'slidersAtDefault() =', slidersAtDefault());
       const hoverMsg = disabled
         ? (window.taskCompletedSelected
             ? 'Disabled: “Task Already Completed” is selected.'
@@ -5632,9 +5631,7 @@ loader.load(
         // Hide the HUD when robot is moved (same condition as button disable)
         // Use !important to override the CSS rule
         if (disabled) {
-          console.log('[updateGripHUDInteractivity] Setting display:none on', el);
           el.style.setProperty('display', 'none', 'important');
-          console.log('[updateGripHUDInteractivity] After setting, el.style.display =', el.style.display);
         } else {
           el.style.removeProperty('display');
         }

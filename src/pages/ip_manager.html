@@ -200,7 +200,8 @@
     </div>
 
     <script>
-        let authToken = null;
+        const MONITOR_TOKEN_KEY = 'monitor_auth_token';
+        let authToken = localStorage.getItem(MONITOR_TOKEN_KEY);
         let API_BASE = 'http://127.0.0.1:9000';
         
         // Get backend URL from config (same pattern as monitor.html)
@@ -234,10 +235,39 @@
             }
         }
         
-        // Initialize API_BASE on page load
+        // Check if we're on localhost (no auth needed)
+        function isLocalhost() {
+            return location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '::1';
+        }
+        
+        // Initialize API_BASE and check auth on page load
         (async () => {
             API_BASE = await getCurrentBackendUrl();
             console.log('[DEBUG] IP Manager using backend URL:', API_BASE);
+            
+            if (isLocalhost()) {
+                // Localhost - no auth needed, auto-login
+                document.getElementById('auth-section').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                loadIPStats();
+            } else if (authToken) {
+                // Verify token by making test request
+                fetch(`${API_BASE}/api/admin/banned-ips`, {
+                    headers: {'X-Monitor-Token': authToken}
+                })
+                .then(r => {
+                    if (r.ok) {
+                        // Token valid, show content
+                        document.getElementById('auth-section').style.display = 'none';
+                        document.getElementById('content').style.display = 'block';
+                        loadIPStats();
+                    } else if (r.status === 401) {
+                        // Token invalid, remove it and show login
+                        localStorage.removeItem(MONITOR_TOKEN_KEY);
+                        authToken = null;
+                    }
+                }).catch(() => {}); // Continue even if offline
+            }
         })();
 
         function login() {
@@ -253,6 +283,7 @@
             .then(data => {
                 if (data.status === 'success') {
                     authToken = data.token;
+                    localStorage.setItem(MONITOR_TOKEN_KEY, authToken);
                     document.getElementById('auth-section').style.display = 'none';
                     document.getElementById('content').style.display = 'block';
                     loadIPStats();

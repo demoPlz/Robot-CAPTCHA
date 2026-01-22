@@ -1,4 +1,5 @@
 {
-  "backendUrl": "https://musicians-dressed-corrected-illustrations.trycloudflare.com",
-  "updatedAt": "2026-01-22T21:06:28Z"
+  "backendUrl": "http://127.0.0.1:9000",
+  "updatedAt": "2026-01-22T21:32:30Z",
+  "port": 9000
 }
