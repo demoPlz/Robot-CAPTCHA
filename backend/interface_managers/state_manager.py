@@ -1005,13 +1005,19 @@ class StateManager:
                         print(f"✅ Auto-approving admin submission for state {state_id} (async mode)")
                         should_run_pre_approval = False
                         # Mark as pre-approved and ready for post-approval (critical state approval)
-                        state_info["execution_history"] = [{
+                        # Initialize execution_history if not already present (from autofill)
+                        if "execution_history" not in state_info:
+                            state_info["execution_history"] = []
+                        # Add the admin's action as first entry (or insert at beginning if autofills exist)
+                        admin_entry = {
                             "action": state_info["actions"][0],
                             "propensity": 1.0,
                             "approval": 1,  # Auto-approved
                             "executed": False,
                             "submitted_by": state_info.get("user_submissions", [])[:1]  # First submission (admin)
-                        }]
+                        }
+                        # Insert admin entry at the beginning (before any autofills)
+                        state_info["execution_history"].insert(0, admin_entry)
                         state_info["pre_approval_loop_complete"] = True
                     elif self.asynchronous_mode and self.async_pool_finalized and not is_admin_submission:
                         # Handled by immediate per-action pre-approval above
