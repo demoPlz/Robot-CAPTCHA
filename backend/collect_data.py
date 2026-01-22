@@ -212,7 +212,10 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             log_say("Re-record episode", cfg.play_sounds)
             events["rerecord_episode"] = False
             events["exit_early"] = False
-            dataset.clear_episode_buffer()
+            
+            # Clear ALL state for this episode (crowd + dataset)
+            crowd_interface.clear_episode(current_episode_index)
+            
             continue
 
         dataset.save_episode()

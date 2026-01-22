@@ -84,7 +84,7 @@ class CrowdInterfaceConfig:
         
         # ========== Pose Estimation Mode ==========
         # When True, skip real pose estimation and use random fixed poses
-        self.use_random_poses: bool = True
+        self.use_random_poses: bool = False
         # Random pose bounds (x, y, z in meters, rotation will be random quaternion)
         self.random_pose_bounds: dict = {
             "x_min": -0.3, "x_max": 0.3,

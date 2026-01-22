@@ -607,6 +607,21 @@ class CrowdInterface:
 
         """
         return self.state_manager.undo_to_previous_critical_state()
+    
+    def clear_episode(self, episode_id: int) -> None:
+        """Clear episode for re-recording (clears both crowd state and dataset buffer).
+        
+        Args:
+            episode_id: Episode to clear
+        """
+        # Clear crowd interface state
+        self.state_manager.clear_episode(episode_id)
+        
+        # Clear dataset buffer if it exists and matches this episode
+        if (self.dataset_manager.dataset.episode_buffer is not None and
+            self.dataset_manager.dataset.episode_buffer.get("episode_index") == episode_id):
+            self.dataset_manager.dataset.clear_episode_buffer()
+            print(f"🗑️  Cleared dataset episode buffer for episode {episode_id}")
 
     # =========================
     # Reset State Management

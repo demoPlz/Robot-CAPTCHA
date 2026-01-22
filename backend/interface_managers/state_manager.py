@@ -137,11 +137,9 @@ class StateManager:
         self.episode_start_times_iso = {}  # episode_id -> ISO format
         
         # Asynchronous mode state pool
-        # When async mode finalized, states moved here for random serving
+        # When async mode finalized, states moved here for weighted dynamic sampling
         self.async_state_pool = {}  # (episode_id, state_id) -> state_info
-        self.async_user_assignments = {}  # user_email -> list of (episode_id, state_id) in fixed random order
         self.async_user_submissions = {}  # user_email -> set of (episode_id, state_id) tuples already submitted
-        self.async_user_queue_positions = {}  # user_email -> current index in their assignment queue
         self.async_pool_finalized = False  # True when admin phase complete and pool is ready
         
         # Warning suppression
@@ -2083,6 +2081,121 @@ class StateManager:
         """Mark which episode the outer robot loop is currently in (or None)."""
         with self.state_lock:
             self._active_episode_id = episode_id
+    
+    def clear_episode(self, episode_id: int) -> None:
+        """Clear all crowd interface state for an episode (for re-recording).
+        
+        This removes:
+        - All pending/completed/buffered states
+        - Observation cache files
+        - Async pool entries (if any)
+        - Pending approvals
+        - Episode tracking metadata
+        - Running threads/timers
+        
+        Args:
+            episode_id: Episode to clear
+        """
+        import shutil
+        
+        with self.state_lock:
+            # 1. Delete states from all dictionaries
+            if episode_id in self.pending_states_by_episode:
+                for state_info in self.pending_states_by_episode[episode_id].values():
+                    self._delete_obs_from_disk(state_info.get("obs_path"))
+                del self.pending_states_by_episode[episode_id]
+                print(f"🗑️  Cleared pending states for episode {episode_id}")
+            
+            if episode_id in self.completed_states_by_episode:
+                for state_info in self.completed_states_by_episode[episode_id].values():
+                    self._delete_obs_from_disk(state_info.get("obs_path"))
+                del self.completed_states_by_episode[episode_id]
+                print(f"🗑️  Cleared completed states for episode {episode_id}")
+            
+            if episode_id in self.completed_states_buffer_by_episode:
+                del self.completed_states_buffer_by_episode[episode_id]
+                print(f"🗑️  Cleared completed states buffer for episode {episode_id}")
+            
+            # 2. Clear async pool entries for this episode
+            if self.asynchronous_mode:
+                keys_to_remove = [key for key in self.async_state_pool.keys() if key[0] == episode_id]
+                for key in keys_to_remove:
+                    del self.async_state_pool[key]
+                if keys_to_remove:
+                    print(f"🗑️  Removed {len(keys_to_remove)} states from async pool")
+                
+                # Remove from all users' submissions
+                for user_email in self.async_user_submissions:
+                    before_count = len(self.async_user_submissions[user_email])
+                    self.async_user_submissions[user_email] = {
+                        k for k in self.async_user_submissions[user_email] if k[0] != episode_id
+                    }
+                    after_count = len(self.async_user_submissions[user_email])
+                    if before_count != after_count:
+                        print(f"🗑️  Cleared {before_count - after_count} submissions for {user_email}")
+            
+            # 3. Clear episode tracking
+            self.episodes_completed.discard(episode_id)
+            self.episodes_marked_as_end.discard(episode_id)
+            self.episode_start_times.pop(episode_id, None)
+            self.episode_start_times_iso.pop(episode_id, None)
+            
+            # 4. Reset current serving episode if it's this one
+            if self.current_serving_episode == episode_id:
+                self.current_serving_episode = None
+            
+            # 5. Reset next_state_id to 0 for fresh start
+            self.next_state_id = 0
+            print(f"🔄 Reset next_state_id to 0")
+        
+        # 6. Clear pending approvals (separate lock)
+        with self.approval_lock:
+            if (self.pending_approval_state and 
+                self.pending_approval_state["episode_id"] == episode_id):
+                self.pending_approval_state = None
+                print(f"🗑️  Cleared pending approval for episode {episode_id}")
+        
+        # 7. Clear pre-execution approvals
+        with self.pre_execution_approval_lock:
+            if (self.pending_pre_execution_approval and
+                self.pending_pre_execution_approval.get("episode_id") == episode_id):
+                self.pending_pre_execution_approval = None
+                print(f"🗑️  Cleared pending pre-execution approval")
+            
+            # Remove from queue
+            queue_before = len(self.pre_execution_approval_queue)
+            self.pre_execution_approval_queue = [
+                req for req in self.pre_execution_approval_queue
+                if req.get("episode_id") != episode_id
+            ]
+            queue_after = len(self.pre_execution_approval_queue)
+            if queue_before != queue_after:
+                print(f"🗑️  Removed {queue_before - queue_after} items from pre-execution approval queue")
+        
+        # 8. Cancel episode finalization timer
+        timer = self._episode_finalize_timers.pop(episode_id, None)
+        if timer:
+            timer.cancel()
+            print(f"⏹️  Cancelled finalization timer for episode {episode_id}")
+        
+        # 9. Stop pre-approval threads for this episode
+        threads_to_stop = [
+            key for key in self._pre_approval_threads.keys()
+            if key[0] == episode_id
+        ]
+        for key in threads_to_stop:
+            # Thread will exit when it sees the state is gone
+            del self._pre_approval_threads[key]
+        if threads_to_stop:
+            print(f"⏹️  Stopped {len(threads_to_stop)} pre-approval threads")
+        
+        # 10. Delete entire observation cache directory for episode
+        obs_dir = self._obs_cache_root / str(episode_id)
+        if obs_dir.exists():
+            shutil.rmtree(obs_dir)
+            print(f"🗑️  Deleted observation cache directory: {obs_dir}")
+        
+        print(f"🧹 Cleared all crowd interface state for episode {episode_id}")
 
     def set_prompt_ready(
         self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None
@@ -2318,32 +2431,14 @@ class StateManager:
                     if "127.0.0.1" in user_email or "localhost" in user_email.lower():
                         continue
                     
-                    # Re-queue this state for the user
+                    # Re-queue this state for the user (with weighted sampling, just remove from submitted set)
                     with self.state_lock:
                         if user_email in self.async_user_submissions:
                             # Remove from submitted set so they can try again
+                            # With weighted dynamic sampling, they'll naturally get this state
+                            # with appropriate priority based on its completion status
                             self.async_user_submissions[user_email].discard(state_key)
-                            print(f"♻️  Removed state {state_key} from {user_email}'s submitted set")
-                        
-                        if user_email in self.async_user_assignments and user_email in self.async_user_queue_positions:
-                            user_queue = self.async_user_assignments[user_email]
-                            current_pos = self.async_user_queue_positions[user_email]
-                            
-                            # Calculate how many states are left after current position
-                            remaining_states = len(user_queue) - current_pos - 1
-                            max_offset = min(10, remaining_states)
-                            
-                            if max_offset > 0:
-                                import random
-                                # Insert randomly in next 1 to max_offset positions
-                                insert_offset = random.randint(1, max_offset)
-                                insert_pos = current_pos + insert_offset
-                                user_queue.insert(insert_pos, state_key)
-                                print(f"♻️  Re-queued state {state_key} for {user_email} at position {insert_pos} (offset +{insert_offset}, max was {max_offset})")
-                            else:
-                                # No room to insert ahead, append to end
-                                user_queue.append(state_key)
-                                print(f"♻️  Re-queued state {state_key} for {user_email} at end of queue")
+                            print(f"♻️  Removed state {state_key} from {user_email}'s submitted set (will be sampled with priority)")
             
             # Log async user submissions (only for user submissions, not admin/autofill)
             async_logger_active = self.async_user_logger is not None
@@ -2937,10 +3032,13 @@ class StateManager:
             }
     
     def get_async_pooled_state(self, user_email: str) -> dict | None:
-        """Get next state from user's fixed random order.
+        """Get next state using weighted dynamic sampling.
         
-        Each user gets a fixed random permutation of states on first access.
-        They progress through this order sequentially and cannot skip or refresh.
+        States that need fewer labels get higher weights (quadratically), ensuring
+        balanced progress across all states and preventing stragglers.
+        
+        Weight formula: weight = (max_need - need + 1)²
+        where need = required_responses - approved_count
         
         Args:
             user_email: Email of user requesting state
@@ -2955,58 +3053,58 @@ class StateManager:
             return None
         
         with self.state_lock:
-            # Initialize user's fixed random order on first access
-            if user_email not in self.async_user_assignments:
-                import random
-                all_keys = list(self.async_state_pool.keys())
-                shuffled_keys = all_keys.copy()
-                random.shuffle(shuffled_keys)
-                self.async_user_assignments[user_email] = shuffled_keys
+            # Initialize user's submission tracking on first access
+            if user_email not in self.async_user_submissions:
                 self.async_user_submissions[user_email] = set()
-                self.async_user_queue_positions[user_email] = 0
-                print(f"🎲 New user {user_email}: Generated fixed random order of {len(shuffled_keys)} states")
+                print(f"🎲 New user {user_email}: Starting async labeling")
             
-            # Get user's fixed order, submitted states, and current position
-            user_order = self.async_user_assignments[user_email]
             user_submitted = self.async_user_submissions[user_email]
             
-            # Initialize position if not set (for existing users before this update)
-            if user_email not in self.async_user_queue_positions:
-                # Find where they are based on what they've submitted
-                self.async_user_queue_positions[user_email] = len(user_submitted)
+            # Build list of available states (unsubmitted by user, not full)
+            available_states = []
+            needs = []
             
-            current_pos = self.async_user_queue_positions[user_email]
-            
-            # Find next unsubmitted state starting from current position
-            for idx in range(current_pos, len(user_order)):
-                state_key = user_order[idx]
+            for state_key, state_info in self.async_state_pool.items():
+                # Skip if user already submitted to this state
+                if state_key in user_submitted:
+                    continue
                 
-                if state_key not in user_submitted:
-                    # Check if state still exists in pool
-                    if state_key not in self.async_state_pool:
-                        print(f"⚠️  State {state_key} not in pool, skipping")
-                        # Update position and continue
-                        self.async_user_queue_positions[user_email] = idx + 1
-                        continue
-                    
-                    episode_id, state_id = state_key
-                    state_info = self.async_state_pool[state_key]
-                    
-                    # Skip if state is already full - count APPROVED submissions for critical states
-                    num_approved = sum(1 for entry in state_info.get("execution_history", []) 
-                                      if entry.get("approval") == 1)
-                    if num_approved >= self.required_responses_per_critical_state:
-                        print(f"⏭️  State ({episode_id}, {state_id}) already full ({num_approved}/{self.required_responses_per_critical_state} approved), skipping for {user_email}")
-                        # Update position and continue
-                        self.async_user_queue_positions[user_email] = idx + 1
-                        continue
-                    
-                    # Found a valid state - update position for next time
-                    self.async_user_queue_positions[user_email] = idx
-                    return state_info
+                # Count APPROVED submissions for critical states
+                num_approved = sum(1 for entry in state_info.get("execution_history", []) 
+                                  if entry.get("approval") == 1)
+                need = self.required_responses_per_critical_state - num_approved
+                
+                # Skip if state is already full
+                if need <= 0:
+                    continue
+                
+                available_states.append((state_key, state_info))
+                needs.append(need)
             
-            # User has reached the end of their queue
-            return None
+            # No available states
+            if not available_states:
+                return None
+            
+            # Calculate weights: states closer to completion get higher weight
+            # weight = (max_need - need + 1)²
+            max_need = max(needs)
+            weights = [(max_need - need + 1) ** 2 for need in needs]
+            
+            # Weighted random selection
+            import random
+            selected_idx = random.choices(range(len(available_states)), weights=weights, k=1)[0]
+            state_key, state_info = available_states[selected_idx]
+            
+            episode_id, state_id = state_key
+            selected_need = needs[selected_idx]
+            selected_weight = weights[selected_idx]
+            
+            print(f"🎯 Sampled state ({episode_id}, {state_id}) for {user_email}: "
+                  f"need={selected_need}, weight={selected_weight}, "
+                  f"available={len(available_states)}, total_pool={len(self.async_state_pool)}")
+            
+            return state_info
+
     
     def get_async_pool_status(self) -> dict:
         """Get current status of async pool."""
@@ -3027,9 +3125,9 @@ class StateManager:
                     states_completed += 1
             
             # User statistics
-            total_users = len(self.async_user_assignments)
+            total_users = len(self.async_user_submissions)
             users_maxed_out = sum(
-                1 for seen_set in self.async_user_assignments.values()
+                1 for seen_set in self.async_user_submissions.values()
                 if len(seen_set) >= total_states
             )
             
@@ -3058,9 +3156,7 @@ class StateManager:
         """Reset async pool (for testing or restarting admin phase)."""
         with self.state_lock:
             self.async_state_pool.clear()
-            self.async_user_assignments.clear()
             self.async_user_submissions.clear()
-            self.async_user_queue_positions.clear()
             self.async_pool_finalized = False
             print("🔄 Async pool reset")
     
