@@ -1113,20 +1113,30 @@ class StateManager:
                 # Add pending states from this episode
                 if episode_id in self.pending_states_by_episode:
                     for state_id, info in self.pending_states_by_episode[episode_id].items():
+                        is_critical = info.get("critical", False)
                         required_responses = (
                             self.required_responses_per_critical_state
-                            if info.get("critical", False)
+                            if is_critical
                             else self.required_responses_per_state
                         )
                         _txt = info.get("text_prompt")  # Updated field name
                         has_flex_text = bool(str(_txt or "").strip())
                         _vid = info.get("video_prompt")  # Updated field name
                         has_flex_video = _vid is not None
+                        
+                        # For critical states, count only approved submissions
+                        # For non-critical, use total responses_received
+                        if is_critical:
+                            num_approved = sum(1 for entry in info.get("execution_history", []) 
+                                             if entry.get("approval") == 1)
+                            responses_received = num_approved
+                        else:
+                            responses_received = info["responses_received"]
 
                         episode_states[state_id] = {
-                            "responses_received": info["responses_received"],
-                            "responses_needed": required_responses - info["responses_received"],
-                            "critical": bool(info.get("critical", False)),
+                            "responses_received": responses_received,
+                            "responses_needed": required_responses - responses_received,
+                            "critical": bool(is_critical),
                             "has_flex_text": has_flex_text,
                             "has_flex_video": has_flex_video,
                             # Legacy aliases to avoid breaking older monitor UI
@@ -1138,15 +1148,25 @@ class StateManager:
                 # Add completed states from this episode
                 if episode_id in self.completed_states_by_episode:
                     for state_id, info in self.completed_states_by_episode[episode_id].items():
+                        is_critical = info.get("critical", False)
                         _txt = info.get("text_prompt")  # Updated field name
                         has_flex_text = bool(str(_txt or "").strip())
                         _vid = info.get("video_prompt")  # Updated field name
                         has_flex_video = _vid is not None
+                        
+                        # For critical states, count only approved submissions
+                        # For non-critical, use total responses_received
+                        if is_critical:
+                            num_approved = sum(1 for entry in info.get("execution_history", []) 
+                                             if entry.get("approval") == 1)
+                            responses_received = num_approved
+                        else:
+                            responses_received = info["responses_received"]
 
                         episode_states[state_id] = {
-                            "responses_received": info["responses_received"],
+                            "responses_received": responses_received,
                             "responses_needed": 0,  # Completed
-                            "critical": bool(info.get("critical", False)),
+                            "critical": bool(is_critical),
                             "has_flex_text": has_flex_text,
                             "has_flex_video": has_flex_video,
                             "has_vlm_text": has_flex_text,  # legacy
