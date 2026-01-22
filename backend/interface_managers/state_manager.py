@@ -935,6 +935,16 @@ class StateManager:
                 clones_to_add = min(self.num_autofill_actions - 1, remaining)
                 for _ in range(clones_to_add):
                     state_info["actions"].append(goal_positions.clone())
+                    # Add execution history entry for monitor progress bar
+                    if "execution_history" not in state_info:
+                        state_info["execution_history"] = []
+                    state_info["execution_history"].append({
+                        "action": goal_positions.clone(),
+                        "propensity": 1.0,
+                        "approval": 1,  # Auto-approved for display
+                        "executed": False,
+                        "submitted_by": [{"email": "Auto-filled", "user_id": "autofill"}]
+                    })
                 state_info["responses_received"] += clones_to_add
             
             # Additional autofill for gripper-only or home position actions in async mode
@@ -943,6 +953,16 @@ class StateManager:
                 clones_needed = required_responses - state_info["responses_received"]
                 for _ in range(clones_needed):
                     state_info["actions"].append(goal_positions.clone())
+                    # Add execution history entry for monitor progress bar
+                    if "execution_history" not in state_info:
+                        state_info["execution_history"] = []
+                    state_info["execution_history"].append({
+                        "action": goal_positions.clone(),
+                        "propensity": 1.0,
+                        "approval": 1,  # Auto-approved for display
+                        "executed": False,
+                        "submitted_by": [{"email": "Auto-filled", "user_id": "autofill"}]
+                    })
                 state_info["responses_received"] += clones_needed
                 action_type = "gripper-only" if is_gripper_only else "home position"
                 print(f"   Auto-filled {clones_needed} more slots for {action_type} action")
@@ -3231,12 +3251,12 @@ class StateManager:
         user_rejected = 0
         
         # Count all submissions across all completed states
-        # Only check completed_states_buffer_by_episode to avoid double-counting
-        # (states exist in both buffer and completed_states_by_episode, but they're the same objects)
+        # Use completed_states_by_episode (permanent storage) to include finalized episodes
+        # completed_states_buffer_by_episode is deleted when episode is finalized
         with self.state_lock:
-            for ep_id in self.completed_states_buffer_by_episode:
-                for s_id in self.completed_states_buffer_by_episode[ep_id]:
-                    s_info = self.completed_states_buffer_by_episode[ep_id][s_id]
+            for ep_id in self.completed_states_by_episode:
+                for s_id in self.completed_states_by_episode[ep_id]:
+                    s_info = self.completed_states_by_episode[ep_id][s_id]
                     exec_history = s_info.get("execution_history", [])
                     for exec_entry in exec_history:
                         for submitted_user in exec_entry.get("submitted_by", []):
