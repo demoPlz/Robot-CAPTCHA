@@ -79,6 +79,18 @@ _CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 
 @safe_disconnect
 def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConfig) -> LeRobotDataset:
+    from pathlib import Path
+    
+    # Check if we're continuing from a previous dataset
+    continue_from = _CROWD_CONFIG.continue_from_dataset
+    
+    # Auto-rename output dataset if it matches the continue_from dataset (prevent overwrite)
+    if continue_from and cfg.repo_id == continue_from:
+        original_repo_id = cfg.repo_id
+        cfg.repo_id = f"{continue_from}_continue"
+        print(f"⚠️  Output dataset would overwrite source dataset!")
+        print(f"   Auto-renaming: {original_repo_id} → {cfg.repo_id}")
+    
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.repo_id,
@@ -91,6 +103,25 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             )
         sanity_check_dataset_robot_compatibility(dataset, robot, cfg.fps, cfg.video)
     else:
+        # Check if dataset already exists and auto-rename to prevent overwrite
+        dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
+        dataset_path = dataset_root / cfg.repo_id
+        
+        if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
+            # Dataset already exists - find a unique name
+            original_repo_id = cfg.repo_id
+            counter = 1
+            while True:
+                new_repo_id = f"{original_repo_id}_new{counter}"
+                new_path = dataset_root / new_repo_id
+                if not new_path.exists():
+                    cfg.repo_id = new_repo_id
+                    break
+                counter += 1
+            
+            print(f"⚠️  Dataset already exists at: {dataset_path}")
+            print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {cfg.repo_id}")
+        
         # Create empty dataset or load existing saved episodes
         sanity_check_dataset_name(cfg.repo_id, cfg.policy)
         dataset = LeRobotDataset.create(
