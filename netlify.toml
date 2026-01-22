@@ -19,6 +19,11 @@
   status = 200
 
 [[redirects]]
+  from = "/ip_manager.html"
+  to = "/src/pages/ip_manager.html"
+  status = 200
+
+[[redirects]]
   from = "/sim.html"
   to = "/src/pages/sim.html"
   status = 200

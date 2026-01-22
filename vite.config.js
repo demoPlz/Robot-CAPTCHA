@@ -7,6 +7,7 @@ export default {
       input: {
         main: resolve(__dirname, 'src/pages/sim.html'),
         monitor: resolve(__dirname, 'src/pages/monitor.html'),
+        ip_manager: resolve(__dirname, 'src/pages/ip_manager.html'),
         real: resolve(__dirname, 'src/pages/real.html'),
         sim_mturk: resolve(__dirname, 'src/pages/sim_mturk.html')
       }

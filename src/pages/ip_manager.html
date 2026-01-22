@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IP Address Manager</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #333;
+            margin-top: 0;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        
+        .auth-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .auth-section input {
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+        }
+        
+        .auth-section button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        
+        .auth-section button:hover {
+            background: #5568d3;
+        }
+        
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        
+        .stats-table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+        }
+        
+        .stats-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .stats-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .banned {
+            background: #ffebee !important;
+        }
+        
+        .ban-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .ban-btn.ban {
+            background: #f44336;
+            color: white;
+        }
+        
+        .ban-btn.unban {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .ban-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .user-list {
+            font-size: 12px;
+            color: #666;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        
+        .user-item {
+            margin: 2px 0;
+            padding: 4px;
+            background: #f5f5f5;
+            border-radius: 3px;
+        }
+        
+        .status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status.active {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .status.banned {
+            background: #f44336;
+            color: white;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #667eea;
+            font-size: 18px;
+        }
+        
+        .error {
+            background: #f44336;
+            color: white;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        #refresh-btn {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        
+        #refresh-btn:hover {
+            background: #5568d3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 IP Address Manager</h1>
+        
+        <div class="auth-section" id="auth-section">
+            <strong>Authentication Required</strong>
+            <p>Enter monitor password to access IP management:</p>
+            <input type="password" id="password-input" placeholder="Enter password">
+            <button onclick="login()">Login</button>
+            <div id="auth-error" style="color: red; margin-top: 10px; display: none;"></div>
+        </div>
+        
+        <div id="content" style="display: none;">
+            <button id="refresh-btn" onclick="loadIPStats()">🔄 Refresh</button>
+            
+            <h2>IP Address Statistics</h2>
+            <div id="ip-stats-container">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = null;
+        const API_BASE = window.location.origin;
+
+        function login() {
+            const password = document.getElementById('password-input').value;
+            const errorEl = document.getElementById('auth-error');
+            
+            fetch(`${API_BASE}/api/monitor/login`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({password})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    authToken = data.token;
+                    document.getElementById('auth-section').style.display = 'none';
+                    document.getElementById('content').style.display = 'block';
+                    loadIPStats();
+                } else {
+                    errorEl.textContent = data.message || 'Login failed';
+                    errorEl.style.display = 'block';
+                }
+            })
+            .catch(err => {
+                errorEl.textContent = 'Network error: ' + err.message;
+                errorEl.style.display = 'block';
+            });
+        }
+
+        function loadIPStats() {
+            const container = document.getElementById('ip-stats-container');
+            container.innerHTML = '<div class="loading">Loading...</div>';
+            
+            fetch(`${API_BASE}/api/admin/ip-stats`, {
+                headers: {'X-Monitor-Token': authToken}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    renderIPStats(data.ip_stats);
+                } else {
+                    container.innerHTML = `<div class="error">Error: ${data.message}</div>`;
+                }
+            })
+            .catch(err => {
+                container.innerHTML = `<div class="error">Network error: ${err.message}</div>`;
+            });
+        }
+
+        function renderIPStats(ipStats) {
+            const container = document.getElementById('ip-stats-container');
+            
+            if (Object.keys(ipStats).length === 0) {
+                container.innerHTML = '<p>No IP addresses recorded yet.</p>';
+                return;
+            }
+            
+            // Convert to array and sort by total submissions
+            const ips = Object.entries(ipStats).map(([ip, stats]) => ({ip, ...stats}));
+            ips.sort((a, b) => b.total_submissions - a.total_submissions);
+            
+            let html = '<table class="stats-table"><thead><tr>';
+            html += '<th>IP Address</th>';
+            html += '<th>Status</th>';
+            html += '<th>Total Submissions</th>';
+            html += '<th>Users</th>';
+            html += '<th>Action</th>';
+            html += '</tr></thead><tbody>';
+            
+            for (const {ip, total_submissions, users, is_banned} of ips) {
+                const rowClass = is_banned ? 'banned' : '';
+                html += `<tr class="${rowClass}">`;
+                html += `<td><strong>${ip}</strong></td>`;
+                html += `<td><span class="status ${is_banned ? 'banned' : 'active'}">${is_banned ? 'BANNED' : 'Active'}</span></td>`;
+                html += `<td>${total_submissions}</td>`;
+                html += '<td><div class="user-list">';
+                
+                for (const user of users) {
+                    const approvalRate = user.approved + user.rejected > 0 
+                        ? ((user.approved / (user.approved + user.rejected)) * 100).toFixed(1)
+                        : 'N/A';
+                    html += `<div class="user-item">`;
+                    html += `<strong>${user.name}</strong> (${user.email})<br>`;
+                    html += `Submissions: ${user.submissions} | ✅ ${user.approved} | ❌ ${user.rejected} | Rate: ${approvalRate}%`;
+                    html += `</div>`;
+                }
+                
+                html += '</div></td>';
+                html += '<td>';
+                
+                if (is_banned) {
+                    html += `<button class="ban-btn unban" onclick="unbanIP('${ip}')">Unban</button>`;
+                } else {
+                    html += `<button class="ban-btn ban" onclick="banIP('${ip}')">Ban</button>`;
+                }
+                
+                html += '</td>';
+                html += '</tr>';
+            }
+            
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function banIP(ip) {
+            if (!confirm(`Ban IP address ${ip}?\n\nThis will prevent this IP from submitting any new responses.`)) {
+                return;
+            }
+            
+            fetch(`${API_BASE}/api/admin/ban-ip`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Monitor-Token': authToken
+                },
+                body: JSON.stringify({ip_address: ip})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(`✅ IP ${ip} has been banned`);
+                    loadIPStats();
+                } else {
+                    alert(`❌ Error: ${data.message}`);
+                }
+            })
+            .catch(err => {
+                alert(`❌ Network error: ${err.message}`);
+            });
+        }
+
+        function unbanIP(ip) {
+            if (!confirm(`Unban IP address ${ip}?`)) {
+                return;
+            }
+            
+            fetch(`${API_BASE}/api/admin/unban-ip`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Monitor-Token': authToken
+                },
+                body: JSON.stringify({ip_address: ip})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(`✅ IP ${ip} has been unbanned`);
+                    loadIPStats();
+                } else {
+                    alert(`❌ Error: ${data.message}`);
+                }
+            })
+            .catch(err => {
+                alert(`❌ Network error: ${err.message}`);
+            });
+        }
+        
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            if (authToken && document.getElementById('content').style.display !== 'none') {
+                loadIPStats();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

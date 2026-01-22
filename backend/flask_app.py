@@ -215,6 +215,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
         try:
+            # Extract IP address
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+            remote_addr = request.remote_addr or ""
+            ip_address = forwarded_for or cf_connecting_ip or remote_addr
+            
+            # Check if IP is banned (skip check for localhost/admin)
+            is_localhost = remote_addr in ["127.0.0.1", "::1", "localhost"]
+            if not is_localhost and crowd_interface.is_ip_banned(ip_address):
+                print(f"🚫 Blocked submission from banned IP: {ip_address}")
+                return jsonify({"status": "error", "message": "Your IP address has been blocked"}), 403
 
             # Validate request data
             data = request.get_json(force=True, silent=True)
@@ -247,8 +258,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # MTurk worker: has forwarded header OR non-localhost direct access
             is_mturk_worker = forwarded_for or cf_connecting_ip or remote_addr not in ["127.0.0.1", "::1", "localhost"]
             
-            # Mark admin submissions for async mode handling
+            # Mark admin submissions for async mode handling and include IP address
             data["is_admin"] = not is_mturk_worker
+            data["ip_address"] = ip_address
             
             # Record this as a response to the correct state for this session
             # The frontend now includes state_id in the request data
@@ -2109,6 +2121,70 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         except Exception as e:
             print(f"❌ Error deleting MTurk HIT: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    # =========================
+    # IP Address Management API
+    # =========================
+
+    @app.route("/api/admin/ip-stats", methods=["GET"])
+    @require_monitor_auth
+    def get_ip_stats():
+        """Get submission statistics grouped by IP address."""
+        try:
+            stats = crowd_interface.get_ip_submission_stats()
+            return jsonify({"status": "success", "ip_stats": stats})
+        except Exception as e:
+            print(f"❌ Error getting IP stats: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/admin/ban-ip", methods=["POST"])
+    @require_monitor_auth
+    def ban_ip():
+        """Ban an IP address."""
+        try:
+            data = request.get_json()
+            ip_address = data.get("ip_address")
+            
+            if not ip_address:
+                return jsonify({"status": "error", "message": "Missing ip_address"}), 400
+            
+            result = crowd_interface.ban_ip(ip_address)
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error banning IP: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/admin/unban-ip", methods=["POST"])
+    @require_monitor_auth
+    def unban_ip():
+        """Unban an IP address."""
+        try:
+            data = request.get_json()
+            ip_address = data.get("ip_address")
+            
+            if not ip_address:
+                return jsonify({"status": "error", "message": "Missing ip_address"}), 400
+            
+            result = crowd_interface.unban_ip(ip_address)
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error unbanning IP: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/admin/banned-ips", methods=["GET"])
+    @require_monitor_auth
+    def get_banned_ips():
+        """Get list of all banned IP addresses."""
+        try:
+            banned_ips = crowd_interface.get_banned_ips()
+            return jsonify({"status": "success", "banned_ips": banned_ips})
+        except Exception as e:
+            print(f"❌ Error getting banned IPs: {e}")
+            traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # Serve static files from src/ directory (for MTurk workers)

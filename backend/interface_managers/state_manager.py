@@ -861,6 +861,7 @@ class StateManager:
             user_name = response_data.get("user_name")
             user_email = response_data.get("user_email")
             used_animation = response_data.get("used_animation", False)  # Track if user clicked animation
+            ip_address = response_data.get("ip_address")  # Track IP address
             
             if "user_submissions" not in state_info:
                 state_info["user_submissions"] = []
@@ -869,6 +870,7 @@ class StateManager:
                 "email": user_email,
                 "action_index": len(state_info["actions"]) - 1,  # Index of the action just appended
                 "used_animation": used_animation,  # NEW: Track animation usage
+                "ip_address": ip_address,  # NEW: Track IP address
             })
             
             # Track submission timing for this user
@@ -2494,6 +2496,7 @@ class StateManager:
                     # Get user's timing info for this state
                     duration_seconds = 0.0
                     used_animation = user.get("used_animation", False)
+                    ip_address = user.get("ip_address")
                     
                     if user_email in state_info.get("user_timings", {}):
                         timing = state_info["user_timings"][user_email]
@@ -2538,6 +2541,7 @@ class StateManager:
                         current_approval_rate=user_approval_rate,
                         current_approval_count=user_approved,
                         current_total_count=user_total,
+                        ip_address=ip_address,
                     )
             
             # After recording decision, clear current and activate next from queue

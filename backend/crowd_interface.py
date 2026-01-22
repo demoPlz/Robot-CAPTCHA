@@ -195,6 +195,10 @@ class CrowdInterface:
         self.asynchronous_mode = asynchronous_mode
         self.async_admin_responses_per_state = async_admin_responses_per_state
 
+        # IP address banning system
+        self.banned_ips: set[str] = set()
+        self.banned_ips_lock = Lock()
+
         # Episode-based state management (shared with StateManager via reference)
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int}}
         self.completed_states_by_episode = (
@@ -1331,6 +1335,91 @@ class CrowdInterface:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
+
+    # =========================
+    # IP Address Management
+    # =========================
+
+    def ban_ip(self, ip_address: str) -> dict:
+        """Ban an IP address from submitting.
+        
+        Args:
+            ip_address: IP address to ban
+            
+        Returns:
+            Status dict
+        """
+        with self.banned_ips_lock:
+            self.banned_ips.add(ip_address)
+        print(f"🚫 Banned IP: {ip_address}")
+        return {"status": "success", "message": f"Banned IP: {ip_address}"}
+
+    def unban_ip(self, ip_address: str) -> dict:
+        """Unban an IP address.
+        
+        Args:
+            ip_address: IP address to unban
+            
+        Returns:
+            Status dict
+        """
+        with self.banned_ips_lock:
+            if ip_address in self.banned_ips:
+                self.banned_ips.remove(ip_address)
+                print(f"✅ Unbanned IP: {ip_address}")
+                return {"status": "success", "message": f"Unbanned IP: {ip_address}"}
+            else:
+                return {"status": "error", "message": f"IP not banned: {ip_address}"}
+
+    def is_ip_banned(self, ip_address: str) -> bool:
+        """Check if an IP address is banned.
+        
+        Args:
+            ip_address: IP address to check
+            
+        Returns:
+            True if banned, False otherwise
+        """
+        with self.banned_ips_lock:
+            return ip_address in self.banned_ips
+
+    def get_banned_ips(self) -> list[str]:
+        """Get list of all banned IP addresses.
+        
+        Returns:
+            List of banned IPs
+        """
+        with self.banned_ips_lock:
+            return sorted(list(self.banned_ips))
+
+    def get_ip_submission_stats(self) -> dict:
+        """Get submission statistics grouped by IP address.
+        
+        Returns:
+            Dict mapping IP addresses to submission counts and user info
+        """
+        ip_stats = {}
+        
+        # Aggregate from async_user_logger if available
+        if self.state_manager.async_user_logger:
+            for email, stats in self.state_manager.async_user_logger.user_stats.items():
+                for ip in stats.get("ip_addresses", []):
+                    if ip not in ip_stats:
+                        ip_stats[ip] = {
+                            "total_submissions": 0,
+                            "users": [],
+                            "is_banned": self.is_ip_banned(ip)
+                        }
+                    ip_stats[ip]["total_submissions"] += stats["total_submissions"]
+                    ip_stats[ip]["users"].append({
+                        "email": email,
+                        "name": stats["name"],
+                        "submissions": stats["total_submissions"],
+                        "approved": stats["approved_count"],
+                        "rejected": stats["rejected_count"]
+                    })
+        
+        return ip_stats
 
     def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
         """Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing."""

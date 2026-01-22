@@ -55,6 +55,7 @@ class AsyncUserLogger:
         current_approval_rate: Optional[float] = None,
         current_approval_count: Optional[int] = None,
         current_total_count: Optional[int] = None,
+        ip_address: Optional[str] = None,
     ):
         """Log a single submission immediately after approval/rejection.
         
@@ -69,6 +70,7 @@ class AsyncUserLogger:
             current_approval_rate: User's approval rate so far (0.0-1.0)
             current_approval_count: Number of approved submissions so far
             current_total_count: Total number of reviewed submissions so far
+            ip_address: IP address of the user (optional)
         """
         timestamp = time.time()
         timestamp_iso = datetime.now().isoformat()
@@ -83,6 +85,7 @@ class AsyncUserLogger:
             self.user_stats[user_email] = {
                 "name": user_name,
                 "email": user_email,
+                "ip_addresses": set(),  # Track all IPs used by this user
                 "submissions": [],
                 "approved_count": 0,
                 "rejected_count": 0,
@@ -95,6 +98,10 @@ class AsyncUserLogger:
         stats = self.user_stats[user_email]
         stats["total_submissions"] += 1
         stats["total_duration_seconds"] += duration_seconds
+        
+        # Track IP address
+        if ip_address:
+            stats["ip_addresses"].add(ip_address)
         
         if used_animation:
             stats["animation_usage_count"] += 1
@@ -113,6 +120,7 @@ class AsyncUserLogger:
             "timestamp_iso": timestamp_iso,
             "user_name": user_name,
             "user_email": user_email,
+            "ip_address": ip_address,
             "episode_id": episode_id,
             "state_id": state_id,
             "duration_seconds": round(duration_seconds, 2),
@@ -177,6 +185,7 @@ class AsyncUserLogger:
             user_summary = {
                 "name": stats["name"],
                 "email": email,
+                "ip_addresses": sorted(list(stats.get("ip_addresses", set()))),  # Convert set to list for JSON
                 "total_submissions": stats["total_submissions"],
                 "approved": stats["approved_count"],
                 "rejected": stats["rejected_count"],
