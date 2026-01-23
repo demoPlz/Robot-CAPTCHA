@@ -2736,8 +2736,6 @@ class StateManager:
                     return
             
             # All checks passed - finalize episode
-                return
-
             print(f"💾 Episode {episode_id} finalized (buffered for batch save)")
             self.episodes_completed.add(episode_id)  # for monitoring
 

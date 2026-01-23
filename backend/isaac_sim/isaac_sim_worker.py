@@ -70,11 +70,6 @@ class AnimationFrameCache:
 
         if frame_index == self.total_frames - 1:
             self.is_complete = True
-            if self.generation_start_time is not None:
-                generation_time = time.time() - self.generation_start_time
-                print(f"✓ Animation generated: {self.frame_count} frames in {generation_time:.2f}s")
-            else:
-                print(f"✓ Animation generated: {self.frame_count} frames")
 
     def get_current_replay_frame(self) -> dict | None:
         """Get the current frame for replay based on elapsed time."""
@@ -112,8 +107,6 @@ class AnimationFrameCache:
     def clear_cache(self):
         """Clear all cached frames and clean up files."""
         if self.frames:
-            print(f"🧹 Clearing frame cache for user {self.user_id} - {len(self.frames)} frames")
-
             # Delete frame files from disk
             for frame_data in self.frames.values():
                 for image_path in frame_data.values():
@@ -511,10 +504,6 @@ class IsaacSimWorker:
 
         # Get the joint position for Drawer_Joint
         drawer_joint_pos = drawer_joint_positions.get("Drawer_Joint", 0.0)
-
-        print(
-            f"[Worker] 🗄️  Setting drawer via tray position: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})"
-        )
 
         # Determine the correct world path based on user_id
         if user_id == 0:
@@ -1064,8 +1053,6 @@ class IsaacSimWorker:
         import omni.usd
         from pxr import Gf, UsdGeom
 
-        print("Synchronizing animation environments to new state...")
-
         object_states = config.get("object_poses", {})
 
         # Update each animation environment
@@ -1076,7 +1063,6 @@ class IsaacSimWorker:
                 # Update object poses for ALL environments using appropriate object references
                 if user_id == 0:
                     # User 0: Use original object references - reset to absolute positions
-                    print(f"🔧 Syncing objects for user 0 (original environment)")
 
                     # Dynamically sync all configured objects
                     for obj_name, state in object_states.items():
@@ -1091,18 +1077,15 @@ class IsaacSimWorker:
                                 self.objects[obj_name].set_world_pose(position=pos, orientation=rot)
                                 self.objects[obj_name].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                                 self.objects[obj_name].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                                print(f"✅ Synced {obj_name} to {pos} (physics cleared)")
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
-                    print(
-                        f"🔧 Syncing objects for user {user_id} (cloned environment) using scene registry WITH OFFSET"
-                    )
 
                     # Calculate the spatial offset for this environment
                     # User environments are spaced diagonally: [user_id * spacing, user_id * spacing, 0]
                     spatial_offset = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, 0])
-                    print(f"📍 User {user_id} spatial offset: {spatial_offset}")                    # Sync each cloned object using scene registry with spatial offset applied
+                    
+                    # Sync each cloned object using scene registry with spatial offset applied
                     # Dynamically build object mappings based on configured objects
                     for obj_name in object_states.keys():
                         # Skip non-RigidPrim objects
@@ -1118,10 +1101,6 @@ class IsaacSimWorker:
                         offset_pos = original_pos + spatial_offset
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
 
-                        print(
-                            f"🔄 {obj_name}: Original pos {original_pos} + offset {spatial_offset} = {offset_pos}"
-                        )
-
                         # For Tennis ball, use lowercase naming convention for scene registry
                         scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
@@ -1131,13 +1110,6 @@ class IsaacSimWorker:
                             scene_obj.set_world_pose(position=offset_pos, orientation=rot)
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                            print(
-                                f"✅ Synced {obj_name} via scene registry to offset pos: {offset_pos} (physics cleared)"
-                            )
-                        else:
-                            print(f"⚠️ Scene object {scene_name} not found for user {user_id} - skipping sync")
-
-                    print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
 
                 for step in range(50):
                     self.world.step(render=True)
@@ -1275,7 +1247,6 @@ class IsaacSimWorker:
 
         # First time or different animation - need to generate frames
         config_source = "state-config" if state_config else "global-config"
-        print(f"🎬 Generating animation for user {user_id} (using {config_source})")
 
         # STEP 1: Stop any existing animation for this user to ensure clean start
         if user_id in self.active_animations:
@@ -1356,7 +1327,6 @@ class IsaacSimWorker:
 
     def stop_user_animation(self, user_id):
         """Stop animation for specific user - clear cache and stop generation."""
-        print(f"[Worker] 🛑 Stopping animation for user {user_id}")
 
         # Signal stop to any active frame generation
         if user_id in self.frame_generation_in_progress or user_id in self.chunked_generation_state:
@@ -1380,7 +1350,6 @@ class IsaacSimWorker:
         self.frame_generation_in_progress.discard(user_id)
         self.animation_stop_requested.discard(user_id)
 
-        print(f"[Worker] ✅ Animation stopped, cache cleared for user {user_id}")
         return {"status": "animation_stopped", "user_id": user_id}
 
     def set_joint_positions_physics_inspector(self, target_positions):
@@ -1706,7 +1675,6 @@ class IsaacSimWorker:
             # Debug: Show which config source we're using
             config_source = "state-specific" if state_config is not None else "global (last_sync)"
             robot_joints_preview = config_to_use["robot_joints"][:3] if hasattr(config_to_use["robot_joints"], "__getitem__") else "N/A"
-            print(f"🔄 Resetting user {user_id} using {config_source} config: joints[0:3]={robot_joints_preview}")
 
             # Detect grasp to determine gripper state
             initial_joints = config_to_use["robot_joints"]
@@ -1715,16 +1683,13 @@ class IsaacSimWorker:
             robot_joints = initial_joints.copy()
 
             # STEP 0: Disable gravity globally
-            print(f"[Worker] 🌍 Disabling gravity globally for reset (user {user_id})")
             self._disable_gravity_globally()
 
             # STEP 1: Hide robot visually (physics stays enabled!)
-            print(f"[Worker] 👻 Hiding robot during reset for user {user_id} (visually only)")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["hide"]()
 
             # STEP 2: Position robot with gripper OPEN (if grasping)
-            print(f"[Worker] 🦾 Positioning robot (gripper {'OPEN' if grasped else 'as-is'})")
             if grasped:
                 robot_joints[-1] = 0.044  # Open gripper
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
@@ -1732,7 +1697,6 @@ class IsaacSimWorker:
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
 
             robot.set_joint_positions(robot_joints_8dof)
-            print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
 
             # STEP 3: Reset objects
             object_states = config_to_use.get(
@@ -1928,7 +1892,6 @@ class IsaacSimWorker:
                         # Signal that generation is complete so slot can be released
                         result["_generation_complete"] = True
                         cache.slot_released = True  # Mark to prevent duplicate releases
-                        print(f"🎉 Generation complete signal sent for user {user_id}")
                     return result
                 else:
                     print(f"⚠️ Failed to serve cached frames for user {user_id}, falling back to live capture")

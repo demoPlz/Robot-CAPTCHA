@@ -306,17 +306,6 @@ class SimManager:
                 ep = self.pending_states_by_episode.get(episode_id)
                 if ep and state_id in ep:
                     state_config = ep[state_id].get("sim_config")
-                    if state_config:
-                        print(f"🎯 Animation requested for state (ep={episode_id}, state={state_id})")
-                        print(f"   Retrieved config: robot_joints={state_config.get('robot_joints', 'MISSING')[:3] if isinstance(state_config.get('robot_joints'), list) else 'INVALID'}..., objects={list(state_config.get('object_poses', {}).keys())}")
-                    else:
-                        print(f"⚠️ Animation requested for state (ep={episode_id}, state={state_id}) but NO sim_config found!")
-                        print(f"   Available keys in state_info: {list(ep[state_id].keys())}")
-                else:
-                    if not ep:
-                        print(f"⚠️ Episode {episode_id} not found in pending_states")
-                    else:
-                        print(f"⚠️ State {state_id} not found in episode {episode_id}")
 
         try:
             result = self.isaac_manager.start_user_animation_managed(

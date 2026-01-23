@@ -4347,13 +4347,11 @@ loader.load(
 
     function updateGripArrowVisibility() {
       // Hide arrows when animating OR when robot is moved (same as gripper HUD)
-      // Also hide on Netlify (production)
-      const isNetlify = window.isNetlifyEnvironment || false;
       let disabled = false;
       if (typeof window.taskCompletedSelected !== 'undefined' && typeof slidersAtDefault === 'function') {
         disabled = window.taskCompletedSelected || !slidersAtDefault();
       }
-      const showArrows = !animating && !disabled && !isNetlify;
+      const showArrows = !animating && !disabled;
       gripArrows.forEach(arrow => {
         if (arrow) arrow.visible = showArrows;
       });
@@ -5555,11 +5553,6 @@ loader.load(
       hud.className = 'grip-hud';
       hud.setAttribute('role','group');
       hud.setAttribute('aria-label','Grip control');
-      
-      // Hide gripper HUD for Netlify users
-      if (window.isNetlifyEnvironment) {
-        hud.style.display = 'none';
-      }
 
       const badge = document.createElement('span');
       badge.className = 'badge free';

@@ -290,12 +290,6 @@ class PersistentWorkerManager:
         if not self.animation_initialized:
             return {"status": "error", "message": "Animation not initialized"}
 
-        # Debug: Check what state_config we're sending
-        if state_config:
-            print(f"📤 Manager sending state_config: robot_joints[0:3]={state_config.get('robot_joints', 'MISSING')[:3] if isinstance(state_config.get('robot_joints'), list) else 'INVALID'}")
-        else:
-            print(f"⚠️ Manager sending NO state_config")
-
         command = {
             "action": "start_user_animation",
             "user_id": user_id,
