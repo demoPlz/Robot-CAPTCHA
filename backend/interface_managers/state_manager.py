@@ -2992,10 +2992,12 @@ class StateManager:
         if self.async_pool_finalized:
             return {"status": "error", "message": "Admin phase already finalized"}
         
-        # Move REAL robot to home/dock position at the start of async labeling
+        # Move REAL robot to home then dock position at the start of async labeling
         import math
+        import time
         HOME_POSITION_DEG = [0, 60, 75, -60, 0, 0, 2]
         HOME_POSITION_RAD = [deg * math.pi / 180.0 for deg in HOME_POSITION_DEG]
+        DOCK_POSITION_RAD = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Sleep pose - all joints at 0
         
         if robot is not None:
             print("🏠 Moving REAL robot to docking position for async labeling phase...")
@@ -3003,11 +3005,19 @@ class StateManager:
                 if not robot.is_connected:
                     robot.connect()
                 
-                # Send robot to home position
+                # Stage 1: Move to home position
+                print("   Stage 1: Moving to home position...")
                 robot.follower_arms['main'].write("Goal_Position", HOME_POSITION_RAD, duration=5.0)
-                print("✓ Real robot moving to docking position")
+                time.sleep(5.5)  # Wait for movement to complete
+                print("   ✓ Reached home position")
+                
+                # Stage 2: Move to docked/sleep position (all joints at 0)
+                print("   Stage 2: Moving to docked position (sleep pose)...")
+                robot.follower_arms['main'].write("Goal_Position", DOCK_POSITION_RAD, duration=3.0)
+                time.sleep(3.5)  # Wait for movement to complete
+                print("✓ Robot docked and ready for async labeling")
             except Exception as e:
-                print(f"⚠️  Failed to move real robot to dock: {e}")
+                print(f"⚠️  Failed to dock robot: {e}")
         
         with self.state_lock:
             # Count admin-complete states that are ready for async serving
