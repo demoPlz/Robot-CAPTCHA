@@ -120,6 +120,26 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/get-state")
     def get_state():
         try:
+            # Extract IP address and check if banned
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+            remote_addr = request.remote_addr or ""
+            ip_address = forwarded_for or cf_connecting_ip or remote_addr
+            
+            # Check if IP is banned (skip check only for direct localhost access)
+            is_direct_localhost = not (forwarded_for or cf_connecting_ip) and remote_addr in ["127.0.0.1", "::1", "localhost"]
+            if not is_direct_localhost and crowd_interface.is_ip_banned(ip_address):
+                print(f"🚫 Blocked get-state request from banned IP: {ip_address}")
+                # Return no_pending_states status so frontend shows "Waiting for new states..."
+                response = jsonify({
+                    "status": "no_pending_states",
+                    "message": "Your IP address has been blocked from accessing this service."
+                })
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+            
             # Extract user email from request to track timing
             user_email = request.args.get('user_email', None) or None  # Convert empty string to None
             
@@ -220,11 +240,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             cf_connecting_ip = request.headers.get("CF-Connecting-IP")
             remote_addr = request.remote_addr or ""
             ip_address = forwarded_for or cf_connecting_ip or remote_addr
-            print(f"🌐 [IP DEBUG] Captured IP: {ip_address} (forwarded={forwarded_for}, cf={cf_connecting_ip}, remote={remote_addr})")
             
-            # Check if IP is banned (skip check for localhost/admin)
-            is_localhost = remote_addr in ["127.0.0.1", "::1", "localhost"]
-            if not is_localhost and crowd_interface.is_ip_banned(ip_address):
+            # Check if IP is banned
+            # Skip ban check only for true direct localhost access (no forwarded headers + localhost remote)
+            is_direct_localhost = not (forwarded_for or cf_connecting_ip) and remote_addr in ["127.0.0.1", "::1", "localhost"]
+            if not is_direct_localhost and crowd_interface.is_ip_banned(ip_address):
                 print(f"🚫 Blocked submission from banned IP: {ip_address}")
                 return jsonify({"status": "error", "message": "Your IP address has been blocked"}), 403
 
@@ -243,31 +263,25 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             session_id = request.headers.get("X-Session-ID", request.remote_addr or "unknown")
 
             # Notify MTurk manager of assignment submission (if MTurk enabled)
-            # Distinguish expert (localhost direct) vs MTurk (via tunnel) workers
+            # Distinguish expert (localhost direct) vs MTurk/Netlify (via tunnel) workers
             episode_id = data["episode_id"]
             state_id = data["state_id"]
             user_name = data.get("user_name", "Unknown")
             user_email = data.get("user_email", "unknown")
             
-            # Check for X-Forwarded-For header (set by cloudflared tunnel)
-            # If present, request came through tunnel (MTurk worker)
-            # If absent and localhost, it's direct localhost access (expert worker)
-            forwarded_for = request.headers.get("X-Forwarded-For")
-            cf_connecting_ip = request.headers.get("CF-Connecting-IP")
-            remote_addr = request.remote_addr or ""
-            
-            # MTurk worker: has forwarded header OR non-localhost direct access
-            is_mturk_worker = forwarded_for or cf_connecting_ip or remote_addr not in ["127.0.0.1", "::1", "localhost"]
+            # Expert submission: NO forwarded headers AND localhost remote_addr (direct local access)
+            # MTurk/Netlify worker: HAS forwarded headers (came through tunnel/proxy)
+            is_expert_submission = is_direct_localhost
             
             # Mark admin submissions for async mode handling and include IP address
-            data["is_admin"] = not is_mturk_worker
+            data["is_admin"] = is_expert_submission
             data["ip_address"] = ip_address
             
             # Record this as a response to the correct state for this session
             # The frontend now includes state_id in the request data
             crowd_interface.record_response(data)
             
-            if is_mturk_worker:
+            if not is_expert_submission:
                 origin = forwarded_for or cf_connecting_ip or remote_addr
                 print(f"🌐 Submission from {user_name} ({user_email}): episode={episode_id}, state={state_id} (from {origin})")
                 crowd_interface.update_mturk_assignment_count(episode_id, state_id)

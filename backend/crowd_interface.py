@@ -1469,14 +1469,11 @@ class CrowdInterface:
         
         # Aggregate from async_user_logger if available
         if self.state_manager.async_user_logger:
-            print(f"🌐 [IP DEBUG] Checking {len(self.state_manager.async_user_logger.user_stats)} users for IP stats")
             for email, stats in self.state_manager.async_user_logger.user_stats.items():
                 # ip_addresses is stored as a set, so convert to list if it's a set
                 ip_addresses = stats.get("ip_addresses", set())
                 if isinstance(ip_addresses, set):
                     ip_addresses = list(ip_addresses)
-                
-                print(f"🌐 [IP DEBUG] User {email}: {len(ip_addresses)} IPs - {ip_addresses}")
                 
                 for ip in ip_addresses:
                     if ip not in ip_stats:
@@ -1494,7 +1491,6 @@ class CrowdInterface:
                         "rejected": stats["rejected_count"]
                     })
         
-        print(f"🌐 [IP DEBUG] Returning {len(ip_stats)} unique IP addresses")
         return ip_stats
 
     def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:

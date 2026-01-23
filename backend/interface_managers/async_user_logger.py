@@ -102,9 +102,6 @@ class AsyncUserLogger:
         # Track IP address
         if ip_address:
             stats["ip_addresses"].add(ip_address)
-            print(f"🌐 [IP DEBUG] Added IP {ip_address} for user {user_email}, total IPs: {len(stats['ip_addresses'])}")
-        else:
-            print(f"⚠️ [IP DEBUG] No IP address provided for user {user_email}")
         
         if used_animation:
             stats["animation_usage_count"] += 1
