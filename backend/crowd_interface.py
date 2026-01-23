@@ -1343,6 +1343,15 @@ class CrowdInterface:
         It determines the global maximum action count, updates the schema once,
         then saves all episodes in order.
         """
+        # Force all pending finalization timers to fire immediately
+        # This prevents race conditions where timers fire during the batch save
+        with self.state_manager.state_lock:
+            pending_timers = list(self.state_manager._episode_finalize_timers.items())
+            for episode_id, timer in pending_timers:
+                timer.cancel()
+                # Manually trigger finalization now (caller already holds state_lock)
+                self.state_manager._finalize_episode_logic(episode_id)
+        
         if not hasattr(self.state_manager, '_finalized_episodes'):
             print(f"⚠️  No finalized episodes to save")
             return

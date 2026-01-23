@@ -256,7 +256,7 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     # Auto-finalize async pool if in async mode
     if _CROWD_CONFIG.asynchronous_mode:
         log_say("Finalizing admin phase and preparing async pool", cfg.play_sounds)
-        result = crowd_interface.state_manager.finalize_admin_phase()
+        result = crowd_interface.state_manager.finalize_admin_phase(robot=robot)
         if result.get("status") == "success":
             states_count = result.get("states_in_pool", 0)
             log_say(f"Async pool ready: {states_count} states available for user labeling", cfg.play_sounds)

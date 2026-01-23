@@ -2711,51 +2711,55 @@ class StateManager:
         """Timer callback."""
         print(f"⏰ Finalization timer fired for episode {episode_id}")
         with self.state_lock:
-            self._episode_finalize_timers.pop(episode_id, None)
+            self._finalize_episode_logic(episode_id)
+    
+    def _finalize_episode_logic(self, episode_id: int):
+        """Finalize episode logic (caller must hold state_lock)."""
+        self._episode_finalize_timers.pop(episode_id, None)
 
-            if self.pending_states_by_episode.get(episode_id):
-                # New states has become pending in the episode
-                print(f"⚠️  Episode {episode_id} has new pending states - skipping finalization")
+        if self.pending_states_by_episode.get(episode_id):
+            # New states has become pending in the episode
+            print(f"⚠️  Episode {episode_id} has new pending states - skipping finalization")
+            return
+
+        # Check if there's a pre-execution approval pending or queued for this episode
+        with self.pre_execution_approval_lock:
+            # Check active approval
+            if (self.pending_pre_execution_approval and 
+                self.pending_pre_execution_approval.get("episode_id") == episode_id):
+                self._schedule_episode_finalize_after_grace(episode_id)
                 return
+            
+            # Check queued approvals
+            queued_for_episode = [
+                req for req in self.pre_execution_approval_queue 
+                if req.get("episode_id") == episode_id
+            ]
+            if queued_for_episode:
+                self._schedule_episode_finalize_after_grace(episode_id)
+                return
+        
+        # All checks passed - finalize episode
+        print(f"💾 Episode {episode_id} finalized (buffered for batch save)")
+        self.episodes_completed.add(episode_id)  # for monitoring
 
-            # Check if there's a pre-execution approval pending or queued for this episode
-            with self.pre_execution_approval_lock:
-                # Check active approval
-                if (self.pending_pre_execution_approval and 
-                    self.pending_pre_execution_approval.get("episode_id") == episode_id):
-                    self._schedule_episode_finalize_after_grace(episode_id)
-                    return
-                
-                # Check queued approvals
-                queued_for_episode = [
-                    req for req in self.pre_execution_approval_queue 
-                    if req.get("episode_id") == episode_id
-                ]
-                if queued_for_episode:
-                    self._schedule_episode_finalize_after_grace(episode_id)
-                    return
-            
-            # All checks passed - finalize episode
-            print(f"💾 Episode {episode_id} finalized (buffered for batch save)")
-            self.episodes_completed.add(episode_id)  # for monitoring
-
-            buffer = self.completed_states_buffer_by_episode[episode_id]
-            
-            # Calculate episode timing
-            episode_timing = self._calculate_episode_timing(episode_id, buffer)
-            
-            # Store for batch save at the end (don't save immediately)
-            if not hasattr(self, '_finalized_episodes'):
-                self._finalized_episodes = {}
-            self._finalized_episodes[episode_id] = {
-                'buffer': buffer,
-                'timing': episode_timing
-            }
-            
-            print(f"✅ Episode {episode_id} ready for batch save ({len(self._finalized_episodes)} episodes buffered)")
-            
-            # Don't delete buffer yet - we'll need it for batch save
-            # del self.completed_states_buffer_by_episode[episode_id]
+        buffer = self.completed_states_buffer_by_episode[episode_id]
+        
+        # Calculate episode timing
+        episode_timing = self._calculate_episode_timing(episode_id, buffer)
+        
+        # Store for batch save at the end (don't save immediately)
+        if not hasattr(self, '_finalized_episodes'):
+            self._finalized_episodes = {}
+        self._finalized_episodes[episode_id] = {
+            'buffer': buffer,
+            'timing': episode_timing
+        }
+        
+        print(f"✅ Episode {episode_id} ready for batch save ({len(self._finalized_episodes)} episodes buffered)")
+        
+        # Don't delete buffer yet - we'll need it for batch save
+        # del self.completed_states_buffer_by_episode[episode_id]
 
     def _calculate_episode_timing(self, episode_id: int, buffer: list) -> dict:
         """Calculate comprehensive timing statistics for an episode.
@@ -2970,11 +2974,14 @@ class StateManager:
     # Asynchronous Mode Management
     # =========================
 
-    def finalize_admin_phase(self) -> dict:
+    def finalize_admin_phase(self, robot=None) -> dict:
         """Finalize admin data collection phase and prepare for async labeling.
         
         Marks all admin-complete states as ready for async serving. States remain in 
         pending_states_by_episode until they receive all required user labels.
+        
+        Args:
+            robot: Optional Robot instance to send to docking position
         
         Returns:
             dict with status and counts
@@ -2984,6 +2991,23 @@ class StateManager:
         
         if self.async_pool_finalized:
             return {"status": "error", "message": "Admin phase already finalized"}
+        
+        # Move REAL robot to home/dock position at the start of async labeling
+        import math
+        HOME_POSITION_DEG = [0, 60, 75, -60, 0, 0, 2]
+        HOME_POSITION_RAD = [deg * math.pi / 180.0 for deg in HOME_POSITION_DEG]
+        
+        if robot is not None:
+            print("🏠 Moving REAL robot to docking position for async labeling phase...")
+            try:
+                if not robot.is_connected:
+                    robot.connect()
+                
+                # Send robot to home position
+                robot.follower_arms['main'].write("Goal_Position", HOME_POSITION_RAD, duration=5.0)
+                print("✓ Real robot moving to docking position")
+            except Exception as e:
+                print(f"⚠️  Failed to move real robot to dock: {e}")
         
         with self.state_lock:
             # Count admin-complete states that are ready for async serving
