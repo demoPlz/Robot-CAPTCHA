@@ -260,8 +260,6 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
         if result.get("status") == "success":
             states_count = result.get("states_in_pool", 0)
             log_say(f"Async pool ready: {states_count} states available for user labeling", cfg.play_sounds)
-            print(f"📊 Async pool status: {states_count} states ready")
-            print(f"   Users can now label via Netlify")
             
             # Wait for users to complete all labeling
             print(f"\n⏳ Waiting for users to complete async labeling...")

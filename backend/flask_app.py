@@ -281,12 +281,16 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # The frontend now includes state_id in the request data
             crowd_interface.record_response(data)
             
-            if not is_expert_submission:
+            # Only log in sync mode (in async mode, the clean log line from async_user_logger is sufficient)
+            if not is_expert_submission and not crowd_interface.state_manager.async_pool_finalized:
                 origin = forwarded_for or cf_connecting_ip or remote_addr
                 print(f"🌐 Submission from {user_name} ({user_email}): episode={episode_id}, state={state_id} (from {origin})")
                 crowd_interface.update_mturk_assignment_count(episode_id, state_id)
-            else:
+            elif is_expert_submission:
                 print(f"👤 Expert submission from {user_name}: episode={episode_id}, state={state_id}")
+            elif not is_expert_submission:
+                # Async mode - just update MTurk if applicable
+                crowd_interface.update_mturk_assignment_count(episode_id, state_id)
             
             return jsonify({"status": "ok"})
 

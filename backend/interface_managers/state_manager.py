@@ -153,11 +153,12 @@ class StateManager:
         self.auto_label_queue = queue.Queue()
         self.auto_label_worker_thread = None
         
+        # Pre-approval worker thread and queue
+        self.pre_approval_queue = queue.Queue()  # Queue of (state_info, episode_id, state_id)
+        self.pre_approval_worker_thread = None
+        
         # Flush manager (handles incremental dataset saves)
         self.flush_manager = None  # Initialized after callbacks are set
-        
-        # Pre-approval threads tracking
-        self._pre_approval_threads: dict[tuple[int, int], Thread] = {}  # (episode_id, state_id) -> thread
 
         # Manager dependencies
         self.obs_stream = obs_stream_manager
@@ -214,6 +215,9 @@ class StateManager:
 
         # Start auto-labeling worker
         self._start_auto_label_worker()
+        
+        # Start pre-approval worker
+        self._start_pre_approval_worker()
         
         # Initialize flush manager
         self.flush_manager = FlushManager(
@@ -898,16 +902,12 @@ class StateManager:
                     timing["submitted_at_iso"] = now_iso
                     if timing["first_served_at"]:
                         timing["duration_seconds"] = now - timing["first_served_at"]
-                        print(f"⏱️  {user_name} ({user_email}) completed in {timing['duration_seconds']:.1f}s")
-                    else:
-                        print(f"⚠️  {user_name} ({user_email}) submission received but no start time tracked")
                 
                 # Track submission in async mode (mark as submitted so they can't submit again)
                 if self.asynchronous_mode and self.async_pool_finalized:
                     state_key = (episode_id, state_id)
                     if user_email in self.async_user_submissions:
                         self.async_user_submissions[user_email].add(state_key)
-                        print(f"✅ Marked state ({episode_id}, {state_id}) as submitted by {user_email}")
             
             # Track actual number of unique worker submissions (not including autofill)
             if "actual_num_submissions" not in state_info:
@@ -918,7 +918,6 @@ class StateManager:
             should_run_pre_approval_now = False
             single_action_state_copy = None
             if state_info.get("critical") and self.asynchronous_mode and self.async_pool_finalized and not is_admin_submission:
-                print(f"📋 Triggering immediate pre-approval for async user submission on state {state_id}")
                 should_run_pre_approval_now = True
                 # Create a copy with only the last action for immediate review
                 single_action_state_copy = state_info.copy()
@@ -978,8 +977,6 @@ class StateManager:
                 import datetime
                 state_info["state_completed_at"] = time.time()
                 state_info["state_completed_at_iso"] = datetime.datetime.now().isoformat()
-                state_completion_duration = state_info["state_completed_at"] - state_info["state_created_at"]
-                print(f"📊 State {state_id} completed in {state_completion_duration:.1f}s (from creation to all actions received)")
                 
                 # Build action tensor for all submissions
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
@@ -1047,16 +1044,9 @@ class StateManager:
                         self.completed_states_by_episode[episode_id] = {}
                     self.completed_states_by_episode[episode_id][state_id] = state_info
                     
-                    # Start pre-approval thread BEFORE removing from pending to avoid race condition
+                    # Queue pre-approval request (single worker will process it)
                     if state_info.get("critical") and should_run_pre_approval and state_info_copy:
-                        thread = Thread(
-                            target=self._run_pre_approval_loop_wrapper,
-                            args=(state_info_copy, episode_id, state_id),
-                            daemon=True,
-                        )
-                        self._pre_approval_threads[(episode_id, state_id)] = thread
-                        thread.start()
-                        print(f"🔄 Started pre-approval thread for state {state_id} BEFORE removing from pending")
+                        self.pre_approval_queue.put((state_info_copy, episode_id, state_id))
 
                     # Remove from pending (this triggers episode save when all pending are done)
                     del self.pending_states_by_episode[episode_id][state_id]
@@ -1068,7 +1058,6 @@ class StateManager:
                     # Admin-complete in async mode - mark as ready for async serving but keep in pending
                     state_info["admin_complete"] = True
                     state_info["awaiting_user_labels"] = True
-                    print(f"   State {state_id} admin-complete, awaiting {self.required_responses_per_critical_state - state_info['responses_received']} more user labels")
                     
                     # Add to BOTH completed_states and completed_states_buffer
                     if episode_id not in self.completed_states_by_episode:
@@ -1079,50 +1068,42 @@ class StateManager:
                         self.completed_states_buffer_by_episode[episode_id] = {}
                     self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
                     
-                    # Set final_executed_action to admin's action (first in execution_history)
-                    if state_info.get("execution_history") and len(state_info["execution_history"]) > 0:
-                        admin_action = state_info["execution_history"][0]["action"]
-                        state_info["final_executed_action"] = admin_action.tolist() if hasattr(admin_action, "tolist") else list(admin_action)
-                        print(f"✅ Set final_executed_action for state {state_id} to admin's action")
+                    # Set final_executed_action to admin's action ONCE (first in execution_history)
+                    # Only set if not already set (avoid redundant setting on every user submission)
+                    if "final_executed_action" not in state_info:
+                        if state_info.get("execution_history") and len(state_info["execution_history"]) > 0:
+                            admin_action = state_info["execution_history"][0]["action"]
+                            state_info["final_executed_action"] = admin_action.tolist() if hasattr(admin_action, "tolist") else list(admin_action)
                     
                     # DON'T delete from pending - keep it there for user labeling
-                    
-                    # Set latest_goal NOW for immediate execution
-                    if state_info.get("critical") and state_info.get("execution_history"):
-                        self.latest_goal = state_info["execution_history"][0]["action"]
-                        self.latest_goal_is_undo = False  # This is a normal admin action, not undo
-                        print(f"🤖 Set latest_goal for immediate execution with admin action")
+                    # DON'T set latest_goal - robot doesn't move in async user labeling phase
 
         # Check finalization
         if should_check_finalization:
             with self.state_lock:
                 remaining_pending = len(self.pending_states_by_episode.get(episode_id, {}))
         
-        # Trigger immediate pre-approval for async user submissions
+        # Queue pre-approval request (worker thread will process it)
         if should_run_pre_approval_now and single_action_state_copy:
-            thread = Thread(
-                target=self._run_pre_approval_loop_wrapper,
-                args=(single_action_state_copy, episode_id, state_id),
-                daemon=True,
-            )
-            thread_key = (episode_id, state_id, len(state_info.get("execution_history", [])))
-            self._pre_approval_threads[thread_key] = thread
-            thread.start()
-            print(f"🔄 Started immediate pre-approval thread for state {state_id}")
+            self.pre_approval_queue.put((single_action_state_copy, episode_id, state_id))
         
         # Check if episode is now empty and handle finalization
         if should_check_finalization:
             with self.state_lock:
                 if episode_id in self.pending_states_by_episode and not self.pending_states_by_episode[episode_id]:
-                    # Check if there are any pre-approval threads running for this episode
-                    running_threads = [
-                        (key, thread) for key, thread in self._pre_approval_threads.items()
-                        if key[0] == episode_id and thread.is_alive()
-                    ]
-                    if running_threads:
-                        print(f"⏸️  Episode {episode_id} has {len(running_threads)} pre-approval threads running - will schedule finalization when they complete")
-                    else:
-                        print(f"📦 Episode {episode_id} has no pending states and no running threads - scheduling finalization (grace period: {self.episode_finalize_grace_s}s)")
+                    # Check if there are any pre-approvals queued or active for this episode
+                    with self.pre_execution_approval_lock:
+                        has_pending = (
+                            self.pending_pre_execution_approval is not None and
+                            self.pending_pre_execution_approval.get("episode_id") == episode_id
+                        )
+                        has_queued = any(
+                            req.get("episode_id") == episode_id 
+                            for req in self.pre_execution_approval_queue
+                        )
+                    
+                    if not has_pending and not has_queued:
+                        print(f"📦 Episode {episode_id} complete - scheduling finalization (grace: {self.episode_finalize_grace_s}s)")
                         self._schedule_episode_finalize_after_grace(episode_id)
 
     def get_pending_states_info(self) -> dict:
@@ -1508,7 +1489,7 @@ class StateManager:
 
             # Atomically mark as approved - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = True
-            print(f"✅ Marked pre-execution as approved for state {state_id}")
+            pass  # Approved
             return True
 
     def reject_pre_execution(self, episode_id: int, state_id: int) -> bool:
@@ -1524,7 +1505,7 @@ class StateManager:
 
             # Atomically mark as rejected - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = False
-            print(f"❌ Marked pre-execution as rejected for state {state_id}")
+            pass  # Rejected
             return True
 
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
@@ -2232,16 +2213,8 @@ class StateManager:
             timer.cancel()
             print(f"⏹️  Cancelled finalization timer for episode {episode_id}")
         
-        # 9. Stop pre-approval threads for this episode
-        threads_to_stop = [
-            key for key in self._pre_approval_threads.keys()
-            if key[0] == episode_id
-        ]
-        for key in threads_to_stop:
-            # Thread will exit when it sees the state is gone
-            del self._pre_approval_threads[key]
-        if threads_to_stop:
-            print(f"⏹️  Stopped {len(threads_to_stop)} pre-approval threads")
+        # 9. Clear pre-approval queue for this episode
+        # (Worker thread will skip items when it sees state is gone)
         
         # 10. Delete entire observation cache directory for episode
         obs_dir = self._obs_cache_root / str(episode_id)
@@ -2263,52 +2236,6 @@ class StateManager:
         if text and text.strip().lower() == "end.":
             with self.state_lock:
                 self._auto_fill_end_state_locked(state_info, episode_id, state_id)
-
-    def _run_pre_approval_loop_wrapper(self, state_info: dict, episode_id: int, state_id: int) -> None:
-        """Wrapper for pre-approval loop that handles cleanup."""
-        try:
-            self._run_pre_approval_loop(state_info, episode_id, state_id)
-        finally:
-            # Clean up thread tracking - find and remove this thread's key
-            # Thread keys can be (episode_id, state_id) or (episode_id, state_id, response_num)
-            import threading
-            current = threading.current_thread()
-            thread_to_remove = None
-            for key in list(self._pre_approval_threads.keys()):
-                if key[0] == episode_id and key[1] == state_id:
-                    # Check if this is the current thread
-                    if self._pre_approval_threads[key] == current:
-                        thread_to_remove = key
-                        break
-            
-            if thread_to_remove:
-                del self._pre_approval_threads[thread_to_remove]
-            
-            # Check if this was the last thread for this episode and trigger finalization if ready
-            with self.state_lock:
-                # Check if episode has no pending states
-                if episode_id not in self.pending_states_by_episode or not self.pending_states_by_episode[episode_id]:
-                    # Check if there are any other threads still running for this episode
-                    remaining_threads = [
-                        thread for key, thread in self._pre_approval_threads.items()
-                        if key[0] == episode_id and thread.is_alive()
-                    ]
-                    
-                    if not remaining_threads:
-                        # No pending states and no running threads - check if we should finalize
-                        with self.pre_execution_approval_lock:
-                            has_pending_approval = (
-                                self.pending_pre_execution_approval is not None and
-                                self.pending_pre_execution_approval.get("episode_id") == episode_id
-                            )
-                            has_queued_approvals = any(
-                                req.get("episode_id") == episode_id 
-                                for req in self.pre_execution_approval_queue
-                            )
-                        
-                        if not has_pending_approval and not has_queued_approvals:
-                            print(f"🏁 Last pre-approval thread completed for episode {episode_id} - scheduling finalization")
-                            self._schedule_episode_finalize_after_grace(episode_id)
 
     def _run_pre_approval_loop(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Phase 1: Sample actions one-by-one for pre-approval until stopping condition met.
@@ -2357,8 +2284,7 @@ class StateManager:
                 and not any(torch.equal(a, e["action"]) for e in existing_history)
             ]
             if not remaining_actions_with_dupes:
-                print(f"⚠️  No more actions to review (reviewed {num_reviewed}, approved {num_approved})")
-                break
+                break  # No more actions to review
             
             # Deduplicate remaining actions for selection
             remaining_unique = []
@@ -2404,13 +2330,8 @@ class StateManager:
                             })
                             break
             
-            print(f"👤 Action submitted by {len(action_users)} user(s): {action_users}")
-            
             # Get current robot joint positions
-            print(f"🔍 state_info keys: {state_info.keys()}")
-            print(f"🔍 joint_positions in state_info: {state_info.get('joint_positions')}")
             original_joint_positions_list = list(state_info.get("joint_positions", {}).values())
-            print(f"🤖 Original joint positions list: {original_joint_positions_list}")
             
             # Set up pre-execution approval modal (blocking)
             with self.pre_execution_approval_lock:
@@ -2436,16 +2357,9 @@ class StateManager:
                 # If no approval is currently active, show this one immediately
                 if self.pending_pre_execution_approval is None:
                     self.pending_pre_execution_approval = approval_request
-                    print(f"⏸️  Showing pre-approval modal immediately (state {state_id}, action {num_reviewed + 1})")
                 else:
                     # Queue it - it will be shown after current one is done
                     self.pre_execution_approval_queue.append(approval_request)
-                    print(f"📥 Queued pre-approval request (state {state_id}, action {num_reviewed + 1}) - queue length: {len(self.pre_execution_approval_queue)}")
-                
-            print(f"⏸️  Waiting for pre-approval decision (state {state_id}, action {num_reviewed + 1})")
-            if action_users:
-                user_names = ", ".join([u["name"] for u in action_users if u["name"]])
-                print(f"   Submitted by: {user_names}")
             
             # Block until THIS specific request is approved/rejected
             approved = None
@@ -2471,10 +2385,7 @@ class StateManager:
             
             if approved:
                 num_approved += 1
-                print(f"✅ Action {num_reviewed + 1} approved ({num_approved} total approved)")
             else:
-                print(f"❌ Action {num_reviewed + 1} rejected")
-                
                 # Handle rejection: give users another chance by re-inserting state in their queue
                 state_key = (episode_id, state_id)
                 for user in action_users:
@@ -2493,7 +2404,6 @@ class StateManager:
                             # With weighted dynamic sampling, they'll naturally get this state
                             # with appropriate priority based on its completion status
                             self.async_user_submissions[user_email].discard(state_key)
-                            print(f"♻️  Removed state {state_key} from {user_email}'s submitted set (will be sampled with priority)")
             
             # Log async user submissions (only for user submissions, not admin/autofill)
             if self.async_user_logger and self.asynchronous_mode and self.async_pool_finalized:
@@ -2567,10 +2477,8 @@ class StateManager:
             with self.pre_execution_approval_lock:
                 if self.pre_execution_approval_queue:
                     self.pending_pre_execution_approval = self.pre_execution_approval_queue.pop(0)
-                    print(f"📤 Showing next queued approval (sequence {self.pending_pre_execution_approval['sequence']}, queue length: {len(self.pre_execution_approval_queue)})")
                 else:
                     self.pending_pre_execution_approval = None
-                    print(f"✅ All queued approvals processed")
                 
         # Store all reviewed actions in execution_history and mark loop as complete
         with self.state_lock:
@@ -2607,8 +2515,6 @@ class StateManager:
                     # Check if episode is now complete
                     if not self.pending_states_by_episode.get(episode_id):
                         print(f"📦 Episode {episode_id} has no more pending states after async labeling")
-        
-        print(f"📊 Pre-approval complete: {len(reviewed_actions)} actions reviewed, {num_approved} approved")
 
     # =========================
     # Internal Helper Methods
@@ -2662,6 +2568,45 @@ class StateManager:
     def _auto_label_worker(self):
         for critical_state_id in iter(self.auto_label_queue.get, None):
             self._auto_label(critical_state_id)
+    
+    def _start_pre_approval_worker(self):
+        """Start the single worker thread that processes pre-approval requests."""
+        self.pre_approval_worker_thread = Thread(target=self._pre_approval_worker, daemon=True)
+        self.pre_approval_worker_thread.start()
+    
+    def _pre_approval_worker(self):
+        """Single worker thread that processes pre-approval requests sequentially."""
+        while True:
+            try:
+                # Block until a request is available
+                state_info, episode_id, state_id = self.pre_approval_queue.get()
+                
+                # Process the pre-approval loop
+                self._run_pre_approval_loop(state_info, episode_id, state_id)
+                
+                # Check if episode should finalize after this approval completes
+                with self.state_lock:
+                    if episode_id not in self.pending_states_by_episode or not self.pending_states_by_episode[episode_id]:
+                        # Check if there are any pre-approvals queued or active for this episode
+                        with self.pre_execution_approval_lock:
+                            has_pending = (
+                                self.pending_pre_execution_approval is not None and
+                                self.pending_pre_execution_approval.get("episode_id") == episode_id
+                            )
+                            has_queued = any(
+                                req.get("episode_id") == episode_id 
+                                for req in self.pre_execution_approval_queue
+                            )
+                        
+                        if not has_pending and not has_queued:
+                            print(f"🏁 Pre-approval complete for episode {episode_id} - scheduling finalization")
+                            self._schedule_episode_finalize_after_grace(episode_id)
+                
+                self.pre_approval_queue.task_done()
+            except Exception as e:
+                print(f"❌ Error in pre-approval worker: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _auto_label(self, critical_state_id):
         """
@@ -2790,14 +2735,7 @@ class StateManager:
                     self._schedule_episode_finalize_after_grace(episode_id)
                     return
             
-            # Check if there are any pre-approval threads still running for this episode
-            running_threads = [
-                (key, thread) for key, thread in self._pre_approval_threads.items()
-                if key[0] == episode_id and thread.is_alive()
-            ]
-            if running_threads:
-                # Reschedule finalization to check again later
-                self._schedule_episode_finalize_after_grace(episode_id)
+            # All checks passed - finalize episode
                 return
 
             print(f"💾 Episode {episode_id} finalized (buffered for batch save)")
@@ -3076,10 +3014,11 @@ class StateManager:
             
             self.async_pool_finalized = True
             
-            print(f"🔄 Async admin phase finalized: {states_ready} states ready for user labeling")
+            print(f"{'='*80}")
+            print(f"🔄 Async pool ready: {states_ready} states available for user labeling")
             if states_skipped > 0:
                 print(f"   Skipped {states_skipped} auto-filled states (gripper-only or home position)")
-            print(f"   States remain in pending until fully labeled")
+            print(f"{'='*80}")
             
             return {
                 "status": "success",
@@ -3113,7 +3052,7 @@ class StateManager:
             # Initialize user's submission tracking on first access
             if user_email not in self.async_user_submissions:
                 self.async_user_submissions[user_email] = set()
-                print(f"🎲 New user {user_email}: Starting async labeling")
+                pass  # New user starting async labeling
             
             user_submitted = self.async_user_submissions[user_email]
             
@@ -3189,8 +3128,8 @@ class StateManager:
                 queue_length = len(self.pre_execution_approval_queue)
                 has_active_approval = self.pending_pre_execution_approval is not None
             
-            # Count running pre-approval threads
-            running_threads = sum(1 for thread in self._pre_approval_threads.values() if thread.is_alive())
+            # Check pre-approval queue size
+            approval_queue_size = self.pre_approval_queue.qsize()
             
             return {
                 "async_mode": self.asynchronous_mode,
@@ -3202,7 +3141,7 @@ class StateManager:
                 "users_maxed_out": users_maxed_out,
                 "pending_approvals_queue": queue_length,
                 "active_approval": has_active_approval,
-                "running_approval_threads": running_threads,
+                "approval_queue_size": approval_queue_size,
             }
 
     def reset_async_pool(self):
