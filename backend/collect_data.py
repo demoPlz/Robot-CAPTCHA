@@ -299,12 +299,12 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                             # All states labeled AND all pre-approvals complete
                             print(f"\n✅ All {total} states have been labeled by users!")
                             print(f"✅ All pre-approvals completed!")
-                            print(f"⏳ Waiting 10 seconds for dataset to save...")
-                            time.sleep(10)
                             
                             # Batch save all data collection policy episodes with consistent schema
+                            # This is synchronous and will block until all episodes are saved
                             print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
                             crowd_interface.save_all_finalized_episodes()
+                            print(f"✅ All episodes saved - ready for shutdown")
                             
                             break
                     
