@@ -2496,27 +2496,20 @@ class StateManager:
                             print(f"♻️  Removed state {state_key} from {user_email}'s submitted set (will be sampled with priority)")
             
             # Log async user submissions (only for user submissions, not admin/autofill)
-            async_logger_active = self.async_user_logger is not None
-            async_mode_active = self.asynchronous_mode
-            pool_finalized = self.async_pool_finalized
-            print(f"🔍 [ASYNC LOGGER CHECK] logger={async_logger_active}, mode={async_mode_active}, finalized={pool_finalized}")
-            
             if self.async_user_logger and self.asynchronous_mode and self.async_pool_finalized:
-                print(f"🔍 [ASYNC LOGGER] Processing {len(action_users)} users for logging")
+                # Get queue length for logging
+                queue_length = len(self.pre_execution_approval_queue)
+                
                 for user in action_users:
                     user_email = user.get("email")
                     user_name = user.get("name", "Unknown")
                     
                     if not user_email:
-                        print(f"🔍 [ASYNC LOGGER] Skipping user with no email")
                         continue
                     
                     # Filter out localhost expert submissions
                     if "127.0.0.1" in user_email or "localhost" in user_email.lower():
-                        print(f"🔍 [ASYNC LOGGER] Skipping localhost expert: {user_email}")
                         continue
-                    
-                    print(f"🔍 [ASYNC LOGGER] Logging submission for {user_name} ({user_email})")
                     
                     # Get user's timing info for this state
                     duration_seconds = 0.0
@@ -2567,6 +2560,7 @@ class StateManager:
                         current_approval_count=user_approved,
                         current_total_count=user_total,
                         ip_address=ip_address,
+                        queue_length=queue_length,
                     )
             
             # After recording decision, clear current and activate next from queue

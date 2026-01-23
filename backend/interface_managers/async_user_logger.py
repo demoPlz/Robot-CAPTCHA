@@ -56,6 +56,7 @@ class AsyncUserLogger:
         current_approval_count: Optional[int] = None,
         current_total_count: Optional[int] = None,
         ip_address: Optional[str] = None,
+        queue_length: int = 0,
     ):
         """Log a single submission immediately after approval/rejection.
         
@@ -140,14 +141,11 @@ class AsyncUserLogger:
         with open(self.submission_log_path, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
         
-        # Console output
-        status_emoji = "✅" if approval_status == 1 else "❌" if approval_status == -1 else "⏳"
-        approval_str = f"{current_approval_count}/{current_total_count} ({current_approval_rate*100:.1f}%)" if current_approval_rate is not None else "N/A"
-        anim_str = "🎬 yes" if used_animation else "no"
-        
-        print(f"{status_emoji} Async submission logged: {user_name} ({user_email})")
-        print(f"   State: ep={episode_id}, state={state_id} | Duration: {duration_seconds:.1f}s | Animation: {anim_str}")
-        print(f"   Approval rate: {approval_str}")
+        # Console output - single line
+        status_emoji = "✅" if approval_status == 1 else "❌"
+        approval_str = f"{current_approval_count}/{current_total_count}" if current_total_count is not None else "0/0"
+        queue_str = f"Queue: {queue_length}" if queue_length > 0 else "Queue: empty"
+        print(f"{status_emoji} {user_name} ({user_email}) | {duration_seconds:.1f}s | {approval_str} | {queue_str}")
 
     def generate_final_summary(self):
         """Generate and save final summary of all users' performance.

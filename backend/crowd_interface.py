@@ -683,7 +683,7 @@ class CrowdInterface:
         self.state_manager.task_text = self.task_text
         
         # Update async logger's output directory to dataset root (if async mode and logger exists)
-        if self.state_manager.async_user_logger and self.dataset_manager.dataset:
+        if self.state_manager.async_user_logger is not None and self.dataset_manager.dataset is not None:
             from interface_managers.async_user_logger import AsyncUserLogger
             dataset_root = self.dataset_manager.dataset.root
             self.state_manager.async_user_logger = AsyncUserLogger(dataset_root)
