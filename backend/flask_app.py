@@ -220,6 +220,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             cf_connecting_ip = request.headers.get("CF-Connecting-IP")
             remote_addr = request.remote_addr or ""
             ip_address = forwarded_for or cf_connecting_ip or remote_addr
+            print(f"🌐 [IP DEBUG] Captured IP: {ip_address} (forwarded={forwarded_for}, cf={cf_connecting_ip}, remote={remote_addr})")
             
             # Check if IP is banned (skip check for localhost/admin)
             is_localhost = remote_addr in ["127.0.0.1", "::1", "localhost"]

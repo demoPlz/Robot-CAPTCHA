@@ -660,7 +660,6 @@ class StateManager:
                                 "submitted_at_iso": None,
                                 "duration_seconds": None,
                             }
-                            print(f"⏱️  Started timing for {user_email} on async state at {now_iso}")
                     
                     return state_info.copy()
                 else:
@@ -752,7 +751,6 @@ class StateManager:
                         "submitted_at_iso": None,
                         "duration_seconds": None,
                     }
-                    print(f"⏱️  Started timing for {user_email} on state {latest_approved_state_id} at {now_iso}")
             else:
                 # Only show warning once per session (to avoid spam from monitor.html polling)
                 if not self._no_user_email_warning_shown:
@@ -2401,7 +2399,8 @@ class StateManager:
                             action_users.append({
                                 "name": user_sub["name"],
                                 "email": user_sub["email"],
-                                "used_animation": user_sub.get("used_animation", False)
+                                "used_animation": user_sub.get("used_animation", False),
+                                "ip_address": user_sub.get("ip_address")
                             })
                             break
             
@@ -3162,10 +3161,6 @@ class StateManager:
             episode_id, state_id = state_key
             selected_need = needs[selected_idx]
             selected_weight = weights[selected_idx]
-            
-            print(f"🎯 Sampled state ({episode_id}, {state_id}) for {user_email}: "
-                  f"need={selected_need}, weight={selected_weight}, "
-                  f"available={len(available_states)}, total_pool={len(self.async_state_pool)}")
             
             return state_info
 
