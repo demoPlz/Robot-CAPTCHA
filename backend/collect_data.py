@@ -81,16 +81,6 @@ _CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConfig) -> LeRobotDataset:
     from pathlib import Path
     
-    # Check if we're continuing from a previous dataset
-    continue_from = _CROWD_CONFIG.continue_from_dataset
-    
-    # Auto-rename output dataset if it matches the continue_from dataset (prevent overwrite)
-    if continue_from and cfg.repo_id == continue_from:
-        original_repo_id = cfg.repo_id
-        cfg.repo_id = f"{continue_from}_continue"
-        print(f"⚠️  Output dataset would overwrite source dataset!")
-        print(f"   Auto-renaming: {original_repo_id} → {cfg.repo_id}")
-    
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.repo_id,
@@ -114,7 +104,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             while True:
                 new_repo_id = f"{original_repo_id}_new{counter}"
                 new_path = dataset_root / new_repo_id
-                if not new_path.exists():
+                # Check that new path either doesn't exist OR has no valid dataset
+                if not new_path.exists() or not (new_path / "meta" / "info.json").exists():
                     cfg.repo_id = new_repo_id
                     break
                 counter += 1
@@ -310,6 +301,11 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                             print(f"✅ All pre-approvals completed!")
                             print(f"⏳ Waiting 10 seconds for dataset to save...")
                             time.sleep(10)
+                            
+                            # Batch save all data collection policy episodes with consistent schema
+                            print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
+                            crowd_interface.save_all_finalized_episodes()
+                            
                             break
                     
                     time.sleep(check_interval)

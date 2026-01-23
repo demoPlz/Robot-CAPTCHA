@@ -1336,6 +1336,73 @@ class CrowdInterface:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
 
+    def save_all_finalized_episodes(self):
+        """Save all finalized episodes in order with consistent schema.
+        
+        This is called at the very end after all episodes are collected.
+        It determines the global maximum action count, updates the schema once,
+        then saves all episodes in order.
+        """
+        if not hasattr(self.state_manager, '_finalized_episodes'):
+            print(f"⚠️  No finalized episodes to save")
+            return
+        
+        finalized = self.state_manager._finalized_episodes
+        if not finalized:
+            print(f"⚠️  No finalized episodes to save")
+            return
+        
+        print(f"\n{'='*80}")
+        print(f"💾 BATCH SAVE: Saving {len(finalized)} episodes with consistent schema")
+        print(f"{'='*80}")
+        
+        # Find global maximum action count across ALL episodes
+        global_max_actions = 0
+        for episode_id in sorted(finalized.keys()):
+            buffer = finalized[episode_id]['buffer']
+            
+            # Count max actions in this episode
+            episode_max = 0
+            for state in buffer.values():
+                if state.get('critical') and state.get('execution_history'):
+                    # Count ALL actions in execution_history (both approved and rejected)
+                    total_count = len(state['execution_history'])
+                    episode_max = max(episode_max, total_count)
+            
+            global_max_actions = max(global_max_actions, episode_max)
+            print(f"   Episode {episode_id}: max {episode_max} actions")
+        
+        print(f"   📊 Global maximum: {global_max_actions} actions")
+        
+        # Update schema once with global max
+        if global_max_actions > 0:
+            self.dataset_manager._update_dataset_action_shape_dynamic(global_max_actions)
+        
+        # Set flag to skip dynamic shape updates during individual episode saves
+        self.dataset_manager._batch_save_in_progress = True
+        
+        # Save all episodes in order
+        for episode_id in sorted(finalized.keys()):
+            buffer = finalized[episode_id]['buffer']
+            timing = finalized[episode_id]['timing']
+            
+            print(f"\n💾 Saving episode {episode_id} with {len(buffer)} states...")
+            self.state_manager._save_episode_callback(buffer, timing)
+            
+            # Clean up
+            del self.state_manager.completed_states_buffer_by_episode[episode_id]
+            print(f"✅ Episode {episode_id} saved successfully")
+        
+        # Clear batch save flag
+        self.dataset_manager._batch_save_in_progress = False
+        
+        # Clean up finalized episodes buffer
+        self.state_manager._finalized_episodes = {}
+        
+        print(f"\n{'='*80}")
+        print(f"✅ BATCH SAVE COMPLETE: All episodes saved with consistent schema")
+        print(f"{'='*80}\n")
+
     # =========================
     # IP Address Management
     # =========================

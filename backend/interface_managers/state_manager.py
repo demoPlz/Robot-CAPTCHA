@@ -2807,7 +2807,7 @@ class StateManager:
                 self._schedule_episode_finalize_after_grace(episode_id)
                 return
 
-            print(f"💾 Finalizing and saving episode {episode_id}")
+            print(f"💾 Episode {episode_id} finalized (buffered for batch save)")
             self.episodes_completed.add(episode_id)  # for monitoring
 
             buffer = self.completed_states_buffer_by_episode[episode_id]
@@ -2815,12 +2815,18 @@ class StateManager:
             # Calculate episode timing
             episode_timing = self._calculate_episode_timing(episode_id, buffer)
             
-            # Save episode with timing data
-            print(f"💾 Calling save callback for episode {episode_id} with {len(buffer)} states")
-            self._save_episode_callback(buffer, episode_timing)
-
-            del self.completed_states_buffer_by_episode[episode_id]
-            print(f"✅ Episode {episode_id} saved successfully")
+            # Store for batch save at the end (don't save immediately)
+            if not hasattr(self, '_finalized_episodes'):
+                self._finalized_episodes = {}
+            self._finalized_episodes[episode_id] = {
+                'buffer': buffer,
+                'timing': episode_timing
+            }
+            
+            print(f"✅ Episode {episode_id} ready for batch save ({len(self._finalized_episodes)} episodes buffered)")
+            
+            # Don't delete buffer yet - we'll need it for batch save
+            # del self.completed_states_buffer_by_episode[episode_id]
 
     def _calculate_episode_timing(self, episode_id: int, buffer: list) -> dict:
         """Calculate comprehensive timing statistics for an episode.

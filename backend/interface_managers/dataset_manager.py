@@ -118,6 +118,16 @@ class DatasetManager:
                 image_writer_processes=cfg.num_image_writer_processes,
                 image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
             )
+            
+            # DEBUG: Check dataset state after creation
+            print(f"🔍 DEBUG: Dataset created at {cfg.data_collection_policy_repo_id}")
+            print(f"   total_episodes: {self.dataset.meta.total_episodes}")
+            print(f"   total_frames: {self.dataset.meta.total_frames}")
+            print(f"   stats exists: {self.dataset.meta.stats is not None}")
+            if self.dataset.meta.stats is not None:
+                print(f"   stats keys: {list(self.dataset.meta.stats.keys())}")
+                if "action" in self.dataset.meta.stats:
+                    print(f"   action mean shape in stats: {self.dataset.meta.stats['action']['mean'].shape}")
 
         # For UI fallback and dataset writes, always use cfg.single_task
         self.task_text = getattr(cfg, "single_task", None)
@@ -137,6 +147,11 @@ class DatasetManager:
             else:
                 # Repo ID provided - use with root
                 self.copy_old_dataset_to_new(continue_from, cfg.root)
+            
+            # IMPORTANT: Clear stats after copying old dataset
+            # Old dataset has different action shapes, stats will mismatch
+            print(f"🔄 Clearing stats after copying old dataset (action shapes differ)")
+            self.dataset.meta.stats = None
 
         return self.task_text
 
@@ -233,6 +248,14 @@ class DatasetManager:
                 original_action_dim = 7
             
             new_action_shape = (max_action_count * original_action_dim,)
+
+            # CRITICAL: Clear stats if shape is changing
+            # Old episodes have different action shapes, aggregating will fail
+            current_action_shape = self.dataset.features["action"]["shape"]
+            if current_action_shape != new_action_shape:
+                print(f"🔄 Action shape changing: {current_action_shape} → {new_action_shape}")
+                print(f"🔄 Clearing dataset stats to prevent shape mismatch")
+                self.dataset.meta.stats = None
 
             # Update all relevant shapes
             self.dataset.features["action"]["shape"] = new_action_shape
@@ -571,8 +594,15 @@ class DatasetManager:
             else:
                 max_action_count = self.required_responses_per_critical_state
             
-            self._update_dataset_action_shape_dynamic(max_action_count)
-            action_capacity = max_action_count
+            # Skip dynamic shape update if we're in batch save mode (schema already set globally)
+            if not getattr(self, '_batch_save_in_progress', False):
+                self._update_dataset_action_shape_dynamic(max_action_count)
+                action_capacity = max_action_count
+            else:
+                # In batch save mode: derive action_capacity from current schema
+                # Schema shape is (max_actions * action_dim), so divide by action_dim
+                action_dim = self.dataset.features["final_executed_action"]["shape"][0]
+                action_capacity = self.dataset.features["action"]["shape"][0] // action_dim
         else:
             # Sync mode: use fixed capacity
             action_capacity = self.required_responses_per_critical_state
@@ -675,6 +705,20 @@ class DatasetManager:
 
         print(f"💾 Calling dataset.save_episode() for episode {episode_index}...")
         print(f"   Episode buffer has {len(self.dataset.episode_buffer.get('action', []))} frames")
+        
+        # DEBUG: Check existing stats before saving
+        print(f"🔍 DEBUG: Checking dataset stats before save_episode()")
+        print(f"   dataset.meta.stats exists: {self.dataset.meta.stats is not None}")
+        if self.dataset.meta.stats is not None:
+            print(f"   dataset.meta.stats keys: {list(self.dataset.meta.stats.keys())}")
+            if "action" in self.dataset.meta.stats:
+                action_stats = self.dataset.meta.stats["action"]
+                print(f"   action stats keys: {list(action_stats.keys())}")
+                if "mean" in action_stats:
+                    print(f"   action mean shape: {action_stats['mean'].shape}")
+        print(f"   dataset.meta.total_episodes before save: {self.dataset.meta.total_episodes}")
+        print(f"   dataset.features['action']['shape']: {self.dataset.features['action']['shape']}")
+        
         self.dataset.save_episode()
         print(f"✅ dataset.save_episode() completed")
         print(f"📊 Updated metadata: total_episodes={self.dataset.meta.total_episodes}, total_frames={self.dataset.meta.total_frames}")
@@ -741,6 +785,12 @@ class DatasetManager:
             if old_dataset.meta.total_episodes == 0:
                 print(f"⚠️  Old dataset is empty, nothing to copy")
                 return
+            
+            # IMPORTANT: Clear stats since we're changing action shapes
+            # The old dataset has action shape (7,) but new dataset has (N*7,)
+            # Aggregating stats with different shapes will fail
+            print(f"🔄 Clearing dataset stats (action shapes differ between old and new)")
+            self.dataset.meta.stats = None
             
             # IMPORTANT: When continuing, we want to resume the LAST episode, not start a new one
             # So we only copy the last episode's frames WITHOUT calling save_episode()
