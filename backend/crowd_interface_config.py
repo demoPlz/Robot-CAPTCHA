@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 2
+        self.required_approvals_per_critical_state: int = 10
         
         # ========== Asynchronous Data Collection Mode ==========
         # When enabled, admin collects states with immediate execution (as if required=1),
@@ -63,7 +63,7 @@ class CrowdInterfaceConfig:
 
         # ========== Demo Video Recording ==========
         # Records user interaction videos for training/demonstration purposes
-        self.record_ui_demo_videos: bool = False
+        self.record_ui_demo_videos: bool = True
         self.ui_demo_videos_dir: str | None = None  # Defaults to data/prompts/{task_name}/videos
         self.clear_ui_demo_videos_dir: bool = False  # Clear directory on startup
 
