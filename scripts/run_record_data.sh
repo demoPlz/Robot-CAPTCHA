@@ -22,7 +22,7 @@ python backend/collect_data.py \
   --control.data_collection_policy_repo_id=$USER/async_test_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
-  --control.num_episodes=5 \
+  --control.num_episodes=2 \
   --control.push_to_hub=false \
   --control.num_image_writer_processes=8 \
   --control.play_sound=false \

@@ -20,13 +20,13 @@ class CrowdInterfaceConfig:
     def __init__(self):
         # ========== Task Settings ==========
         self.task_name: str = "drawer"  # Single-word identifier for the task
-        self.task_text: str = "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
+        self.task_text: str = "Put the objects on the desk into the middle drawer" # Bug."Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 10
+        self.required_approvals_per_critical_state: int = 2
         
         # ========== Asynchronous Data Collection Mode ==========
         # When enabled, admin collects states with immediate execution (as if required=1),
@@ -63,7 +63,7 @@ class CrowdInterfaceConfig:
 
         # ========== Demo Video Recording ==========
         # Records user interaction videos for training/demonstration purposes
-        self.record_ui_demo_videos: bool = True
+        self.record_ui_demo_videos: bool = False
         self.ui_demo_videos_dir: str | None = None  # Defaults to data/prompts/{task_name}/videos
         self.clear_ui_demo_videos_dir: bool = False  # Clear directory on startup
 

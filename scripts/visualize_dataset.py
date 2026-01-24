@@ -64,7 +64,12 @@ def extract_frame_data(dataset: LeRobotDataset, frame_idx: int) -> dict:
     episode_idx = frame['episode_index'].item() if 'episode_index' in frame else 0
     frame_in_episode = frame['frame_index'].item() if 'frame_index' in frame else frame_idx
     
-    task = frame.get("task", [""])[0] if "task" in frame else ""
+    # Get task - handle both string and list formats
+    task_raw = frame.get("task", "")
+    if isinstance(task_raw, list):
+        task = task_raw[0] if len(task_raw) > 0 else ""
+    else:
+        task = task_raw
     
     # Action data
     action = frame.get("action", None)

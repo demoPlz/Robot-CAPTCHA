@@ -1044,6 +1044,12 @@ class StateManager:
                         self.completed_states_by_episode[episode_id] = {}
                     self.completed_states_by_episode[episode_id][state_id] = state_info
                     
+                    # Set final_executed_action to admin's action (first in execution_history)
+                    if state_info.get("final_executed_action") is None:
+                        if state_info.get("execution_history") and len(state_info["execution_history"]) > 0:
+                            admin_action = state_info["execution_history"][0]["action"]
+                            state_info["final_executed_action"] = admin_action.tolist() if hasattr(admin_action, "tolist") else list(admin_action)
+                    
                     # Queue pre-approval request (single worker will process it)
                     if state_info.get("critical") and should_run_pre_approval and state_info_copy:
                         self.pre_approval_queue.put((state_info_copy, episode_id, state_id))
@@ -1070,7 +1076,7 @@ class StateManager:
                     
                     # Set final_executed_action to admin's action ONCE (first in execution_history)
                     # Only set if not already set (avoid redundant setting on every user submission)
-                    if "final_executed_action" not in state_info:
+                    if state_info.get("final_executed_action") is None:
                         if state_info.get("execution_history") and len(state_info["execution_history"]) > 0:
                             admin_action = state_info["execution_history"][0]["action"]
                             state_info["final_executed_action"] = admin_action.tolist() if hasattr(admin_action, "tolist") else list(admin_action)
@@ -3214,10 +3220,10 @@ class StateManager:
             user_email: User email address
             
         Returns:
-            dict: {"approved": int, "rejected": int, "total": int, "rate": float}
+            dict: {"approved": int, "rejected": int, "disapproved": int, "total": int, "rate": float}
         """
         if not user_email:
-            return {"approved": 0, "rejected": 0, "total": 0, "rate": 0.0}
+            return {"approved": 0, "rejected": 0, "disapproved": 0, "total": 0, "rate": 0.0}
         
         user_approved = 0
         user_rejected = 0
@@ -3244,6 +3250,7 @@ class StateManager:
         return {
             "approved": user_approved,
             "rejected": user_rejected,
+            "disapproved": user_rejected,  # Alias for rejected (user-facing term)
             "total": user_total,
             "rate": approval_rate
         }

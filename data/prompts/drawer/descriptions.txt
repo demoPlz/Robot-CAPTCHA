@@ -4,7 +4,7 @@ Pull the drawer open.
 Release the gripper.
 Return to the home position.
 Move horizontally such that the gripper is in the general area above the cube.
-Lower and pitch the gripper till vertical to be ~3cm above the cube. Align the right yellow line object's side. 
+Lower and pitch the gripper till vertical to be ~3cm above the cube. Align the right yellow line to the object's side. 
 Rotate the gripper to align with grasp angle, and adjust the positioning.
 Rotate the gripper to align with grasp angle.
 Lower the gripper to prepare for grasp.
