@@ -161,14 +161,17 @@ class PersistentWorkerManager:
 
             current_time = time.time()
             expired_sessions = []
+            inactive_sessions = []
 
-            # Find expired or stale animations
+            # Find expired, stale, or inactive animations
             for user_id, user_info in list(self.animation_users.items()):
-                if not user_info.get("active"):
-                    continue
-
                 session_id = user_info.get("session_id")
                 if not session_id:
+                    continue
+
+                # Clean up inactive sessions (already stopped but not removed)
+                if not user_info.get("active"):
+                    inactive_sessions.append((session_id, user_id, "inactive"))
                     continue
 
                 # Check if animation has been running too long
@@ -191,6 +194,20 @@ class PersistentWorkerManager:
                     self.stop_user_animation_managed(session_id)
                 except Exception as e:
                     print(f"❌ Error stopping expired animation for session {session_id}: {e}")
+
+            # Clean up inactive zombie sessions
+            for session_id, user_id, reason in inactive_sessions:
+                try:
+                    # Directly remove from tracking dicts without calling stop
+                    if user_id in self.animation_users:
+                        del self.animation_users[user_id]
+                    if session_id in self.session_to_user:
+                        del self.session_to_user[session_id]
+                    if session_id in self.cached_sessions:
+                        del self.cached_sessions[session_id]
+                    self.available_slots.add(user_id)
+                except Exception as e:
+                    print(f"❌ Error cleaning up inactive session {session_id}: {e}")
 
     def _wait_for_ready(self, timeout: int = 60):
         """Wait for worker to signal ready."""
