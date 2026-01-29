@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 import sys
 
-dataset_path = Path("/home/yilong/.cache/huggingface/lerobot/yilong/async_sess1_10_train")
-output_file = Path("/home/yilong/crowdsourcing-ui/dataset_inspection.txt")
+dataset_path = Path("/home/yilong/.cache/huggingface/lerobot/yilong/async_sess1_1_train")
+output_file = Path("/home/yilong/crowdsourcing-ui/dataset_inspection_async_sess1_1.txt")
 
 # Open output file
 with open(output_file, 'w') as out:
