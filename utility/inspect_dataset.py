@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 import sys
 
-dataset_path = Path("/home/yilong/.cache/huggingface/lerobot/yilong/async_sess1_1_train")
-output_file = Path("/home/yilong/crowdsourcing-ui/dataset_inspection_async_sess1_1.txt")
+if len(sys.argv) < 2:
+    print("Usage: python inspect_dataset.py <dataset_path>")
+    sys.exit(1)
+
+dataset_path = Path(sys.argv[1])
+dataset_name = dataset_path.name
+output_file = Path(f"/home/yilong/crowdsourcing-ui/dataset_inspection_{dataset_name}.txt")
 
 # Open output file
 with open(output_file, 'w') as out:
