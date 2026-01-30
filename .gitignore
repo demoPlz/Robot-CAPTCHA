@@ -50,3 +50,9 @@ external/**/*.obj
 
 # Videos
 *.webm
+
+# Checkpoints
+outputs/
+
+# Text files
+*.txt
