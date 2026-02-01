@@ -1115,6 +1115,36 @@
   transition:all .2s ease;
 }
 
+/* Autofill button styling (purple, admin-only) */
+#viewport .confirm-bar .autofill-button{
+  color:#fff;
+  border:none;
+  border-radius:6px;
+  padding:12px 16px;
+  font-size:16px;
+  font-weight:600;
+  cursor:pointer;
+  transition:all .2s ease;
+  background:#a855f7; /* purple-500 */
+  min-width: 140px;
+}
+
+#viewport .confirm-bar .autofill-button:hover{
+  transform:translateY(-1px);
+  box-shadow:0 2px 8px rgba(0,0,0,.15);
+  background:#9333ea; /* purple-600 */
+}
+
+#viewport .confirm-bar .autofill-button:active{
+  transform:translateY(0);
+}
+
+#viewport .confirm-bar .autofill-button:disabled{
+  background:#9ca3af; /* gray-400 */
+  cursor:not-allowed;
+  opacity:0.6;
+}
+
 /* Light orange Animate (lower-right, left of Confirm) */
 #viewport .confirm-bar .animate-button{
   background:#fb923c; /* orange-400 - light orange */
@@ -6583,6 +6613,11 @@ loader.load(
           confirmBtn.style.pointerEvents = 'auto';
         }
       }
+      
+      // Also update autofill button state (only if it exists)
+      if (typeof updateAutofillButtonState === 'function') {
+        updateAutofillButtonState();
+      }
     }
 
     confirmBtn.onclick = async () => {
@@ -6670,9 +6705,10 @@ loader.load(
 
       // ===== Normal submit-goal flow (unchanged below) =====
 
-      // Check if user has already submitted for this state (Netlify only)
+      // Check if user has already submitted for this state (Netlify only, except test_approved)
       const stateKey = `${state.episode_id}_${state.state_id}`;
-      if (window.isFromNetlify && window.submittedStates.has(stateKey)) {
+      const isTestApproved = window.userName && window.userName.toLowerCase() === 'test_approved';
+      if (window.isFromNetlify && window.submittedStates.has(stateKey) && !isTestApproved) {
         console.log('⚠️  User has already submitted for this state');
         alert('You have already submitted an action for this state. Waiting for new states...');
         confirmBtn.disabled = false;
@@ -6706,6 +6742,9 @@ loader.load(
 
       // When user explicitly clicks Home button and submits, force gripper to open
       const gripperValue = homePositionClicked ? 1 : gripDir;
+      
+      // Check if this is an autofill submission
+      const isAutofillSubmission = confirmBtn.dataset.autofillMode === 'true';
 
       try {
         const payload = {
@@ -6720,7 +6759,9 @@ loader.load(
           user_name: window.userIdentity?.name,
           user_email: window.userIdentity?.email,
           // Track animation usage for async mode logging
-          used_animation: animationUsedForCurrentState
+          used_animation: animationUsedForCurrentState,
+          // NEW: Autofill flag for admin-initiated autofill
+          autofill_requested: isAutofillSubmission
         };
         if (RECORDING_MARKED_SAVED && LAST_RECORDING_ID) {
           payload.recording_id  = LAST_RECORDING_ID;
@@ -7246,8 +7287,56 @@ loader.load(
     // Add reset button to its own bar (lower-left, standalone like confirm)
     resetBar.appendChild(resetBtn);
 
+    // Create autofill button (admin-only, for localhost)
+    const autofillBtn = document.createElement('button');
+    autofillBtn.className = 'autofill-button';
+    autofillBtn.textContent = '⚡ Submit & Autofill';
+    autofillBtn.title = 'Submit this action and auto-fill remaining slots';
+    
+    // Wrapper for autofill button
+    const autofillBtnWrapper = document.createElement('span');
+    autofillBtnWrapper.style.display = 'inline-block';
+    autofillBtnWrapper.appendChild(autofillBtn);
+    
+    // Only show autofill button for localhost (not Netlify)
+    if (window.isFromNetlify) {
+      autofillBtnWrapper.style.display = 'none';
+    }
+    
+    // Autofill button click handler
+    autofillBtn.onclick = () => {
+      // Set flag on confirm button to indicate autofill mode
+      confirmBtn.dataset.autofillMode = 'true';
+      // Trigger the submit
+      confirmBtn.click();
+      // Reset flag after a short delay
+      setTimeout(() => {
+        confirmBtn.dataset.autofillMode = 'false';
+      }, 100);
+    };
+    
+    // Sync autofill button state with confirm button
+    function updateAutofillButtonState() {
+      // Check if autofill button exists in a way that avoids temporal dead zone
+      try {
+        if (!autofillBtn || !confirmBtn) return;
+        
+        autofillBtn.disabled = confirmBtn.disabled;
+        autofillBtnWrapper.title = confirmBtn.disabled ? confirmBtnWrapper.title : 'Submit this action and auto-fill remaining slots';
+      } catch (e) {
+        // autofillBtn not yet initialized, skip update
+        return;
+      }
+    }
+    
+    // Set initial autofill button state
+    updateAutofillButtonState();
+
     // Add confirm button at the bottom (wrapped for tooltip support)
     confirmBar.appendChild(confirmBtnWrapper);
+    
+    // Add autofill button next to confirm (for localhost only)
+    confirmBar.appendChild(autofillBtnWrapper);
 
     // Place Animate to the LEFT of Confirm (wrapped for tooltip support)
     confirmBar.insertBefore(animateBtnWrapper, confirmBtnWrapper);
@@ -7257,6 +7346,7 @@ loader.load(
       // Update both buttons based on current state
       updateAnimateButtonState();
       updateVerifyButtonState();
+      updateAutofillButtonState();
       
       const tacOn = window.taskCompletedSelected === true;
       if (tacOn && animateBtn) {

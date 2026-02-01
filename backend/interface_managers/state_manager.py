@@ -140,7 +140,12 @@ class StateManager:
         # When async mode finalized, states moved here for weighted dynamic sampling
         self.async_state_pool = {}  # (episode_id, state_id) -> state_info
         self.async_user_submissions = {}  # user_email -> set of (episode_id, state_id) tuples already submitted
+        self.async_user_names = {}  # user_email -> user_name (lowercase) for test user detection
         self.async_pool_finalized = False  # True when admin phase complete and pool is ready
+        
+        # Special test user tracking
+        # test_rejected: track rejections per state to enforce 10-rejection limit
+        self.test_rejected_state_rejections = {}  # (episode_id, state_id) -> rejection_count
         
         # Warning suppression
         self._no_user_email_warning_shown = False
@@ -804,8 +809,14 @@ class StateManager:
             # Detect gripper-only: compare with previous state's joint positions
             is_gripper_only = False
             is_home_position = False
+            is_manual_autofill = False
             
             if self.asynchronous_mode and is_admin_submission and state_info["critical"]:
+                # Check if admin manually requested autofill
+                is_manual_autofill = response_data.get("autofill_requested", False)
+                if is_manual_autofill:
+                    print(f"⚡ Manual autofill requested for state {state_id} - auto-filling all slots")
+                
                 # Get previous joint positions from state_info
                 current_joint_positions = state_info.get("joint_positions", {})
                 # Check if all joint positions are the same (only gripper changed)
@@ -834,8 +845,8 @@ class StateManager:
                     print(f"🏠 Home position action detected for state {state_id} - auto-filling all slots")
             
             if self.asynchronous_mode and state_info["critical"] and is_admin_submission:
-                if is_gripper_only or is_home_position:
-                    # Gripper-only or home position: instantly fill all slots
+                if is_gripper_only or is_home_position or is_manual_autofill:
+                    # Gripper-only, home position, or manual autofill: instantly fill all slots
                     required_responses = self.required_responses_per_critical_state
                 else:
                     # Normal async mode admin: only need async_admin_responses_per_state responses before executing
@@ -945,7 +956,7 @@ class StateManager:
                 state_info["responses_received"] += clones_to_add
             
             # Additional autofill for gripper-only or home position actions in async mode
-            if (is_gripper_only or is_home_position) and self.asynchronous_mode and is_admin_submission:
+            if (is_gripper_only or is_home_position or is_manual_autofill) and self.asynchronous_mode and is_admin_submission:
                 # Fill remaining slots with the same action
                 clones_needed = required_responses - state_info["responses_received"]
                 for _ in range(clones_needed):
@@ -961,7 +972,12 @@ class StateManager:
                         "submitted_by": [{"email": "Auto-filled", "user_id": "autofill"}]
                     })
                 state_info["responses_received"] += clones_needed
-                action_type = "gripper-only" if is_gripper_only else "home position"
+                if is_manual_autofill:
+                    action_type = "manual autofill"
+                elif is_gripper_only:
+                    action_type = "gripper-only"
+                else:
+                    action_type = "home position"
                 print(f"   Auto-filled {clones_needed} more slots for {action_type} action")
                 
                 # Mark so it won't be added to async pool
@@ -969,6 +985,8 @@ class StateManager:
                     state_info["gripper_only_autofilled"] = True
                 if is_home_position:
                     state_info["home_position_autofilled"] = True
+                if is_manual_autofill:
+                    state_info["manual_autofilled"] = True
 
             # Handle completion
             should_check_finalization = False
@@ -2339,45 +2357,63 @@ class StateManager:
             # Get current robot joint positions
             original_joint_positions_list = list(state_info.get("joint_positions", {}).values())
             
-            # Set up pre-execution approval modal (blocking)
-            with self.pre_execution_approval_lock:
-                self._pre_execution_approval_sequence += 1
-                approval_request = {
-                    "episode_id": episode_id,
-                    "state_id": state_id,
-                    "action": selected_action.tolist(),
-                    "propensity": true_propensity,
-                    "selector_metadata": selection_metadata,
-                    "obs_path": state_info.get("obs_path"),
-                    "view_paths": state_info.get("view_paths"),
-                    "approved": None,
-                    "sequence": self._pre_execution_approval_sequence,
-                    "submitted_by": action_users,  # List of users who submitted this action
-                    "text_prompt": state_info.get("text_prompt"),
-                    "video_prompt": state_info.get("video_prompt"),
-                    "original_joint_positions": original_joint_positions_list,  # Starting position
-                }
-                
-                my_sequence = approval_request["sequence"]
-                
-                # If no approval is currently active, show this one immediately
-                if self.pending_pre_execution_approval is None:
-                    self.pending_pre_execution_approval = approval_request
-                else:
-                    # Queue it - it will be shown after current one is done
-                    self.pre_execution_approval_queue.append(approval_request)
+            # Check for auto-approve/reject users by name (test_approved, test_rejected)
+            user_names = [u.get("name", "").lower() for u in action_users]
+            is_test_approved = "test_approved" in user_names
+            is_test_rejected = "test_rejected" in user_names
             
-            # Block until THIS specific request is approved/rejected
-            approved = None
-            while approved is None:
-                time.sleep(0.1)
+            # Store user name mapping for test users
+            if is_test_approved or is_test_rejected:
+                user_name = next((u.get("name", "").lower() for u in action_users), "")
+                user_email = next((u.get("email", "") for u in action_users), "")
+                if user_name and user_email:
+                    with self.state_lock:
+                        self.async_user_names[user_email] = user_name
+            
+            # Auto-approve/reject test users (bypass monitor like localhost does)
+            if is_test_approved or is_test_rejected:
+                approved = is_test_approved
+                print(f"{'✅' if approved else '❌'} Auto-{'approved' if approved else 'rejected'} test user (state {state_id})")
+            else:
+                # Normal approval flow: Set up pre-execution approval modal (blocking)
                 with self.pre_execution_approval_lock:
-                    # Check if this is the active request and has been decided
-                    if (self.pending_pre_execution_approval and 
-                        self.pending_pre_execution_approval["sequence"] == my_sequence and
-                        self.pending_pre_execution_approval["approved"] is not None):
-                        approved = self.pending_pre_execution_approval["approved"]
-                        break
+                    self._pre_execution_approval_sequence += 1
+                    approval_request = {
+                        "episode_id": episode_id,
+                        "state_id": state_id,
+                        "action": selected_action.tolist(),
+                        "propensity": true_propensity,
+                        "selector_metadata": selection_metadata,
+                        "obs_path": state_info.get("obs_path"),
+                        "view_paths": state_info.get("view_paths"),
+                        "approved": None,
+                        "sequence": self._pre_execution_approval_sequence,
+                        "submitted_by": action_users,  # List of users who submitted this action
+                        "text_prompt": state_info.get("text_prompt"),
+                        "video_prompt": state_info.get("video_prompt"),
+                        "original_joint_positions": original_joint_positions_list,  # Starting position
+                    }
+                    
+                    my_sequence = approval_request["sequence"]
+                    
+                    # If no approval is currently active, show this one immediately
+                    if self.pending_pre_execution_approval is None:
+                        self.pending_pre_execution_approval = approval_request
+                    else:
+                        # Queue it - it will be shown after current one is done
+                        self.pre_execution_approval_queue.append(approval_request)
+                
+                # Block until THIS specific request is approved/rejected
+                approved = None
+                while approved is None:
+                    time.sleep(0.1)
+                    with self.pre_execution_approval_lock:
+                        # Check if this is the active request and has been decided
+                        if (self.pending_pre_execution_approval and 
+                            self.pending_pre_execution_approval["sequence"] == my_sequence and
+                            self.pending_pre_execution_approval["approved"] is not None):
+                            approved = self.pending_pre_execution_approval["approved"]
+                            break
                         
             # Record decision
             approval_value = 1 if approved else -1
@@ -2403,9 +2439,31 @@ class StateManager:
                     if "127.0.0.1" in user_email or "localhost" in user_email.lower():
                         continue
                     
+                    # Track rejections for test_rejected user (check by name)
+                    user_name = next((u.get("name", "").lower() for u in action_users), "")
+                    if user_name:
+                        with self.state_lock:
+                            self.async_user_names[user_email] = user_name
+                    if user_name == "test_rejected":
+                        with self.state_lock:
+                            if state_key not in self.test_rejected_state_rejections:
+                                self.test_rejected_state_rejections[state_key] = 0
+                            self.test_rejected_state_rejections[state_key] += 1
+                            rejection_count = self.test_rejected_state_rejections[state_key]
+                            print(f"📊 test_rejected has {rejection_count} rejection(s) for state {state_id}")
+                    
                     # Re-queue this state for the user (with weighted sampling, just remove from submitted set)
+                    # Exception: test_rejected with limit rejections should NOT be re-queued
                     with self.state_lock:
                         if user_email in self.async_user_submissions:
+                            # Check if test_rejected has reached rejection limit for this state (check by name)
+                            user_name = next((u.get("name", "").lower() for u in action_users), "")
+                            if user_name == "test_rejected":
+                                rejection_count = self.test_rejected_state_rejections.get(state_key, 0)
+                                if rejection_count >= self.required_responses_per_critical_state:
+                                    print(f"🚫 test_rejected reached {self.required_responses_per_critical_state} rejections for state {state_id} - not re-queuing")
+                                    continue  # Don't remove from submitted set - they can't resubmit
+                            
                             # Remove from submitted set so they can try again
                             # With weighted dynamic sampling, they'll naturally get this state
                             # with appropriate priority based on its completion status
@@ -2479,12 +2537,13 @@ class StateManager:
                         queue_length=queue_length,
                     )
             
-            # After recording decision, clear current and activate next from queue
-            with self.pre_execution_approval_lock:
-                if self.pre_execution_approval_queue:
-                    self.pending_pre_execution_approval = self.pre_execution_approval_queue.pop(0)
-                else:
-                    self.pending_pre_execution_approval = None
+            # After recording decision, clear current and activate next from queue (only for normal flow)
+            if not (is_test_approved or is_test_rejected):
+                with self.pre_execution_approval_lock:
+                    if self.pre_execution_approval_queue:
+                        self.pending_pre_execution_approval = self.pre_execution_approval_queue.pop(0)
+                    else:
+                        self.pending_pre_execution_approval = None
                 
         # Store all reviewed actions in execution_history and mark loop as complete
         with self.state_lock:
@@ -3034,11 +3093,12 @@ class StateManager:
             for episode_id, states in self.pending_states_by_episode.items():
                 for state_id, state_info in states.items():
                     if state_info.get("critical", False) and state_info.get("admin_complete", False):
-                        # Check if this was a gripper-only or home position state (already fully labeled)
+                        # Check if this was a gripper-only, home position, or manually autofilled state (already fully labeled)
                         is_gripper_only = state_info.get("gripper_only_autofilled", False)
                         is_home_position = state_info.get("home_position_autofilled", False)
+                        is_manual_autofill = state_info.get("manual_autofilled", False)
                         
-                        if is_gripper_only or is_home_position:
+                        if is_gripper_only or is_home_position or is_manual_autofill:
                             # These are already fully complete and will be in completed_states
                             states_skipped += 1
                         else:
@@ -3055,7 +3115,7 @@ class StateManager:
             print(f"{'='*80}")
             print(f"🔄 Async pool ready: {states_ready} states available for user labeling")
             if states_skipped > 0:
-                print(f"   Skipped {states_skipped} auto-filled states (gripper-only or home position)")
+                print(f"   Skipped {states_skipped} auto-filled states (gripper-only, home position, or manual autofill)")
             print(f"{'='*80}")
             
             return {
@@ -3099,9 +3159,19 @@ class StateManager:
             needs = []
             
             for state_key, state_info in self.async_state_pool.items():
-                # Skip if user already submitted to this state
-                if state_key in user_submitted:
+                # Get user's name from stored mapping (for test user detection)
+                user_name = self.async_user_names.get(user_email, "").lower()
+                
+                # Skip if user already submitted to this state (except test_approved)
+                if state_key in user_submitted and user_name != "test_approved":
                     continue
+                
+                # Special handling for test_rejected: check if they've reached rejection limit
+                if user_name == "test_rejected":
+                    rejection_count = self.test_rejected_state_rejections.get(state_key, 0)
+                    if rejection_count >= self.required_responses_per_critical_state:
+                        # Skip this state - test_rejected has been rejected required_responses times already
+                        continue
                 
                 # Count APPROVED submissions for critical states
                 num_approved = sum(1 for entry in state_info.get("execution_history", []) 

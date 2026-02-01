@@ -190,6 +190,30 @@
                 "--mesh_path", "/home/yilong/crowdsourcing-ui/public/assets/cube.obj",
                 "--show_debug"
             ]
+        },
+
+        {
+            "name": "Model Rollout",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "lerobot/scripts/control_robot.py",
+            "cwd": "/home/yilong/crowdsourcing-ui/external/lerobot_trossen",
+            "args": [
+                "--robot.type=trossen_ai_single_arm",
+                "--robot.min_time_to_move_multiplier=30.0",
+                "--control.type=record",
+                "--control.fps=30",
+                "--control.episode_time_s=12000000",
+                "--control.single_task=Put the objects on the desk into the middle drawer",
+                "--control.repo_id=${env:USER}/eval_crowd_diffusion_drawer",
+                "--control.num_episodes=10",
+                "--control.policy.path=/home/yilong/crowdsourcing-ui/outputs/drawer_10_noreplan_10-05-50/checkpoints/last"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
         }
     ]
 }

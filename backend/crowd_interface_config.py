@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 3  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 10
+        self.required_approvals_per_critical_state: int = 3
         
         # ========== Asynchronous Data Collection Mode ==========
         # When enabled, admin collects states with immediate execution (as if required=1),
