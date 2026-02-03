@@ -48,7 +48,7 @@ with open(output_file, 'w') as out:
                 if isinstance(action_type, (list, tuple)):
                     action_type = action_type[0] if len(action_type) > 0 else 'N/A'
                 
-                action_type_name = {0: 'non_critical', 1: 'critical_final', 2: 'critical_crowd', 3: 'critical_single_mode'}.get(action_type, f'unknown({action_type})')
+                action_type_name = {0: 'non_critical', 1: 'critical_final', 2: 'critical_crowd', 3: 'critical_single_mode', 4: 'non_critical_negative', 5: 'critical_negative'}.get(action_type, f'unknown({action_type})')
                 
                 # Get full action values with 3 decimal places
                 if 'action' in row:
