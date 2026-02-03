@@ -51,7 +51,7 @@ def merge_datasets(
         fps=first_source.fps,
         root=root,
         features=first_source.features,
-        use_videos=first_source.video,
+        use_videos=len(first_source.meta.video_keys) > 0,
     )
     
     # Start image writer for parallel processing
@@ -91,16 +91,25 @@ def merge_datasets(
                         # Skip auto-generated keys - they'll be recreated
                         continue
                     if hasattr(value, "numpy"):
-                        frame_dict[key] = value.numpy()
+                        np_value = value.numpy()
+                        # Images come as CHW from dataset, need to convert to HWC for add_frame
+                        if key.startswith("observation.images.") and np_value.ndim == 3:
+                            np_value = np_value.transpose(1, 2, 0)  # CHW -> HWC
+                        # Scalars need to be 1D arrays with shape (1,) for validation
+                        elif np_value.ndim == 0:
+                            np_value = np_value.reshape(1)
+                        frame_dict[key] = np_value
                     else:
                         frame_dict[key] = value
                 
                 # Add task from metadata
                 task_idx = source.hf_dataset[frame_idx]["task_index"]
+                if hasattr(task_idx, "item"):
+                    task_idx = task_idx.item()
                 frame_dict["task"] = source.meta.tasks[task_idx]
                 
-                # Add timestamp
-                frame_dict["timestamp"] = source.hf_dataset[frame_idx]["timestamp"]
+                # Don't add timestamp - let add_frame auto-generate it from frame_index/fps
+                # This avoids validation issues
                 
                 target_dataset.add_frame(frame_dict)
             
