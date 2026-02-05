@@ -52,7 +52,7 @@ external/**/*.obj
 *.webm
 
 # Checkpoints
-outputs/
+outputs*/
 
 # Text files
 *.txt
