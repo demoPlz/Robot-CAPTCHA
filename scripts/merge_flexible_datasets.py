@@ -17,22 +17,19 @@ The resulting dataset can be used for:
 Usage:
     # Co-training: merge crowd and expert
     python scripts/merge_flexible_datasets.py \
-        --crowd-repo-id yilong/async_sess0_full_train \
-        --expert-repo-id yilong/drawer_teleop_50 \
-        --target-repo-id yilong/merged_crowd_expert \
-        --horizon 16
+        --crowd-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/async_sess0_full_train \
+        --expert-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/drawer_teleop_50 \
+        --target-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/merged_crowd_expert
 
     # Pre-training: crowd only with dataset_id
     python scripts/merge_flexible_datasets.py \
-        --crowd-repo-id yilong/async_sess0_full_train \
-        --target-repo-id yilong/crowd_for_pretrain \
-        --horizon 16
+        --crowd-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/async_sess0_full_train \
+        --target-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/crowd_for_pretrain
 
     # Fine-tuning: expert only with dataset_id  
     python scripts/merge_flexible_datasets.py \
-        --expert-repo-id yilong/drawer_teleop_50 \
-        --target-repo-id yilong/expert_for_finetune \
-        --horizon 16
+        --expert-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/drawer_teleop_50 \
+        --target-repo-id /home/yilong/.cache/huggingface/lerobot/yilong/expert_for_finetune
 """
 
 import logging
@@ -43,38 +40,59 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.utils.utils import init_logging
 
 
+def _split_path(full_path: str | Path) -> tuple[Path, str]:
+    """Split a full dataset path into (root, repo_id).
+    
+    root is the full path itself (LeRobotDataset uses root directly, not root/repo_id).
+    repo_id is the last two path components (namespace/dataset_name).
+    
+    E.g. '/home/user/.cache/huggingface/lerobot/yilong/my_dataset'
+      -> (Path('/home/user/.cache/huggingface/lerobot/yilong/my_dataset'), 'yilong/my_dataset')
+    """
+    p = Path(full_path)
+    repo_id = f"{p.parent.name}/{p.name}"
+    return p, repo_id
+
+
 def merge_flexible_datasets(
-    crowd_repo_id: str | None,
-    expert_repo_id: str | None,
-    target_repo_id: str,
-    horizon: int = 16,
-    root: str | Path | None = None,
+    crowd_path: str | None,
+    expert_path: str | None,
+    target_path: str,
     interleave: bool = False,
 ) -> LeRobotDataset:
     """Merge crowd and/or expert datasets with dataset_id and proper padding.
     
+    All paths should be full filesystem paths to the dataset directories.
+    E.g. /home/user/.cache/huggingface/lerobot/yilong/my_dataset
+    
     Args:
-        crowd_repo_id: Crowd dataset repo ID (can be None if expert-only)
-        expert_repo_id: Expert dataset repo ID (can be None if crowd-only)
-        target_repo_id: Target dataset repo ID
-        horizon: Target horizon for actions (crowd data will be padded to this)
-        root: Root directory for datasets
+        crowd_path: Full path to crowd dataset (can be None if expert-only)
+        expert_path: Full path to expert dataset (can be None if crowd-only)
+        target_path: Full path for target merged dataset
         interleave: Whether to interleave episodes (doesn't matter for training)
         
     Returns:
         Merged LeRobotDataset
     """
-    if not crowd_repo_id and not expert_repo_id:
-        raise ValueError("Must provide at least one of crowd_repo_id or expert_repo_id")
+    if not crowd_path and not expert_path:
+        raise ValueError("Must provide at least one of crowd_path or expert_path")
     
-    logging.info(f"Creating flexible dataset: {target_repo_id}")
-    logging.info(f"  Crowd source: {crowd_repo_id or 'None'}")
-    logging.info(f"  Expert source: {expert_repo_id or 'None'}")
-    logging.info(f"  Target horizon: {horizon}")
+    logging.info(f"Creating flexible dataset: {target_path}")
+    logging.info(f"  Crowd source: {crowd_path or 'None'}")
+    logging.info(f"  Expert source: {expert_path or 'None'}")
     
-    # Load source datasets
-    crowd_dataset = LeRobotDataset(crowd_repo_id, root=root) if crowd_repo_id else None
-    expert_dataset = LeRobotDataset(expert_repo_id, root=root) if expert_repo_id else None
+    # Load source datasets (split full paths into root + repo_id)
+    if crowd_path:
+        crowd_root, crowd_repo_id = _split_path(crowd_path)
+        crowd_dataset = LeRobotDataset(crowd_repo_id, root=crowd_root)
+    else:
+        crowd_dataset = None
+    
+    if expert_path:
+        expert_root, expert_repo_id = _split_path(expert_path)
+        expert_dataset = LeRobotDataset(expert_repo_id, root=expert_root)
+    else:
+        expert_dataset = None
     
     # Get reference dataset for schema
     ref_dataset = crowd_dataset or expert_dataset
@@ -91,11 +109,15 @@ def merge_flexible_datasets(
                 features[key] = value
     
     # Remove source-specific fields that don't generalize
-    # These are dataset-specific and will be replaced by dataset_id
-    keys_to_remove = ["original_frame_index", "frame_type"]
+    # Keep original_frame_index for proper temporal sequencing with multi-action data
+    keys_to_remove = ["frame_type"]
     for key in keys_to_remove:
         if key in features:
             del features[key]
+    
+    # Ensure original_frame_index exists in features (for multi-action temporal lookup)
+    if "original_frame_index" not in features:
+        features["original_frame_index"] = {"dtype": "int64", "shape": (1,), "names": None}
     
     # Ensure action_type exists in features
     if "action_type" not in features:
@@ -105,11 +127,12 @@ def merge_flexible_datasets(
     features["dataset_id"] = {"dtype": "float32", "shape": (2,), "names": ["is_expert", "is_crowd"]}
     
     # Create target dataset
-    logging.info(f"Creating target dataset: {target_repo_id}")
+    target_root, target_repo_id = _split_path(target_path)
+    logging.info(f"Creating target dataset: {target_repo_id} at {target_root}")
     target_dataset = LeRobotDataset.create(
         repo_id=target_repo_id,
         fps=ref_dataset.fps,
-        root=root,
+        root=target_root,
         features=features,
         use_videos=len(ref_dataset.meta.video_keys) > 0,
     )
@@ -164,8 +187,9 @@ def merge_flexible_datasets(
             frame = source_dataset[frame_idx]
             
             # Keys to skip (auto-generated or source-specific)
+            # Keep original_frame_index for crowd data, will add it for expert data
             skip_keys = {"index", "episode_index", "frame_index", "timestamp", "task_index", 
-                        "original_frame_index", "frame_type"}
+                        "frame_type"}
             
             # Convert all tensors to numpy and remove auto-generated keys
             frame_dict = {}
@@ -192,6 +216,26 @@ def merge_flexible_datasets(
             
             # Add dataset_id
             frame_dict["dataset_id"] = dataset_id
+            
+            # Handle original_frame_index for proper temporal sequencing
+            # Crowd data: has original_frame_index (preserves temporal identity across multi-action duplicates)
+            # Expert data: original_frame_index = relative frame index (no duplicates, sequential)
+            if source_type == "expert":
+                # Expert: sequential frames, original_frame_index = relative position in episode
+                relative_frame_idx = frame_idx - ep_start
+                frame_dict["original_frame_index"] = np.array([relative_frame_idx], dtype=np.int64)
+            else:
+                # Crowd: preserve original_frame_index from source
+                if "original_frame_index" in frame_dict:
+                    if isinstance(frame_dict["original_frame_index"], np.ndarray):
+                        if frame_dict["original_frame_index"].ndim == 0:
+                            frame_dict["original_frame_index"] = frame_dict["original_frame_index"].reshape(1)
+                    else:
+                        frame_dict["original_frame_index"] = np.array([frame_dict["original_frame_index"]], dtype=np.int64)
+                else:
+                    # Fallback: use relative frame index
+                    relative_frame_idx = frame_idx - ep_start
+                    frame_dict["original_frame_index"] = np.array([relative_frame_idx], dtype=np.int64)
             
             # Handle action_type
             # Crowd action_types: 0=non_critical, 1=critical_final, 2=critical_crowd, 
@@ -221,7 +265,7 @@ def merge_flexible_datasets(
     logging.info(f"\n✅ Merge complete!")
     logging.info(f"   Total episodes: {total_episodes}")
     logging.info(f"   Total frames: {total_frames}")
-    logging.info(f"   Target dataset: {target_repo_id}")
+    logging.info(f"   Target dataset: {target_path}")
     
     if crowd_dataset:
         logging.info(f"   Crowd episodes: {crowd_dataset.num_episodes}")
@@ -237,26 +281,16 @@ def main():
     parser = argparse.ArgumentParser(description="Merge crowd and expert datasets for flexible_diffusion")
     parser.add_argument(
         "--crowd-repo-id",
-        help="Crowd dataset repo ID (optional if expert-only)",
+        help="Full path to crowd dataset (optional if expert-only)",
     )
     parser.add_argument(
         "--expert-repo-id",
-        help="Expert dataset repo ID (optional if crowd-only)",
+        help="Full path to expert dataset (optional if expert-only)",
     )
     parser.add_argument(
         "--target-repo-id",
         required=True,
-        help="Target dataset repo ID",
-    )
-    parser.add_argument(
-        "--horizon",
-        type=int,
-        default=16,
-        help="Target horizon for actions (default: 16)",
-    )
-    parser.add_argument(
-        "--root",
-        help="Root directory for datasets (default: ~/.cache/huggingface/lerobot)",
+        help="Full path for target merged dataset",
     )
     parser.add_argument(
         "--interleave",
@@ -277,11 +311,9 @@ def main():
     init_logging()
     
     target_dataset = merge_flexible_datasets(
-        crowd_repo_id=args.crowd_repo_id,
-        expert_repo_id=args.expert_repo_id,
-        target_repo_id=args.target_repo_id,
-        horizon=args.horizon,
-        root=args.root,
+        crowd_path=args.crowd_repo_id,
+        expert_path=args.expert_repo_id,
+        target_path=args.target_repo_id,
         interleave=args.interleave,
     )
     

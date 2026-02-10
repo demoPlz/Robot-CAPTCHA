@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "drawer"  # Single-word identifier for the task
+        self.task_name: str = "pour"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # Bug."Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
@@ -102,7 +102,7 @@ class CrowdInterfaceConfig:
 
         # ========== Joint Tracking ==========
         # Track prismatic joint positions of drawer for drawer task
-        self.joint_tracking: list = ["Drawer_Joint"]
+        self.joint_tracking: list = [] # ["Drawer_Joint"]
 
         # ========== Action Selection ==========
         # Strategy for selecting which crowdsourced action to execute
