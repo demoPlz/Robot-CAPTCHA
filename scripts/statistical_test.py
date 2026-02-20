@@ -187,7 +187,7 @@ if __name__ == "__main__":
     # Diffusion: 650/1000
     # Ours: 840/1000
     
-    successes = [55, 92] 
+    successes = [55, 74] 
     trials =    [100, 100]
     names =     ["Diffusion", "Ours"]
 

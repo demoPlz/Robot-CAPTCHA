@@ -4,7 +4,7 @@ Track drawer position in real-time using ArUco markers.
 Displays the distance (in meters) the drawer has moved from closed position.
 
 Usage:
-    python utility/track_drawer_position.py --serial 151422252817
+    python utility/track_drawer_position.py --serial 126122270699
 """
 
 import argparse

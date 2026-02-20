@@ -4,8 +4,8 @@ Track ArUco markers (IDs 0, 1, 2, 3) using RealSense D455 camera.
 Displays live visualization with marker detection and pose estimation.
 
 Usage:
-    python utility/track_aruco_realsense.py --serial 151422252817
-    python utility/track_aruco_realsense.py --serial 151422252817 --dict 4X4_50
+    python utility/track_aruco_realsense.py --serial 126122270699
+    python utility/track_aruco_realsense.py --serial 126122270699 --dict 4X4_50
 """
 
 import argparse

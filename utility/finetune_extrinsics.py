@@ -6,7 +6,7 @@ Captures a live image, runs pose estimation, and allows you to interactively
 adjust the camera extrinsics to align projected 3D objects with the real image.
 
 Usage:
-    python utility/finetune_extrinsics.py --serial 151422252817
+    python utility/finetune_extrinsics.py --serial 126122270699
 
 Controls:
     Translation (meters):

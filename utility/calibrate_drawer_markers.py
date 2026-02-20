@@ -14,7 +14,7 @@ Workflow:
 4. Save all three marker positions in world frame
 
 Usage:
-    python utility/calibrate_drawer_markers.py --serial 151422252817 --marker-size 0.04
+    python utility/calibrate_drawer_markers.py --serial 126122270699 --marker-size 0.04
 """
 
 import argparse

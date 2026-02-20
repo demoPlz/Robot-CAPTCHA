@@ -13,10 +13,10 @@ Three scripts for tracking and calibrating ArUco markers on the drawer using Rea
 **Usage:**
 ```bash
 # Auto-detect dictionary (tries all)
-python utility/track_aruco_realsense.py --serial 151422252817
+python utility/track_aruco_realsense.py --serial 126122270699
 
 # Specify dictionary
-python utility/track_aruco_realsense.py --serial 151422252817 --dict 5X5_50 --marker-size 0.04
+python utility/track_aruco_realsense.py --serial 126122270699 --dict 5X5_50 --marker-size 0.04
 ```
 
 **Output:** Live video feed with detected markers, 3D axes, and position coordinates.
@@ -36,7 +36,7 @@ python utility/track_aruco_realsense.py --serial 151422252817 --dict 5X5_50 --ma
 
 **Usage:**
 ```bash
-python utility/calibrate_drawer_markers.py --serial 151422252817 --marker-size 0.04
+python utility/calibrate_drawer_markers.py --serial 126122270699 --marker-size 0.04
 ```
 
 **Output:** `data/calib/drawer_markers_closed.json` (reference positions for tracking)
@@ -51,7 +51,7 @@ python utility/calibrate_drawer_markers.py --serial 151422252817 --marker-size 0
 
 **Usage:**
 ```bash
-python utility/track_drawer_position.py --serial 151422252817
+python utility/track_drawer_position.py --serial 126122270699
 ```
 
 **Output:** Live video with drawer distance displayed (e.g., "Drawer: 15.3 cm")
@@ -70,7 +70,7 @@ python utility/track_drawer_position.py --serial 151422252817
 
 ## Common Parameters
 
-- `--serial 151422252817` - RealSense D455 camera serial number
+- `--serial 126122270699` - RealSense D455 camera serial number
 - `--dict 5X5_50` - ArUco dictionary (default for drawer markers)
 - `--marker-size 0.04` - Physical marker size in meters (4cm for drawer)
 - `--width 640 --height 480` - Camera resolution (optional)

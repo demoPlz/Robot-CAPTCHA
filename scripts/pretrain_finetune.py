@@ -45,12 +45,16 @@ from pathlib import Path
 
 
 def find_last_checkpoint(output_dir: Path) -> Path | None:
-    """Find the last checkpoint directory in the output."""
-    checkpoints_dir = output_dir / "checkpoints"
+    """Find the last checkpoint directory in the output. Returns an absolute resolved path.
+    
+    Returns the checkpoint dir itself (e.g. .../checkpoints/last or .../checkpoints/076000),
+    NOT .../pretrained_model, because PreTrainedConfig.from_pretrained() already appends
+    '/pretrained_model' internally.
+    """
+    checkpoints_dir = output_dir.resolve() / "checkpoints"
     last_link = checkpoints_dir / "last"
     if last_link.exists():
-        # 'last' is a symlink or directory pointing to the latest checkpoint
-        return last_link / "pretrained_model"
+        return last_link.resolve()
     
     # Fallback: find the highest numbered checkpoint
     if not checkpoints_dir.exists():
@@ -61,18 +65,22 @@ def find_last_checkpoint(output_dir: Path) -> Path | None:
         key=lambda d: int(d.name)
     )
     if checkpoint_dirs:
-        return checkpoint_dirs[-1] / "pretrained_model"
+        return checkpoint_dirs[-1].resolve()
     return None
 
 
 def get_checkpoint_step(output_dir: Path) -> int | None:
-    """Get the training step from the last checkpoint, or None if no checkpoint exists."""
+    """Get the training step from the last checkpoint, or None if no checkpoint exists.
+    
+    find_last_checkpoint returns e.g. .../checkpoints/076000 — the dir name is the step.
+    If 'last' symlink was used, resolve() follows it to the actual numbered dir.
+    """
     checkpoint = find_last_checkpoint(output_dir)
     if checkpoint is None:
         return None
     
-    # training_step.json is in the training_state/ sibling of pretrained_model/
-    training_step_file = checkpoint.parent / "training_state" / "training_step.json"
+    # training_step.json is in training_state/ inside the checkpoint dir
+    training_step_file = checkpoint / "training_state" / "training_step.json"
     if training_step_file.exists():
         with open(training_step_file) as f:
             data = json.load(f)
@@ -85,7 +93,7 @@ def load_train_config(output_dir: Path) -> dict | None:
     checkpoint = find_last_checkpoint(output_dir)
     if checkpoint is None:
         return None
-    config_file = checkpoint / "train_config.json"
+    config_file = checkpoint / "pretrained_model" / "train_config.json"
     if config_file.exists():
         with open(config_file) as f:
             return json.load(f)
@@ -226,7 +234,7 @@ def main():
         logging.error(f"Could not find train.py at {train_script}")
         sys.exit(1)
     
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).resolve()
     pretrain_dir = output_dir / "pretrain"
     finetune_dir = output_dir / "finetune"
     
@@ -306,7 +314,7 @@ def main():
         pretrain_checkpoint = find_last_checkpoint(pretrain_dir)
         pretrain_args = [
             str(train_script),
-            f"--config_path={pretrain_checkpoint}",
+            f"--config_path={pretrain_checkpoint / 'pretrained_model'}",
             "--resume=true",
         ]
         run_training(pretrain_args, "Phase 1: PRETRAIN on crowd data (RESUMED)")
@@ -351,7 +359,7 @@ def main():
         finetune_checkpoint = find_last_checkpoint(finetune_dir)
         finetune_args = [
             str(train_script),
-            f"--config_path={finetune_checkpoint}",
+            f"--config_path={finetune_checkpoint / 'pretrained_model'}",
             "--resume=true",
         ]
         run_training(finetune_args, "Phase 2: FINETUNE on expert data (RESUMED)")
