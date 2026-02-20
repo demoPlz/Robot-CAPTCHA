@@ -97,6 +97,8 @@ class CrowdInterface:
         # --- objects ---
         objects: dict[str, str] | None = None,
         object_mesh_paths: dict[str, str] | None = None,
+        mesh_scale: float = 1.0,
+        joint_tracking: list | None = None,
         # --- pose estimation mode ---
         use_random_poses: bool = False,
         random_pose_bounds: dict | None = None,
@@ -147,6 +149,7 @@ class CrowdInterface:
         # --- Objects ---
         self.objects = objects
         self.object_mesh_paths = object_mesh_paths
+        self.mesh_scale = mesh_scale
         
         # --- Pose estimation mode ---
         self.use_random_poses = use_random_poses
@@ -285,14 +288,18 @@ class CrowdInterface:
             pending_states_by_episode=self.pending_states_by_episode,
             use_random_poses=use_random_poses,
             random_pose_bounds=self.random_pose_bounds,
+            mesh_scale=mesh_scale,
         )
 
-        # Drawer position manager
-        self.drawer_position = DrawerPositionManager(
-            calibration_manager=self.calibration,
-            drawer_joint_name="Drawer_Joint",
-            repo_root=repo_root,
-        )
+        # Drawer position manager (only if joint_tracking is configured)
+        if joint_tracking:
+            self.drawer_position = DrawerPositionManager(
+                calibration_manager=self.calibration,
+                drawer_joint_name=joint_tracking[0] if joint_tracking else "Drawer_Joint",
+                repo_root=repo_root,
+            )
+        else:
+            self.drawer_position = None
 
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow

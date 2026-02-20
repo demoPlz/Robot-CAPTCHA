@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 10
+        self.required_approvals_per_critical_state: int = 2
         
         # ========== Asynchronous Data Collection Mode ==========
         # When enabled, admin collects states with immediate execution (as if required=1),
@@ -73,14 +73,21 @@ class CrowdInterfaceConfig:
         self.max_animation_users: int = 4  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
-        self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
+        self.usd_path: str = f"public/assets/usd/{self.task_name}_flatten_new2.usd"
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
         # Note: Keys must match USD prim names in Isaac Sim
+
+        # Drawer (long)
         # self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
 
-        self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
+        # Drawer
+        # self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
+
+        # Pour
+        self.objects: dict[str, str] = {"container": "Green Cube Container", "cup" : "Red Cylinder"}
+        
         
         # ========== Pose Estimation Mode ==========
         # When True, skip real pose estimation and use random fixed poses
@@ -94,11 +101,22 @@ class CrowdInterfaceConfig:
 
         # Resolve mesh paths for pose estimation (relative to repo root)
         repo_root = Path(__file__).resolve().parent.parent
+        
+        # Drawer
+        # self.object_mesh_paths: dict[str, str] = {
+        #     "Cube_Blue": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+        #     "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+        #     "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve()),
+        # }
+
+        # Pour
         self.object_mesh_paths: dict[str, str] = {
-            "Cube_Blue": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
-            "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
-            "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve()),
+            "container": str((repo_root / "public" / "assets" / "container.stl").resolve()),
+            "cup": str((repo_root / "public" / "assets" / "cup.stl").resolve()),
         }
+
+        # Mesh scale factor (e.g., 0.001 to convert mm to meters)
+        self.mesh_scale: float = 0.001
 
         # ========== Joint Tracking ==========
         # Track prismatic joint positions of drawer for drawer task
@@ -463,6 +481,8 @@ class CrowdInterfaceConfig:
             # Object tracking
             "objects": self.objects,
             "object_mesh_paths": self.object_mesh_paths,
+            "mesh_scale": self.mesh_scale,
+            "joint_tracking": self.joint_tracking,
             # Pose estimation mode
             "use_random_poses": self.use_random_poses,
             "random_pose_bounds": self.random_pose_bounds,

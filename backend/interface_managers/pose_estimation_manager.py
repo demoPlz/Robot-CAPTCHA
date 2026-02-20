@@ -46,6 +46,7 @@ class PoseEstimationManager:
         pose_camera_name: str = "realsense",  # RealSense D455 is used for pose estimation
         use_random_poses: bool = False,
         random_pose_bounds: dict | None = None,
+        mesh_scale: float = 1.0,
     ):
         """Initialize pose estimation manager.
 
@@ -75,6 +76,7 @@ class PoseEstimationManager:
             "y_min": -0.3, "y_max": 0.3,
             "z_min": 0.0, "z_max": 0.3
         }
+        self.mesh_scale = mesh_scale
 
         # Worker process management
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
@@ -322,6 +324,8 @@ class PoseEstimationManager:
                 str(mesh_path),
                 "--prompt",
                 str(lang_prompt),
+                "--mesh-scale",
+                str(self.mesh_scale),
             ]
 
             try:

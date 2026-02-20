@@ -207,6 +207,7 @@ def main():
     ap.add_argument("--jobs-dir", required=True, type=Path)
     ap.add_argument("--object", required=True, help="Object name this worker owns")
     ap.add_argument("--mesh", required=True, type=str)
+    ap.add_argument("--mesh-scale", type=float, default=1.0, help="Scale factor to apply to mesh (e.g., 0.001 for mm to m)")
     ap.add_argument("--prompt", default=None, type=str)
     ap.add_argument("--est-refine-iter", type=int, default=None)
     ap.add_argument("--track-refine-iter", type=int, default=None)
@@ -241,6 +242,9 @@ def main():
         mesh = trimesh.load(args.mesh)
         if mesh.is_empty:
             raise RuntimeError("mesh is empty")
+        if args.mesh_scale != 1.0:
+            mesh.apply_scale(args.mesh_scale)
+            print(f"[{args.object}] Applied mesh scale factor {args.mesh_scale}", flush=True)
         _ = mesh.vertex_normals
     except Exception as e:
         print(f"[{args.object}] ✖ mesh load failed: {e}", flush=True)

@@ -209,7 +209,7 @@ class PersistentWorkerManager:
                 except Exception as e:
                     print(f"❌ Error cleaning up inactive session {session_id}: {e}")
 
-    def _wait_for_ready(self, timeout: int = 60):
+    def _wait_for_ready(self, timeout: int = 120):
         """Wait for worker to signal ready."""
         start_time = time.time()
         while not self.worker_ready and (time.time() - start_time) < timeout:
