@@ -62,6 +62,96 @@
   /* Only reserve space when the example toggle is present */
   #viewport.has-example .prompt-text { padding-right: 50px; }
 
+  /* Info button for acceptance criteria */
+  .acceptance-info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
+    font-style: italic;
+    font-family: Georgia, serif;
+    cursor: pointer;
+    border: none;
+    margin-left: 6px;
+    vertical-align: middle;
+    transition: background 0.2s;
+  }
+  .acceptance-info-btn:hover {
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  /* Acceptance criteria modal */
+  .acceptance-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  }
+  .acceptance-modal {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+  }
+  .acceptance-modal h3 {
+    margin: 0 0 12px 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #111827;
+  }
+  .acceptance-modal ol {
+    margin: 0;
+    padding-left: 20px;
+    color: #4b5563;
+  }
+  .acceptance-modal li {
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+  .acceptance-modal li:last-child {
+    margin-bottom: 0;
+  }
+  .acceptance-modal .close-btn {
+    display: block;
+    margin: 16px auto 0;
+    padding: 10px 20px;
+    background: #4b5563;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .acceptance-modal .close-btn:hover {
+    background: #374151;
+  }
+  .acceptance-modal .no-criteria {
+    color: #6b7280;
+    font-style: italic;
+    font-size: 13px;
+  }
+
   /* Content container for views and controls */
   #viewport .content-container{
     display: flex;
@@ -3269,6 +3359,7 @@ hintsPanel.innerHTML = `
     <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and
       adjust accordingly if necessary.</li>
     <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
+    <li>Click the <b>ⓘ</b> button to view <b>detailed acceptance criteria</b>.</li>
   </ol>
 `;
 document.getElementById('page-wrapper').appendChild(hintsPanel);
@@ -4188,8 +4279,72 @@ loader.load(
     // Update prompt text from server state
     const promptFromServer = state.prompt;
     
-    // Use <br> for simple line breaks with original styling
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer}`;
+    // Get the instruction ID (video_prompt corresponds to description line number)
+    const currentInstructionId = state.video_prompt || null;
+    
+    // Use <br> for simple line breaks with original styling, add info button after task text
+    promptText.innerHTML = `<b>Task:</b> ${promptFromServer} <button class="acceptance-info-btn" id="acceptance-info-btn" title="View acceptance criteria">i</button>`;
+    
+    // Fetch and show acceptance criteria modal
+    async function showAcceptanceCriteria() {
+      if (!currentInstructionId) {
+        // Show modal with "no criteria" message
+        showAcceptanceModal([]);
+        return;
+      }
+      
+      try {
+        const resp = await apiFetch(`/api/acceptance-criteria?instruction_id=${currentInstructionId}`);
+        const data = await resp.json();
+        if (data.ok && data.criteria) {
+          showAcceptanceModal(data.criteria);
+        } else {
+          showAcceptanceModal([]);
+        }
+      } catch (e) {
+        console.error('Failed to fetch acceptance criteria:', e);
+        showAcceptanceModal([]);
+      }
+    }
+    
+    function showAcceptanceModal(criteria) {
+      // Remove existing modal if any
+      const existing = document.querySelector('.acceptance-modal-overlay');
+      if (existing) existing.remove();
+      
+      const overlay = document.createElement('div');
+      overlay.className = 'acceptance-modal-overlay';
+      
+      const modal = document.createElement('div');
+      modal.className = 'acceptance-modal';
+      
+      let content = '<h3>Acceptance Criteria</h3>';
+      if (criteria && criteria.length > 0) {
+        content += '<ol>' + criteria.map(c => `<li>${c}</li>`).join('') + '</ol>';
+      } else {
+        content += '<p class="no-criteria">No acceptance criteria defined for this instruction.</p>';
+      }
+      content += '<button class="close-btn">Close</button>';
+      
+      modal.innerHTML = content;
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      
+      // Close on button click or overlay click
+      modal.querySelector('.close-btn').addEventListener('click', () => overlay.remove());
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+      });
+    }
+    
+    // Wire up the info button
+    const infoBtn = document.getElementById('acceptance-info-btn');
+    if (infoBtn) {
+      infoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showAcceptanceCriteria();
+      });
+    }
     
     // === Example video gating =====================================================
     // Only show video button when there's a VLM-processed video for this specific state

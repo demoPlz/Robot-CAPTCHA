@@ -77,7 +77,7 @@ class CrowdInterfaceConfig:
         self.max_animation_users: int = 4  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
-        self.usd_path: str = f"public/assets/usd/{self.task_name}_flatten_new2.usd"
+        self.usd_path: str = f"public/assets/usd/{self.task_name}_flatten_new3.usd"
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
@@ -90,7 +90,7 @@ class CrowdInterfaceConfig:
         # self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
 
         # Pour
-        self.objects: dict[str, str] = {"container": "Green Cube Container", "cup" : "Red Cylinder"}
+        self.objects: dict[str, str] = {"container": "Yellow Cube Container", "cup" : "Red Cylinder"}
         
         
         # ========== Pose Estimation Mode ==========

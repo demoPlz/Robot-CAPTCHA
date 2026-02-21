@@ -17,8 +17,8 @@ python backend/collect_data.py \
   --robot.max_relative_target=null \
   --control.type=record \
   --control.fps=30 \
-  --control.single_task="Put the objects on the desk into the middle drawer" \
-  --task-name=drawer \
+  --control.single_task="Pour the content of the red cup into the yellow container" \
+  --task-name=pour \
   --control.repo_id=$USER/demo \
   --control.data_collection_policy_repo_id=$USER/demo_dcp \
   --control.tags='["tutorial"]' \

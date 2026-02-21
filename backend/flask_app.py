@@ -361,6 +361,28 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ /api/description-bank error: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    @app.route("/api/acceptance-criteria", methods=["GET"])
+    def api_acceptance_criteria():
+        """
+        Return acceptance criteria for a specific instruction.
+        Query params: instruction_id=<int> (1-based line number from descriptions.txt)
+        Returns: { criteria: ["criterion1", "criterion2", ...] }
+        """
+        try:
+            instruction_id = request.args.get("instruction_id", type=int)
+            if instruction_id is None:
+                return jsonify({"ok": False, "error": "instruction_id parameter required"}), 400
+            
+            criteria = crowd_interface.get_acceptance_criteria(instruction_id)
+            return jsonify({
+                "ok": True,
+                "instruction_id": instruction_id,
+                "criteria": criteria
+            })
+        except Exception as e:
+            print(f"❌ /api/acceptance-criteria error: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.route("/api/state-details", methods=["GET"])
     def api_state_details():
         """
@@ -1995,7 +2017,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             Format: {"title": "Task Instructions", "sections": ["section1", "section2", ...]}
         """
         try:
-            task_name = crowd_interface.task_name if crowd_interface else "drawer"
+            if crowd_interface:
+                task_name = crowd_interface.task_name
+            else:
+                from crowd_interface_config import CrowdInterfaceConfig
+                task_name = CrowdInterfaceConfig().task_name
             project_root = Path(__file__).parent.parent
             instructions_path = project_root / "data" / "prompts" / f"{task_name}_instructions.txt"
             

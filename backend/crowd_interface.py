@@ -841,6 +841,49 @@ class CrowdInterface:
 
         return {"raw_text": raw_text, "entries": self._parse_description_bank_entries(str(file_path))}
 
+    def get_acceptance_criteria(self, instruction_id: int) -> list[str]:
+        """Get acceptance criteria for a specific instruction.
+
+        Reads from prompts/{task-name}/acceptance_criteria.txt.
+        Format: Blocks separated by "=== N ===" where N is the instruction number.
+        Each line after the header (non-empty) is a criterion.
+
+        Args:
+            instruction_id: 1-based instruction number (matches line in descriptions.txt)
+
+        Returns:
+            List of criteria strings for that instruction, or empty list if not found.
+        """
+        task_name = self.task_name
+        if not task_name:
+            print("Warning: No task name set, cannot load acceptance criteria")
+            return []
+
+        file_path = self._task_dir(task_name) / "acceptance_criteria.txt"
+        
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            print(f"Acceptance criteria file not found: {file_path}")
+            return []
+        except Exception as e:
+            print(f"Error reading acceptance criteria file {file_path}: {e}")
+            return []
+
+        # Parse blocks: === N === marks the start of instruction N's criteria
+        import re
+        pattern = rf"===\s*{instruction_id}\s*===\s*\n(.*?)(?====\s*\d+\s*===|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        
+        if not match:
+            return []
+        
+        block = match.group(1)
+        # Each non-empty line is a criterion
+        criteria = [line.strip() for line in block.strip().split('\n') if line.strip()]
+        return criteria
+
     # =========================
     # Simulation & Animation Management (Delegated to SimManager)
     # =========================
