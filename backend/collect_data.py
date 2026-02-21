@@ -255,6 +255,13 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     
     # Auto-finalize async pool if in async mode
     if _CROWD_CONFIG.asynchronous_mode:
+        # Save checkpoint before finalizing (allows restart of Phase 2 later)
+        try:
+            checkpoint_path = crowd_interface.save_phase1_checkpoint()
+            log_say(f"Phase 1 checkpoint saved: {checkpoint_path}", cfg.play_sounds)
+        except Exception as e:
+            print(f"⚠️  Failed to save Phase 1 checkpoint: {e}")
+        
         log_say("Finalizing admin phase and preparing async pool", cfg.play_sounds)
         result = crowd_interface.state_manager.finalize_admin_phase(robot=robot)
         if result.get("status") == "success":
@@ -445,6 +452,158 @@ def control_robot(cfg: ControlPipelineConfig):
         print("⚠️  Could not detect tunnel URL, check /tmp/cloudflared.log")
     print()
 
+    # ============ Phase 2 Only Mode ============
+    if _CROWD_CONFIG.phase2_only:
+        print(f"{'='*60}")
+        print(f"🔄 PHASE 2 ONLY MODE")
+        print(f"   Loading checkpoint: {_CROWD_CONFIG.phase2_only}")
+        print(f"{'='*60}\n")
+        
+        checkpoint_path = Path(_CROWD_CONFIG.phase2_only)
+        if not checkpoint_path.exists():
+            print(f"❌ Checkpoint not found: {checkpoint_path}")
+            crowd_interface.shutdown()
+            return
+        
+        # Load checkpoint
+        result = crowd_interface.load_phase1_checkpoint(checkpoint_path)
+        if result["status"] != "success":
+            print(f"❌ Failed to load checkpoint: {result.get('message')}")
+            crowd_interface.shutdown()
+            return
+        
+        # Get dataset config from checkpoint (or infer from path for old checkpoints)
+        dataset_config = result.get("dataset_config", {})
+        checkpoint_dir = checkpoint_path.parent
+        
+        if not dataset_config:
+            # Fallback for old checkpoints: infer from path
+            print(f"⚠️  Checkpoint missing dataset_config - inferring from path")
+            dataset_name = checkpoint_dir.name
+            user_name = checkpoint_dir.parent.name
+            dataset_config = {
+                "repo_id": f"{user_name}/{dataset_name}",
+                "root": str(checkpoint_dir),
+                "fps": 30,  # Default
+                "robot_type": "trossen_ai_single_arm",
+                "features": {},
+            }
+        
+        print(f"   Checkpoint dataset_config: repo_id={dataset_config.get('repo_id')}, fps={dataset_config.get('fps')}")
+        
+        # Convert feature shapes from lists to tuples (JSON serializes tuples as lists,
+        # but numpy .shape returns tuples, so comparison would fail)
+        features = dataset_config.get("features", {})
+        for key, feat in features.items():
+            if "shape" in feat and isinstance(feat["shape"], list):
+                feat["shape"] = tuple(feat["shape"])
+        
+        # Determine output repo_id: use --output-repo-id if specified, otherwise use checkpoint's repo_id
+        output_repo_id = _CROWD_CONFIG.output_repo_id if _CROWD_CONFIG.output_repo_id else dataset_config["repo_id"]
+        
+        # Create fresh dataset with saved config
+        # root for LeRobotDataset.create should be the cache directory (parent of user dir)
+        root_path = Path(dataset_config["root"])
+        if root_path.name == checkpoint_dir.name:
+            # root is the dataset dir itself, go up 2 levels to get cache root
+            cache_root = root_path.parent.parent
+        else:
+            cache_root = root_path
+        
+        # Check if dataset already exists and auto-rename to prevent overwrite
+        dataset_path = cache_root / output_repo_id
+        if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
+            # Dataset already exists - find a unique name
+            original_repo_id = output_repo_id
+            counter = 1
+            while True:
+                new_repo_id = f"{original_repo_id}_new{counter}"
+                new_path = cache_root / new_repo_id
+                # Check that new path either doesn't exist OR has no valid dataset
+                if not new_path.exists() or not (new_path / "meta" / "info.json").exists():
+                    output_repo_id = new_repo_id
+                    break
+                counter += 1
+            
+            print(f"⚠️  Dataset already exists at: {dataset_path}")
+            print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {output_repo_id}")
+        
+        print(f"   Output repo_id: {output_repo_id}")
+        
+        # Create dataset with video encoding (same as normal Phase 1+2 flow)
+        # Note: LeRobotDatasetMetadata.create uses root directly without appending repo_id,
+        # so we must pass the full output path, not just the cache root
+        output_dataset_root = cache_root / output_repo_id
+        crowd_interface.dataset_manager.dataset = LeRobotDataset.create(
+            repo_id=output_repo_id,
+            fps=dataset_config["fps"],
+            root=output_dataset_root,  # Full path including repo_id
+            robot_type=dataset_config.get("robot_type", "trossen_ai_single_arm"),
+            features=features,  # Use converted features with tuple shapes
+            use_videos=True,
+        )
+        # Don't start image_writer - use synchronous image writing for Phase 2
+        # (image_writer=None means _save_image uses write_image directly)
+        print(f"✅ Dataset created: {crowd_interface.dataset_manager.dataset.root}")
+        
+        # Finalize admin phase and serve async pool (no robot needed)
+        print(f"\n🚀 Finalizing admin phase and serving async pool...")
+        finalize_result = crowd_interface.state_manager.finalize_admin_phase(robot=None)
+        
+        if finalize_result.get("status") != "success":
+            print(f"❌ Failed to finalize: {finalize_result.get('message')}")
+            crowd_interface.shutdown()
+            return
+        
+        states_count = finalize_result.get("states_in_pool", 0)
+        print(f"✅ Async pool ready: {states_count} states available for user labeling")
+        
+        # Wait for users to complete all labeling (same loop as normal mode)
+        print(f"\n⏳ Waiting for users to complete async labeling...")
+        print(f"   (Press Ctrl+C to stop waiting and exit)")
+        
+        check_interval = 5
+        last_status = None
+        
+        try:
+            while True:
+                status = crowd_interface.state_manager.get_async_pool_status()
+                total = status.get("total_states", 0)
+                completed = status.get("states_completed", 0)
+                in_progress = status.get("states_in_progress", 0)
+                
+                current_status = (completed, in_progress)
+                if current_status != last_status:
+                    print(f"   📊 Progress: {completed}/{total} states completed, {in_progress} in progress")
+                    last_status = current_status
+                
+                if completed >= total and total > 0:
+                    pending_queue = status.get("pending_approvals_queue", 0)
+                    active_approval = status.get("active_approval", False)
+                    running_threads = status.get("running_approval_threads", 0)
+                    
+                    if pending_queue > 0 or active_approval or running_threads > 0:
+                        if current_status != last_status:
+                            print(f"⏸️  Waiting for pre-approvals: queue={pending_queue}, active={active_approval}, threads={running_threads}")
+                    else:
+                        print(f"\n✅ All {total} states have been labeled by users!")
+                        print(f"✅ All pre-approvals completed!")
+                        
+                        print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
+                        crowd_interface.save_all_finalized_episodes()
+                        print(f"✅ All episodes saved - ready for shutdown")
+                        break
+                
+                time.sleep(check_interval)
+        except KeyboardInterrupt:
+            print(f"\n⚠️  User interrupted - exiting with partial labeling")
+            print(f"   {completed}/{total} states completed")
+        
+        crowd_interface.shutdown()
+        print("Phase 2 Data Collection Completed")
+        return
+
+    # ============ Normal Mode (Phase 1 + Phase 2) ============
     robot = make_robot_from_config(cfg.robot)
 
     assert isinstance(cfg.control, RecordControlConfig), "This script is for data collection"

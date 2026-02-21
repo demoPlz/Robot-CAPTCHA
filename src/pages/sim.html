@@ -5595,6 +5595,34 @@ loader.load(
       return a;
     }
 
+    // Determine best wheel for a camera viewpoint based on visible area
+    // Returns the wheel axis whose plane normal is most aligned with the camera direction
+    function getBestWheelAxis(camera) {
+      // Get camera's viewing direction (points towards where camera looks)
+      const cameraDir = new THREE.Vector3();
+      camera.getWorldDirection(cameraDir);
+
+      // Available rotation axes that have wheels
+      const availableAxes = ['roll', 'pitch', 'yaw'].filter(axis => rotationWheels[axis]);
+      if (availableAxes.length === 0) return null;
+
+      // Calculate visibility score for each wheel
+      // Higher |dot(wheelNormal, cameraDir)| = wheel is more face-on = more visible
+      let bestAxis = null;
+      let bestScore = -1;
+
+      for (const axis of availableAxes) {
+        const { n: wheelNormal } = planeBasisForAxis(axis, marker.quaternion);
+        const score = Math.abs(wheelNormal.dot(cameraDir));
+        if (score > bestScore) {
+          bestScore = score;
+          bestAxis = axis;
+        }
+      }
+
+      return bestAxis;
+    }
+
     // Build them once, after the marker exists:
     buildRotationWheels();
 
@@ -5910,7 +5938,7 @@ loader.load(
       y:     { min: -0.30, max: 0.30  },
       z:     { min: 0.025, max: 0.40  },
       roll:  { min: -1.75, max: 1.75  },
-      pitch: { min: -0.60, max: 0.75  },
+      pitch: { min: -1, max: 1  },
       yaw:   { min: -0.81, max: 0.81  },
     };
 
@@ -6123,14 +6151,11 @@ loader.load(
         setNDCFromPointerEvent(evt, renderer);
         raycaster.setFromCamera(ndc, camera);
         
-        // Filter rotation pickables based on view
+        // Dynamically select the best wheel based on camera viewpoint
         let viewSpecificPickables = [];
-        if (viewName === 'front' || viewName === 'webcam_front') {
-          if (rotationWheels.yaw) viewSpecificPickables = rotationWheels.yaw.segments;
-        } else if (viewName === 'top') {
-          if (rotationWheels.roll) viewSpecificPickables = rotationWheels.roll.segments;
-        } else if (viewName === 'left' || viewName === 'webcam_left' || viewName === 'right') {
-          if (rotationWheels.pitch) viewSpecificPickables = rotationWheels.pitch.segments;
+        const bestAxis = getBestWheelAxis(camera);
+        if (bestAxis && rotationWheels[bestAxis]) {
+          viewSpecificPickables = rotationWheels[bestAxis].segments;
         }
         
         const targets = [
@@ -7505,7 +7530,8 @@ loader.load(
       positionHomeHUDs();
 
       // ----- Helper to control wheel presence based on view -----
-      function setWheelVisibilityForView(viewName) {
+      // Now dynamically selects the wheel with highest visible area for the camera
+      function setWheelVisibilityForView(view) {
         // Remove all wheels from scene first
         if (rotationWheels.roll && rotationWheels.roll.group.parent) {
           scene.remove(rotationWheels.roll.group);
@@ -7517,20 +7543,17 @@ loader.load(
           scene.remove(rotationWheels.yaw.group);
         }
 
-        // Add back only the relevant wheel for each view
-        if (viewName === 'front' || viewName === 'webcam_front') {
-          if (rotationWheels.yaw) scene.add(rotationWheels.yaw.group); // Blue wheel
-        } else if (viewName === 'top') {
-          if (rotationWheels.roll) scene.add(rotationWheels.roll.group); // Red wheel
-        } else if (viewName === 'left' || viewName === 'webcam_left' || viewName === 'right') {
-          if (rotationWheels.pitch) scene.add(rotationWheels.pitch.group); // Green wheel
+        // Dynamically select the best wheel based on camera viewpoint
+        const bestAxis = getBestWheelAxis(view.camera);
+        if (bestAxis && rotationWheels[bestAxis]) {
+          scene.add(rotationWheels[bestAxis].group);
         }
       }
 
       // ----- render all views -----
       views.forEach(view => {
         // Set which rotation wheels are visible for this view
-        setWheelVisibilityForView(view.name);
+        setWheelVisibilityForView(view);
 
         // For top view, make entire robot semi-transparent (including grippers)
         if (view.name === 'top') {
@@ -7555,7 +7578,7 @@ loader.load(
       if (MR_MODE_ENABLED) {
         webcamViews.forEach(view => {
           // Set which rotation wheels are visible for this view
-          setWheelVisibilityForView(view.name);
+          setWheelVisibilityForView(view);
 
           // Control robot visibility per webcam view
           const shouldShowRobot = viewRobotVisibility.get(view.name);

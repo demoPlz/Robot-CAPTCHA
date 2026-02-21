@@ -34,6 +34,10 @@ class CrowdInterfaceConfig:
         self.asynchronous_mode: bool = True
         self.async_admin_responses_per_state: int = 1  # Responses needed from admin before robot executes (typically 1)
         
+        # Phase 2 only mode: skip robot/admin collection, load checkpoint, serve async pool directly
+        self.phase2_only: str | None = None  # Path to phase1_checkpoint.json
+        self.output_repo_id: str | None = None  # Override repo_id for Phase 2 output dataset
+        
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
         # MTurk max_assignments will be: required_responses_per_critical_state - num_expert_workers
@@ -203,6 +207,18 @@ class CrowdInterfaceConfig:
         )
         parser.add_argument(
             "--num-autofill-actions", type=int, help="Number of responses before auto-fill (default: all required)"
+        )
+
+        # Phase 2 only mode
+        parser.add_argument(
+            "--phase2-only",
+            type=str,
+            help="Path to phase1_checkpoint.json to skip robot/admin and serve async pool directly"
+        )
+        parser.add_argument(
+            "--output-repo-id",
+            type=str,
+            help="Override output repo_id for Phase 2 dataset (default: uses checkpoint's repo_id)"
         )
 
         # UI settings
@@ -380,6 +396,10 @@ class CrowdInterfaceConfig:
             config.autofill_critical_states = True
         if args.num_autofill_actions is not None:
             config.num_autofill_actions = args.num_autofill_actions
+        if args.phase2_only is not None:
+            config.phase2_only = args.phase2_only
+        if args.output_repo_id is not None:
+            config.output_repo_id = args.output_repo_id
         if args.use_manual_prompt:
             config.use_manual_prompt = True
         if args.show_demo_videos:

@@ -5,9 +5,11 @@ episode finalization.
 
 """
 
+import json
 import queue
 import random
 import time
+from pathlib import Path
 from threading import Lock, Thread, Timer
 
 import torch
@@ -1761,13 +1763,9 @@ class StateManager:
         # Build list of all actions that have been ACTUALLY EXECUTED (not just pre-approved)
         actually_executed_actions = []
         execution_history = previous_critical_state_info.get("execution_history", [])
-        print(f"🔍 DEBUG at undo setup: previous state {previous_critical_state_id} has {len(execution_history)} execution_history entries")
-        for i, execution in enumerate(execution_history):
-            is_executed = execution.get("executed", False)
-            print(f"   Entry {i}: executed={is_executed}, approval={execution.get('approval', 'N/A')}")
-            if is_executed:
+        for execution in execution_history:
+            if execution.get("executed", False):
                 actually_executed_actions.append(execution["action"])
-        print(f"🔍 DEBUG: Found {len(actually_executed_actions)} actually executed actions")
         
         with self.undo_lock:
             self.pending_undo_classification = {
@@ -3324,3 +3322,341 @@ class StateManager:
             "total": user_total,
             "rate": approval_rate
         }
+
+    # =========================
+    # Phase 1/2 Checkpoint (for separating admin collection from async user labeling)
+    # =========================
+
+    def _serialize_state_for_checkpoint(self, state_info: dict, checkpoint_dir: Path = None) -> dict:
+        """Convert state_info to JSON-serializable format (tensors -> lists, views -> base64, copy obs)."""
+        import base64
+        import shutil
+        
+        state_id = state_info.get("state_id", "?")
+        ep_id = state_info.get("episode_id", "?")
+        
+        out = {}
+        for k, v in state_info.items():
+            if isinstance(v, torch.Tensor):
+                out[k] = v.tolist()
+            elif k == "actions" and isinstance(v, list):
+                out[k] = [a.tolist() if isinstance(a, torch.Tensor) else a for a in v]
+            elif k == "execution_history" and isinstance(v, list):
+                out[k] = []
+                for entry in v:
+                    new_entry = dict(entry)
+                    if "action" in new_entry and isinstance(new_entry["action"], torch.Tensor):
+                        new_entry["action"] = new_entry["action"].tolist()
+                    out[k].append(new_entry)
+            elif k == "view_paths" and isinstance(v, dict):
+                # Embed view images as base64 to survive tmp cleanup
+                out[k] = v  # Keep paths for reference
+                views_data = {}
+                for cam, path in v.items():
+                    try:
+                        with open(path, "rb") as f:
+                            views_data[cam] = base64.b64encode(f.read()).decode("ascii")
+                    except Exception:
+                        pass  # File missing - skip
+                out["views_data"] = views_data
+            elif k == "obs_path" and v and checkpoint_dir:
+                # Copy obs file to checkpoint directory
+                src_path = Path(v)
+                if src_path.exists():
+                    obs_ep_id = state_info.get("episode_id", "unknown")
+                    obs_state_id = state_info.get("state_id", "unknown")
+                    obs_subdir = checkpoint_dir / "obs_cache"
+                    obs_subdir.mkdir(parents=True, exist_ok=True)
+                    dst_path = obs_subdir / f"ep{obs_ep_id}_state{obs_state_id}.pt"
+                    
+                    try:
+                        src_size = src_path.stat().st_size
+                        
+                        # Copy with explicit binary read/write
+                        with open(src_path, "rb") as sf:
+                            data = sf.read()
+                        with open(dst_path, "wb") as df:
+                            df.write(data)
+                            df.flush()
+                            import os
+                            os.fsync(df.fileno())
+                        
+                        # Verify destination exists and has same size
+                        if dst_path.exists():
+                            dst_size = dst_path.stat().st_size
+                            if dst_size == src_size:
+                                out[k] = str(dst_path)
+                            else:
+                                print(f"⚠️  Size mismatch copying obs! src={src_size}, dst={dst_size}")
+                                out[k] = v
+                        else:
+                            print(f"⚠️  Destination file doesn't exist after copy!")
+                            out[k] = v
+                    except Exception as e:
+                        print(f"⚠️  Failed to copy obs {src_path} -> {dst_path}: {e}")
+                        out[k] = v
+                else:
+                    print(f"⚠️  Source obs file not found: {src_path}")
+                    out[k] = v
+            else:
+                out[k] = v
+        return out
+
+    def _deserialize_state_from_checkpoint(self, state_data: dict, checkpoint_dir: Path = None) -> dict:
+        """Convert checkpoint state data back to runtime format (lists -> tensors, restore views).
+        
+        Args:
+            state_data: Serialized state data from checkpoint
+            checkpoint_dir: Directory containing the checkpoint (used to find obs_cache)
+        """
+        import base64
+        out = {}
+        for k, v in state_data.items():
+            if k == "actions" and isinstance(v, list):
+                out[k] = [torch.tensor(a, dtype=torch.float32) if isinstance(a, list) else a for a in v]
+            elif k == "execution_history" and isinstance(v, list):
+                out[k] = []
+                for entry in v:
+                    new_entry = dict(entry)
+                    if "action" in new_entry and isinstance(new_entry["action"], list):
+                        new_entry["action"] = torch.tensor(new_entry["action"], dtype=torch.float32)
+                    out[k].append(new_entry)
+            elif k == "views_data":
+                # Skip - will be processed together with view_paths
+                pass
+            elif k == "obs_path" and checkpoint_dir is not None:
+                # Update obs_path to point to checkpoint's obs_cache directory
+                original_path = Path(v)
+                new_path = checkpoint_dir / "obs_cache" / original_path.name
+                out[k] = str(new_path)
+            else:
+                out[k] = v
+        
+        # Restore view files from embedded base64 data
+        views_data = state_data.get("views_data", {})
+        view_paths = state_data.get("view_paths", {})
+        if views_data and view_paths:
+            new_view_paths = {}
+            for cam, b64_data in views_data.items():
+                original_path = view_paths.get(cam)
+                if original_path:
+                    try:
+                        # Ensure directory exists
+                        path = Path(original_path)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        # Write file
+                        with open(path, "wb") as f:
+                            f.write(base64.b64decode(b64_data))
+                        new_view_paths[cam] = str(path)
+                    except Exception as e:
+                        print(f"⚠️  Failed to restore view {cam}: {e}")
+            out["view_paths"] = new_view_paths
+        
+        return out
+
+    def save_phase1_checkpoint(self, checkpoint_path: Path, dataset_config: dict = None) -> dict:
+        """Save all state data needed for Phase 2 (async user labeling).
+        
+        Called at end of Phase 1 (admin collection) before finalize_admin_phase().
+        
+        Args:
+            checkpoint_path: Path to save checkpoint JSON file
+            dataset_config: Dataset configuration to recreate dataset in Phase 2
+            
+        Returns:
+            dict with status and checkpoint path
+        """
+        checkpoint_path = Path(checkpoint_path)
+        checkpoint_dir = checkpoint_path.parent  # Dataset directory
+        
+        # Track obs copy results
+        obs_copy_stats = {"success": 0, "failed": 0, "skipped": 0}
+        
+        def serialize_with_tracking(s, cdir):
+            result = self._serialize_state_for_checkpoint(s, cdir)
+            obs_path = s.get("obs_path")
+            if obs_path and cdir:
+                result_path = result.get("obs_path", "")
+                if result_path and str(cdir) in result_path:
+                    # Check if destination file actually exists
+                    if Path(result_path).exists():
+                        obs_copy_stats["success"] += 1
+                    else:
+                        obs_copy_stats["failed"] += 1
+                        print(f"⚠️  obs copy reported success but file missing: {result_path}")
+                else:
+                    obs_copy_stats["skipped"] += 1
+            return result
+        
+        with self.state_lock:
+            checkpoint = {
+                "version": 1,
+                "saved_at": time.time(),
+                "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
+                # Dataset config for recreation in Phase 2
+                "dataset_config": dataset_config,
+                # State data (pass checkpoint_dir to copy obs files)
+                "pending_states_by_episode": {
+                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in self.pending_states_by_episode.items()
+                },
+                "completed_states_by_episode": {
+                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in self.completed_states_by_episode.items()
+                },
+                "completed_states_buffer_by_episode": {
+                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in self.completed_states_buffer_by_episode.items()
+                },
+                # Episode metadata
+                "episode_start_times": dict(self.episode_start_times),
+                "episode_start_times_iso": dict(self.episode_start_times_iso),
+                "episodes_marked_as_end": list(self.episodes_marked_as_end),
+                "next_state_id": self.next_state_id,
+                # Config values needed for Phase 2
+                "config": {
+                    "required_responses_per_state": self.required_responses_per_state,
+                    "required_responses_per_critical_state": self.required_responses_per_critical_state,
+                    "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
+                    "asynchronous_mode": self.asynchronous_mode,
+                    "async_admin_responses_per_state": self.async_admin_responses_per_state,
+                    "task_text": self.task_text,
+                },
+            }
+        
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        with open(checkpoint_path, "w") as f:
+            json.dump(checkpoint, f, indent=2)
+        
+        # Print copy stats
+        print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
+        
+        # Count total states that should have obs files
+        total_states = sum(len(s) for s in self.pending_states_by_episode.values())
+        total_states += sum(len(s) for s in self.completed_states_by_episode.values())
+        total_states += sum(len(s) for s in self.completed_states_buffer_by_episode.values())
+        
+        # Verify obs files were copied
+        obs_cache_dir = checkpoint_dir / "obs_cache"
+        if obs_cache_dir.exists():
+            obs_files = list(obs_cache_dir.glob("*.pt"))
+            print(f"✅ Phase 1 checkpoint saved to: {checkpoint_path}")
+            print(f"   📁 obs_cache contains {len(obs_files)} files (expected ~{total_states})")
+            
+            if len(obs_files) == 0:
+                print(f"\n" + "="*60)
+                print(f"❌ CRITICAL ERROR: No obs files were copied to checkpoint!")
+                print(f"   This checkpoint will NOT work for Phase 2!")
+                print(f"   Source obs files may not exist in /tmp/crowd_obs_cache/")
+                print(f"="*60 + "\n")
+                return {"status": "error", "path": str(checkpoint_path), "message": "No obs files copied - checkpoint unusable"}
+            
+            if obs_copy_stats['failed'] > 0:
+                print(f"\n" + "="*60)
+                print(f"⚠️  WARNING: {obs_copy_stats['failed']} obs file copies failed!")
+                print(f"   Some states may be missing observation data.")
+                print(f"="*60 + "\n")
+        else:
+            print(f"✅ Phase 1 checkpoint saved to: {checkpoint_path}")
+            print(f"   ⚠️  WARNING: obs_cache directory does not exist!")
+            return {"status": "error", "path": str(checkpoint_path), "message": "obs_cache directory not created"}
+        
+        return {"status": "success", "path": str(checkpoint_path)}
+
+    def load_phase1_checkpoint(self, checkpoint_path: Path) -> dict:
+        """Load Phase 1 checkpoint and restore state for Phase 2.
+        
+        Args:
+            checkpoint_path: Path to checkpoint JSON file
+            
+        Returns:
+            dict with status and loaded config
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            return {"status": "error", "message": f"Checkpoint not found: {checkpoint_path}"}
+        
+        with open(checkpoint_path, "r") as f:
+            checkpoint = json.load(f)
+        
+        version = checkpoint.get("version", 0)
+        if version != 1:
+            return {"status": "error", "message": f"Unsupported checkpoint version: {version}"}
+        
+        # Get checkpoint directory for resolving obs_cache paths
+        checkpoint_dir = checkpoint_path.parent
+        
+        with self.state_lock:
+            # Restore state data
+            self.pending_states_by_episode.clear()
+            for ep, states in checkpoint["pending_states_by_episode"].items():
+                # Convert episode_id to int if numeric
+                ep_key = int(ep) if ep.isdigit() else ep
+                self.pending_states_by_episode[ep_key] = {
+                    int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
+                }
+            
+            self.completed_states_by_episode.clear()
+            for ep, states in checkpoint["completed_states_by_episode"].items():
+                ep_key = int(ep) if ep.isdigit() else ep
+                self.completed_states_by_episode[ep_key] = {
+                    int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
+                }
+            
+            self.completed_states_buffer_by_episode.clear()
+            for ep, states in checkpoint["completed_states_buffer_by_episode"].items():
+                ep_key = int(ep) if ep.isdigit() else ep
+                self.completed_states_buffer_by_episode[ep_key] = {
+                    int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
+                }
+            
+            # Restore episode metadata
+            self.episode_start_times = {
+                (int(k) if k.isdigit() else k): v 
+                for k, v in checkpoint["episode_start_times"].items()
+            }
+            self.episode_start_times_iso = {
+                (int(k) if k.isdigit() else k): v 
+                for k, v in checkpoint["episode_start_times_iso"].items()
+            }
+            self.episodes_marked_as_end = set(
+                int(e) if isinstance(e, str) and e.isdigit() else e 
+                for e in checkpoint["episodes_marked_as_end"]
+            )
+            self.next_state_id = checkpoint["next_state_id"]
+        
+        # Validate obs files exist
+        obs_cache_dir = checkpoint_dir / "obs_cache"
+        missing_obs = 0
+        total_obs_checks = 0
+        for states_dict in [self.pending_states_by_episode, self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
+            for ep, states in states_dict.items():
+                for sid, s in states.items():
+                    obs_path = s.get("obs_path")
+                    if obs_path:
+                        total_obs_checks += 1
+                        if not Path(obs_path).exists():
+                            missing_obs += 1
+        
+        print(f"✅ Phase 1 checkpoint loaded from: {checkpoint_path}")
+        print(f"   Episodes: {len(self.pending_states_by_episode)}")
+        total_states = sum(len(s) for s in self.pending_states_by_episode.values())
+        print(f"   Pending states: {total_states}")
+        print(f"   📁 Obs file validation: {total_obs_checks - missing_obs}/{total_obs_checks} files exist")
+        
+        if missing_obs > 0:
+            print(f"\n" + "="*60)
+            print(f"❌ CRITICAL ERROR: {missing_obs} obs files are MISSING!")
+            print(f"   Expected location: {obs_cache_dir}")
+            print(f"   This checkpoint cannot be used for Phase 2.")
+            print(f"   You need to re-run Phase 1 to create a valid checkpoint.")
+            print(f"="*60 + "\n")
+            return {"status": "error", "message": f"{missing_obs} obs files missing - checkpoint unusable"}
+        
+        return {
+            "status": "success",
+            "config": checkpoint.get("config", {}),
+            "dataset_config": checkpoint.get("dataset_config", {}),
+            "saved_at_iso": checkpoint.get("saved_at_iso"),
+        }
+

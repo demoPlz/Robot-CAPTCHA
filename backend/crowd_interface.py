@@ -1517,3 +1517,47 @@ class CrowdInterface:
             if k in obs:
                 return self.obs_stream._to_uint8_rgb(obs[k])
         return None
+
+    # =========================
+    # Phase 1/2 Checkpoint
+    # =========================
+
+    def save_phase1_checkpoint(self) -> Path:
+        """Save Phase 1 checkpoint to dataset root directory.
+        
+        Returns:
+            Path to saved checkpoint file
+        """
+        if self.dataset_manager.dataset is None:
+            raise RuntimeError("Dataset not initialized - cannot save checkpoint")
+        
+        dataset = self.dataset_manager.dataset
+        checkpoint_path = Path(dataset.root) / "phase1_checkpoint.json"
+        
+        # Gather dataset config needed to recreate in Phase 2
+        dataset_config = {
+            "repo_id": dataset.repo_id,
+            "root": str(dataset.root),
+            "fps": dataset.fps,
+            "features": dataset.features,
+            "robot_type": dataset.meta.robot_type,
+        }
+        
+        result = self.state_manager.save_phase1_checkpoint(checkpoint_path, dataset_config=dataset_config)
+        
+        if result["status"] != "success":
+            raise RuntimeError(f"Failed to save checkpoint: {result.get('message')}")
+        
+        return Path(result["path"])
+
+    def load_phase1_checkpoint(self, checkpoint_path: Path) -> dict:
+        """Load Phase 1 checkpoint and prepare for Phase 2.
+        
+        Args:
+            checkpoint_path: Path to checkpoint JSON file
+            
+        Returns:
+            dict with loaded config and dataset_config
+        """
+        return self.state_manager.load_phase1_checkpoint(checkpoint_path)
+

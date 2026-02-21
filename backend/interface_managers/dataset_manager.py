@@ -118,16 +118,6 @@ class DatasetManager:
                 image_writer_processes=cfg.num_image_writer_processes,
                 image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
             )
-            
-            # DEBUG: Check dataset state after creation
-            print(f"🔍 DEBUG: Dataset created at {cfg.data_collection_policy_repo_id}")
-            print(f"   total_episodes: {self.dataset.meta.total_episodes}")
-            print(f"   total_frames: {self.dataset.meta.total_frames}")
-            print(f"   stats exists: {self.dataset.meta.stats is not None}")
-            if self.dataset.meta.stats is not None:
-                print(f"   stats keys: {list(self.dataset.meta.stats.keys())}")
-                if "action" in self.dataset.meta.stats:
-                    print(f"   action mean shape in stats: {self.dataset.meta.stats['action']['mean'].shape}")
 
         # For UI fallback and dataset writes, always use cfg.single_task
         self.task_text = getattr(cfg, "single_task", None)
@@ -534,22 +524,6 @@ class DatasetManager:
         episode_index = self.dataset.meta.total_episodes
         propensity_log_path = self.dataset.root / "action_propensity_log.jsonl"
         
-        # Debug: print buffer contents
-        print(f"🔍 save_episode called with {len(buffer)} states")
-        for s_id, s_info in buffer.items():
-            exec_hist = s_info.get("execution_history", [])
-            print(f"   State {s_id}: critical={s_info.get('critical')}, execution_history length={len(exec_hist)}")
-            
-            # Show all submissions for this state
-            user_subs = s_info.get("user_submissions", [])
-            if user_subs:
-                print(f"      Total user_submissions recorded: {len(user_subs)}")
-                for i, sub in enumerate(user_subs):
-                    name = sub.get("name", "Unknown")
-                    email = sub.get("email", "Unknown")
-                    action_idx = sub.get("action_index", "?")
-                    print(f"         [{i}] {name} ({email}) -> action_index={action_idx}")
-        
         # In async mode: dynamically determine max action count across all states
         if self.asynchronous_mode:
             critical_states = [state for state in buffer.values() if state.get("critical", False)]
@@ -703,25 +677,7 @@ class DatasetManager:
         # Log episode-wide user summary with timing
         self.log_episode_user_summary(episode_index, buffer, episode_timing)
 
-        print(f"💾 Calling dataset.save_episode() for episode {episode_index}...")
-        print(f"   Episode buffer has {len(self.dataset.episode_buffer.get('action', []))} frames")
-        
-        # DEBUG: Check existing stats before saving
-        print(f"🔍 DEBUG: Checking dataset stats before save_episode()")
-        print(f"   dataset.meta.stats exists: {self.dataset.meta.stats is not None}")
-        if self.dataset.meta.stats is not None:
-            print(f"   dataset.meta.stats keys: {list(self.dataset.meta.stats.keys())}")
-            if "action" in self.dataset.meta.stats:
-                action_stats = self.dataset.meta.stats["action"]
-                print(f"   action stats keys: {list(action_stats.keys())}")
-                if "mean" in action_stats:
-                    print(f"   action mean shape: {action_stats['mean'].shape}")
-        print(f"   dataset.meta.total_episodes before save: {self.dataset.meta.total_episodes}")
-        print(f"   dataset.features['action']['shape']: {self.dataset.features['action']['shape']}")
-        
         self.dataset.save_episode()
-        print(f"✅ dataset.save_episode() completed")
-        print(f"📊 Updated metadata: total_episodes={self.dataset.meta.total_episodes}, total_frames={self.dataset.meta.total_frames}")
 
     def get_last_critical_state_from_dataset(self, dataset_repo_id: str, root: Path | None) -> dict | None:
         """Load dataset and return last critical state with joint positions.
