@@ -320,7 +320,7 @@ class StateManager:
             "state_created_at_iso": None,  # Will be set below
             "state_completed_at": None,
             "state_completed_at_iso": None,
-            "user_timings": {},  # email -> {"first_served_at": timestamp, "first_served_at_iso": str, "submitted_at": timestamp, "submitted_at_iso": str, "duration_seconds": float}
+            "user_timings": {},  # email -> {"served_at": timestamp, "served_at_iso": str, "submitted_at": timestamp, "submitted_at_iso": str, "duration_seconds": float}
         }
         
         # Set ISO timestamp
@@ -655,22 +655,21 @@ class StateManager:
                 state_info = self.get_async_pooled_state(user_email)
                 if state_info:
                     # Track timing for async served state
+                    # ALWAYS update served_at to current time - measures from most recent fetch, not first encounter
                     if user_email:
                         import datetime
                         if "user_timings" not in state_info:
                             state_info["user_timings"] = {}
                         
-                        # Only set timing if this user hasn't seen this state before
-                        if user_email not in state_info["user_timings"]:
-                            now = time.time()
-                            now_iso = datetime.datetime.now().isoformat()
-                            state_info["user_timings"][user_email] = {
-                                "first_served_at": now,
-                                "first_served_at_iso": now_iso,
-                                "submitted_at": None,
-                                "submitted_at_iso": None,
-                                "duration_seconds": None,
-                            }
+                        now = time.time()
+                        now_iso = datetime.datetime.now().isoformat()
+                        state_info["user_timings"][user_email] = {
+                            "served_at": now,
+                            "served_at_iso": now_iso,
+                            "submitted_at": None,
+                            "submitted_at_iso": None,
+                            "duration_seconds": None,
+                        }
                     
                     return state_info.copy()
                 else:
@@ -745,23 +744,22 @@ class StateManager:
                     "blocked_critical_states": True,
                 }
             
-            # Track when this user first sees this state (for timing)
+            # Track timing for this user - ALWAYS update to current time
+            # This ensures duration measures from most recent fetch, not first encounter
             if user_email:
                 import datetime
                 if "user_timings" not in state_info:
                     state_info["user_timings"] = {}
                 
-                # Only set timing if this user hasn't seen this state before
-                if user_email not in state_info["user_timings"]:
-                    now = time.time()
-                    now_iso = datetime.datetime.now().isoformat()
-                    state_info["user_timings"][user_email] = {
-                        "first_served_at": now,
-                        "first_served_at_iso": now_iso,
-                        "submitted_at": None,
-                        "submitted_at_iso": None,
-                        "duration_seconds": None,
-                    }
+                now = time.time()
+                now_iso = datetime.datetime.now().isoformat()
+                state_info["user_timings"][user_email] = {
+                    "served_at": now,
+                    "served_at_iso": now_iso,
+                    "submitted_at": None,
+                    "submitted_at_iso": None,
+                    "duration_seconds": None,
+                }
             else:
                 # Only show warning once per session (to avoid spam from monitor.html polling)
                 if not self._no_user_email_warning_shown:
@@ -901,8 +899,8 @@ class StateManager:
                 # If user wasn't tracked before (missed get_latest_state call), initialize now
                 if user_email not in state_info["user_timings"]:
                     state_info["user_timings"][user_email] = {
-                        "first_served_at": None,  # Unknown when they first saw it
-                        "first_served_at_iso": None,
+                        "served_at": None,  # Unknown when they were served this state
+                        "served_at_iso": None,
                         "submitted_at": now,
                         "submitted_at_iso": now_iso,
                         "duration_seconds": None,  # Can't calculate without start time
@@ -913,8 +911,8 @@ class StateManager:
                     timing = state_info["user_timings"][user_email]
                     timing["submitted_at"] = now
                     timing["submitted_at_iso"] = now_iso
-                    if timing["first_served_at"]:
-                        timing["duration_seconds"] = now - timing["first_served_at"]
+                    if timing["served_at"]:
+                        timing["duration_seconds"] = now - timing["served_at"]
                 
                 # Track submission in async mode (mark as submitted so they can't submit again)
                 if self.asynchronous_mode and self.async_pool_finalized:
