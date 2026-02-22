@@ -143,6 +143,7 @@ class StateManager:
         self.async_state_pool = {}  # (episode_id, state_id) -> state_info
         self.async_user_submissions = {}  # user_email -> set of (episode_id, state_id) tuples already submitted
         self.async_user_names = {}  # user_email -> user_name (lowercase) for test user detection
+        self.async_user_current_state = {}  # user_email -> (episode_id, state_id) - state user is currently working on (prevents refresh shopping)
         self.async_pool_finalized = False  # True when admin phase complete and pool is ready
         
         # Special test user tracking
@@ -652,10 +653,34 @@ class StateManager:
                     }
             else:
                 # Pool is finalized - serve from async pool
-                state_info = self.get_async_pooled_state(user_email)
+                # Check if user already has an assigned state (prevent refresh shopping)
+                state_info = None
+                
+                with self.state_lock:
+                    if user_email and user_email in self.async_user_current_state:
+                        current_state_key = self.async_user_current_state[user_email]
+                        if current_state_key in self.async_state_pool:
+                            candidate_state = self.async_state_pool[current_state_key]
+                            # Check if state still needs labels (might have filled while user was working)
+                            num_approved = sum(1 for entry in candidate_state.get("execution_history", []) 
+                                              if entry.get("approval") == 1)
+                            if num_approved < self.required_responses_per_critical_state:
+                                state_info = candidate_state
+                            else:
+                                # State is full - clear assignment so user gets a new state
+                                del self.async_user_current_state[user_email]
+                        else:
+                            # State no longer in pool - clear stale assignment
+                            del self.async_user_current_state[user_email]
+                
+                # If no existing assignment, get a new state
+                if state_info is None:
+                    state_info = self.get_async_pooled_state(user_email)
+                
                 if state_info:
                     # Track timing for async served state
-                    # ALWAYS update served_at to current time - measures from most recent fetch, not first encounter
+                    # ALWAYS update served_at on every fetch (including refreshes)
+                    # This starts the timer from when user realizes they can't skip and must work on this state
                     if user_email:
                         import datetime
                         if "user_timings" not in state_info:
@@ -919,6 +944,9 @@ class StateManager:
                     state_key = (episode_id, state_id)
                     if user_email in self.async_user_submissions:
                         self.async_user_submissions[user_email].add(state_key)
+                    # Clear current state assignment - user can now get a new state
+                    if user_email in self.async_user_current_state:
+                        del self.async_user_current_state[user_email]
             
             # Track actual number of unique worker submissions (not including autofill)
             if "actual_num_submissions" not in state_info:
@@ -3198,6 +3226,9 @@ class StateManager:
             episode_id, state_id = state_key
             selected_need = needs[selected_idx]
             selected_weight = weights[selected_idx]
+            
+            # Assign this state to the user (prevents refresh shopping)
+            self.async_user_current_state[user_email] = state_key
             
             return state_info
 
