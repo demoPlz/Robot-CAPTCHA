@@ -3560,10 +3560,16 @@ class StateManager:
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
         
-        # Count total states that should have obs files
-        total_states = sum(len(s) for s in self.pending_states_by_episode.values())
-        total_states += sum(len(s) for s in self.completed_states_by_episode.values())
-        total_states += sum(len(s) for s in self.completed_states_buffer_by_episode.values())
+        # Count unique states that should have obs files
+        # States may appear in multiple dicts (e.g. completed + buffer), so deduplicate by (ep, sid)
+        unique_state_keys = set()
+        total_states_raw = 0
+        for states_dict in [self.pending_states_by_episode, self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
+            for ep, states in states_dict.items():
+                total_states_raw += len(states)
+                for sid in states:
+                    unique_state_keys.add((ep, sid))
+        total_states = len(unique_state_keys)
         
         # Verify obs files were copied
         obs_cache_dir = checkpoint_dir / "obs_cache"

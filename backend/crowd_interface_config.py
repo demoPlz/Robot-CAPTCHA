@@ -24,9 +24,9 @@ class CrowdInterfaceConfig:
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
-        self.required_responses_per_critical_state: int = 2  # Critical states requiring multiple labels
+        self.required_responses_per_critical_state: int = 10  # Critical states requiring multiple labels
 
-        self.required_approvals_per_critical_state: int = 2
+        self.required_approvals_per_critical_state: int = 10
         
         # ========== Asynchronous Data Collection Mode ==========
         # When enabled, admin collects states with immediate execution (as if required=1),
@@ -90,7 +90,7 @@ class CrowdInterfaceConfig:
         # self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
 
         # Pour
-        self.objects: dict[str, str] = {"container": "Yellow Cube Container", "cup" : "Red Cylinder"}
+        self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup" : "Red Cylinder"}
         
         
         # ========== Pose Estimation Mode ==========
