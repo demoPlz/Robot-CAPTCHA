@@ -567,6 +567,24 @@
                     <div class="status-card">
                         <div class="robot-state stationary" id="robot-state">🛑 Robot Status Unknown</div>
                     </div>
+                    <!-- Phase 2 Async Progress -->
+                    <div class="status-card" id="async-progress-card" style="display:none;">
+                        <div style="font-weight:600; font-size:14px; color:#1e293b; margin-bottom:8px;">
+                            📊 Phase 2 Progress
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:13px; color:#64748b; margin-bottom:4px;">
+                            <span id="async-progress-text">0 / 0 approved</span>
+                            <span id="async-progress-pct">0%</span>
+                        </div>
+                        <div class="progress-bar" style="height:10px;">
+                            <div class="progress-fill" id="async-progress-fill" style="width:0%;"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:#94a3b8; margin-top:6px;">
+                            <span id="async-states-text">0/0 states done</span>
+                            <span id="async-submissions-text">0 submissions</span>
+                            <span id="async-users-text">0 users</span>
+                        </div>
+                    </div>
                 </div>
                 <div class="control-section">
                     <div class="control-buttons">
@@ -576,6 +594,7 @@
                         <button class="control-button flush-now-btn" id="flush-now-btn"><span class="control-icon">💾</span>Flush Now</button>
                         <button class="control-button continue-btn" id="continue-btn" style="display:none;"><span class="control-icon">▶️</span>Continue</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
+                        <button class="control-button" id="restart-pose-btn" style="background:#7c3aed;color:#fff;" title="Kill and restart pose estimation workers (safe at any time)"><span class="control-icon">🔧</span>Restart Pose Workers</button>
                     </div>
                 </div>
                 <!-- Tutorial State Save Section -->
@@ -1560,6 +1579,33 @@
             }
         }
 
+        // --- Async Phase 2 Progress ---
+        let asyncProgressInFlight = false;
+        async function fetchAsyncProgress() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/async/status`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) return;
+                const data = await response.json();
+                const card = document.getElementById('async-progress-card');
+                if (!data.pool_finalized || data.total_states === 0) {
+                    card.style.display = 'none';
+                    return;
+                }
+                card.style.display = 'block';
+                const approved = data.total_approved || 0;
+                const needed = data.total_needed || 1;
+                const pct = Math.min(Math.round((approved / needed) * 100), 100);
+                document.getElementById('async-progress-text').textContent = `${approved} / ${needed} approved`;
+                document.getElementById('async-progress-pct').textContent = `${pct}%`;
+                document.getElementById('async-progress-fill').style.width = `${pct}%`;
+                document.getElementById('async-states-text').textContent = `${data.states_completed}/${data.total_states} states done`;
+                document.getElementById('async-submissions-text').textContent = `${data.total_submissions || 0} submissions`;
+                document.getElementById('async-users-text').textContent = `${data.total_users || 0} users`;
+            } catch (e) {
+                // Silently ignore — endpoint may not exist in non-async mode
+            }
+        }
+
         // --- Approval modal ---
         let currentApprovalState = null;
 
@@ -1653,14 +1699,27 @@
                     approvalDescriptionSelect.appendChild(opt);
                 }
                 
-                // Default to first item
+                // Default to the prompt matching this critical state's index in the episode
                 if (approvalPromptContext.bank.length > 0) {
-                    const firstItem = approvalPromptContext.bank[0];
-                    approvalPromptContext.selectedVideoId = firstItem.id;
-                    approvalPromptContext.selectedText = firstItem.thus_text;
-                    approvalPromptText.textContent = firstItem.thus_text;
-                    approvalKvVideo.textContent = String(firstItem.id);
-                    approvalDescriptionSelect.value = String(firstItem.id);
+                    // Count critical states in this episode with stateId <= current state_id
+                    let criticalIndex = 0;
+                    const episode = episodes.find(ep => ep.id === String(data.episode_id));
+                    if (episode && episode.states) {
+                        const currentSid = parseInt(data.state_id, 10);
+                        const criticalSids = Object.entries(episode.states)
+                            .filter(([, s]) => s.isCritical)
+                            .map(([sid]) => parseInt(sid, 10))
+                            .sort((a, b) => a - b);
+                        criticalIndex = criticalSids.indexOf(currentSid);
+                        if (criticalIndex === -1) criticalIndex = criticalSids.length; // not yet tracked, append
+                    }
+                    const defaultIdx = Math.min(criticalIndex, approvalPromptContext.bank.length - 1);
+                    const defaultItem = approvalPromptContext.bank[Math.max(0, defaultIdx)];
+                    approvalPromptContext.selectedVideoId = defaultItem.id;
+                    approvalPromptContext.selectedText = defaultItem.thus_text;
+                    approvalPromptText.textContent = defaultItem.thus_text;
+                    approvalKvVideo.textContent = String(defaultItem.id);
+                    approvalDescriptionSelect.value = String(defaultItem.id);
                 }
                 
                 // Reset to bank mode
@@ -2821,6 +2880,31 @@
         stopBtn.addEventListener('click', handleStop);
         markCriticalBtn.addEventListener('click', handleMarkCritical);
         
+        // Restart pose workers button
+        const restartPoseBtn = document.getElementById('restart-pose-btn');
+        restartPoseBtn.addEventListener('click', async () => {
+            if (!confirm('Restart pose estimation workers? This is safe to do at any time.')) return;
+            restartPoseBtn.disabled = true;
+            restartPoseBtn.textContent = '⏳ Restarting...';
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/restart-pose-workers`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}
+                });
+                const j = await r.json();
+                if (j.status === 'ok') {
+                    const newPids = Object.entries(j.new_pids || {}).map(([o,p]) => `${o}:${p}`).join(', ');
+                    showToast(`✅ Pose workers restarted (${newPids})`);
+                } else {
+                    showToast(`❌ ${j.message || 'Restart failed'}`);
+                }
+            } catch (e) {
+                showToast('❌ Restart request failed');
+            } finally {
+                restartPoseBtn.disabled = false;
+                restartPoseBtn.innerHTML = '<span class="control-icon">🔧</span>Restart Pose Workers';
+            }
+        });
+
         const flushNowBtn = document.getElementById('flush-now-btn');
         flushNowBtn.addEventListener('click', handleFlushNow);
         
@@ -2919,7 +3003,13 @@
                         undoClassificationInFlight = true;
                         fetchPendingUndoClassification().finally(() => undoClassificationInFlight = false);
                     }
-                }, 500)  // Poll undo classification at same rate
+                }, 500),  // Poll undo classification at same rate
+                asyncProgress: setInterval(() => {
+                    if (!asyncProgressInFlight) {
+                        asyncProgressInFlight = true;
+                        fetchAsyncProgress().finally(() => asyncProgressInFlight = false);
+                    }
+                }, 2000)  // Poll async progress every 2s
             };
         }
         function stopAutoRefresh() {
@@ -2929,6 +3019,7 @@
                 clearInterval(autoRefreshInterval.preExecutionApproval);
                 clearInterval(autoRefreshInterval.approval);
                 clearInterval(autoRefreshInterval.undoClassification);
+                clearInterval(autoRefreshInterval.asyncProgress);
                 autoRefreshInterval = null;
             }
         }

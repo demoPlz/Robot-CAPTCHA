@@ -673,14 +673,14 @@ class CrowdInterface:
     # Dataset Management (Delegated to DatasetManager)
     # =========================
 
-    def init_dataset(self, cfg, robot):
+    def init_dataset(self, cfg, robot, phase1_resumed: bool = False):
         """Initialize dataset for data collection policy training.
 
         Delegates to DatasetManager.
 
         """
         # Initialize dataset (may set single_task from cfg, but we use config task_text for UI)
-        dataset_task = self.dataset_manager.init_dataset(cfg, robot)
+        dataset_task = self.dataset_manager.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
         
         # Use task_text from config if provided, otherwise fall back to dataset's single_task
         if not self.task_text:
@@ -1401,6 +1401,20 @@ class CrowdInterface:
                 timer.cancel()
                 # Manually trigger finalization now (caller already holds state_lock)
                 self.state_manager._finalize_episode_logic(episode_id)
+            
+            # Safety net: finalize any episodes whose states are all in
+            # completed_states_buffer but that were missed by the timer flow
+            # (e.g. race between pre-approval worker and this call).
+            if not hasattr(self.state_manager, '_finalized_episodes'):
+                self.state_manager._finalized_episodes = {}
+            
+            for ep_id in list(self.state_manager.completed_states_buffer_by_episode.keys()):
+                if ep_id in self.state_manager._finalized_episodes:
+                    continue  # Already finalized
+                # Check if episode has no more pending states
+                if not self.state_manager.pending_states_by_episode.get(ep_id):
+                    print(f"🔧 Safety-net finalization for episode {ep_id}")
+                    self.state_manager._finalize_episode_logic(ep_id)
         
         if not hasattr(self.state_manager, '_finalized_episodes'):
             print(f"⚠️  No finalized episodes to save")

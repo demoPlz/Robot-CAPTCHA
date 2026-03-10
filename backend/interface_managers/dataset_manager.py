@@ -64,8 +64,15 @@ class DatasetManager:
     # Dataset Initialization
     # =========================
 
-    def init_dataset(self, cfg, robot):
-        """Initialize dataset for data collection policy training."""
+    def init_dataset(self, cfg, robot, phase1_resumed: bool = False):
+        """Initialize dataset for data collection policy training.
+        
+        Args:
+            cfg: RecordControlConfig
+            robot: Robot instance
+            phase1_resumed: If True, the main dataset was auto-resumed from a checkpoint.
+                           The DCP dataset should also be opened in resume mode.
+        """
         from pathlib import Path
         
         # Check if we're continuing from a previous dataset
@@ -80,20 +87,37 @@ class DatasetManager:
             print(f"⚠️  Output dataset would overwrite source dataset!")
             print(f"   Auto-renaming: {original_repo_id} → {cfg.data_collection_policy_repo_id}")
         
-        if cfg.resume:
-            self.dataset = LeRobotDataset(cfg.data_collection_policy_repo_id, root=cfg.root)
-            self.dataset.start_image_writer(
-                num_processes=cfg.num_image_writer_processes,
-                num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
-            )
-            sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
+        # Auto-resume DCP dataset when main dataset was resumed
+        dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
+        dcp_path = dataset_root / cfg.data_collection_policy_repo_id
+
+        if cfg.resume or phase1_resumed:
+            if dcp_path.exists() and (dcp_path / "meta" / "info.json").exists():
+                print(f"🔄 DCP dataset auto-resume: {dcp_path}")
+                self.dataset = LeRobotDataset(cfg.data_collection_policy_repo_id, root=cfg.root)
+                self.dataset.start_image_writer(
+                    num_processes=cfg.num_image_writer_processes,
+                    num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+                )
+                sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
+            else:
+                # DCP dataset doesn't exist yet (e.g. no episodes finalized before crash)
+                # Create it fresh
+                print(f"📦 Creating DCP dataset (not yet saved): {cfg.data_collection_policy_repo_id}")
+                sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)
+                self.dataset = LeRobotDataset.create(
+                    cfg.data_collection_policy_repo_id,
+                    cfg.fps,
+                    root=cfg.root,
+                    robot=robot,
+                    use_videos=cfg.video,
+                    image_writer_processes=cfg.num_image_writer_processes,
+                    image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+                )
 
         else:
             # Check if dataset already exists and auto-rename to prevent overwrite
-            dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
-            dataset_path = dataset_root / cfg.data_collection_policy_repo_id
-            
-            if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
+            if dcp_path.exists() and (dcp_path / "meta" / "info.json").exists():
                 # Dataset already exists - find a unique name
                 original_repo_id = cfg.data_collection_policy_repo_id
                 counter = 1
@@ -105,7 +129,7 @@ class DatasetManager:
                         break
                     counter += 1
                 
-                print(f"⚠️  Dataset already exists at: {dataset_path}")
+                print(f"⚠️  Dataset already exists at: {dcp_path}")
                 print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {cfg.data_collection_policy_repo_id}")
             
             sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)

@@ -20,7 +20,7 @@ class CrowdInterfaceConfig:
     def __init__(self):
         # ========== Task Settings ==========
         self.task_name: str = "pour"  # Single-word identifier for the task
-        self.task_text: str = "Put the objects on the desk into the middle drawer" # Bug."Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
+        self.task_text: str = "Put the objects on the desk into the middle drawer" # "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
@@ -37,6 +37,10 @@ class CrowdInterfaceConfig:
         # Phase 2 only mode: skip robot/admin collection, load checkpoint, serve async pool directly
         self.phase2_only: str | None = None  # Path to phase1_checkpoint.json
         self.output_repo_id: str | None = None  # Override repo_id for Phase 2 output dataset
+        
+        # ========== Tunnel Settings ==========
+        # Manually specify a tunnel URL instead of auto-starting a quick tunnel
+        self.tunnel_url: str | None = None  # e.g. https://my-tunnel.trycloudflare.com
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
@@ -77,7 +81,7 @@ class CrowdInterfaceConfig:
         self.max_animation_users: int = 4  # Maximum simultaneous users viewing animations
         
         # USD file path for Isaac Sim (relative to repo root)
-        self.usd_path: str = f"public/assets/usd/{self.task_name}_flatten_new3.usd"
+        self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
@@ -91,7 +95,19 @@ class CrowdInterfaceConfig:
 
         # Pour
         self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup" : "Red Cylinder"}
+
+        # Switches
+        # self.objects: dict[str, str] = {"switch_teal": "Teal Cylinder", 
+        #                                 "switch_yellow" : "Yellow Cylinder", 
+        #                                 "switch_dark_blue" : "Dark Blue Cylinder",
+        #                                 "switch_green" : "Green Cylinder"}
         
+        # Insertion
+        # self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
+
+        # Sorting
+        # self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
+
         
         # ========== Pose Estimation Mode ==========
         # When True, skip real pose estimation and use random fixed poses
@@ -219,6 +235,11 @@ class CrowdInterfaceConfig:
             "--output-repo-id",
             type=str,
             help="Override output repo_id for Phase 2 dataset (default: uses checkpoint's repo_id)"
+        )
+        parser.add_argument(
+            "--tunnel-url",
+            type=str,
+            help="Manually specify a tunnel URL (skips quick tunnel auto-start)"
         )
 
         # UI settings
@@ -400,6 +421,8 @@ class CrowdInterfaceConfig:
             config.phase2_only = args.phase2_only
         if args.output_repo_id is not None:
             config.output_repo_id = args.output_repo_id
+        if hasattr(args, 'tunnel_url') and args.tunnel_url is not None:
+            config.tunnel_url = args.tunnel_url
         if args.use_manual_prompt:
             config.use_manual_prompt = True
         if args.show_demo_videos:

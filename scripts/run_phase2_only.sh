@@ -45,13 +45,13 @@ echo "   (Flask will auto-select an available port)"
 echo "   (Cloudflared tunnel will be started automatically)"
 echo ""
 
-python backend/collect_data.py \
+conda run -n csui --no-capture-output python backend/collect_data.py \
   --phase2-only "$CHECKPOINT_PATH" \
   --robot.type=trossen_ai_single_arm \
   --control.type=record \
   --control.fps=30 \
-  --control.single_task="Put the objects on the desk into the middle drawer" \
-  --task-name=drawer \
+  --control.single_task="Pour the content of the red cup into the teal container" \
+  --task-name=pour \
   --control.repo_id=$USER/phase2_dummy \
   --control.num_episodes=1 \
   --control.push_to_hub=false \

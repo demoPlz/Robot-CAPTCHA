@@ -56,7 +56,291 @@ from lerobot.configs import parser
 import socket
 import subprocess
 import time
+import re as _re
 from werkzeug.serving import make_server
+
+
+# ============ Tunnel Helpers ============
+
+def _kill_quick_tunnels():
+    """Kill only quick-tunnel cloudflared processes (not named/token-based ones)."""
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline') or []
+                cmdline_str = ' '.join(cmdline)
+                # Only kill cloudflared processes that are NOT token-based named tunnels
+                if 'cloudflared' in cmdline_str and '--token' not in cmdline_str and 'tunnel' in cmdline_str:
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except ImportError:
+        # psutil not available - kill by PID file
+        pid_file = Path("/tmp/cloudflared_quick.pid")
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                subprocess.Popen(["kill", str(old_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
+            except (ValueError, OSError):
+                pass
+
+
+def _try_named_tunnel(port: int):
+    """Try to use a named tunnel configured via setup_tunnel.sh.
+    
+    Returns (tunnel_url, tunnel_process) if successful, or None if no named tunnel is configured.
+    """
+    import json as _json
+    
+    info_file = Path.home() / ".cloudflared" / "csui-tunnel-info.json"
+    if not info_file.exists():
+        return None
+    
+    try:
+        info = _json.loads(info_file.read_text())
+    except (ValueError, OSError):
+        return None
+    
+    config_file_path = info.get("config_file", "")
+    hostname = info.get("hostname", "")
+    cred_file = info.get("credentials_file", "")
+    
+    if not config_file_path or not hostname:
+        return None
+    
+    config_path = Path(config_file_path)
+    if not config_path.exists():
+        print(f"⚠️  Named tunnel config file not found: {config_file_path}")
+        return None
+    
+    if cred_file and not Path(cred_file).exists():
+        print(f"⚠️  Named tunnel credentials file not found: {cred_file}")
+        return None
+    
+    print(f"🚇 Starting named tunnel '{info.get('tunnel_name', 'csui-tunnel')}' -> https://{hostname}")
+    
+    # Update the config's ingress port to match the current Flask port
+    try:
+        config_text = config_path.read_text()
+        config_text = _re.sub(
+            r'service:\s*http://localhost:\d+',
+            f'service: http://localhost:{port}',
+            config_text,
+            count=1  # Only replace the first (hostname) ingress, not the catch-all
+        )
+        config_path.write_text(config_text)
+    except OSError as e:
+        print(f"⚠️  Could not update tunnel config port: {e}")
+    
+    # Kill any existing quick tunnels
+    _kill_quick_tunnels()
+    time.sleep(0.3)
+    
+    tunnel_log = Path("/tmp/cloudflared.log")
+    tunnel_log.unlink(missing_ok=True)
+    
+    tunnel_process = subprocess.Popen(
+        ["cloudflared", "tunnel", "--config", str(config_path), "--no-autoupdate", "run"],
+        stdout=open(tunnel_log, "w"),
+        stderr=subprocess.STDOUT
+    )
+    
+    # Wait for the tunnel to establish connections
+    print("⏳ Waiting for named tunnel to connect...")
+    for _ in range(40):  # Up to 20 seconds
+        time.sleep(0.5)
+        if tunnel_log.exists():
+            content = tunnel_log.read_text()
+            if 'Registered tunnel connection' in content or 'registered connIndex' in content.lower():
+                tunnel_url = f"https://{hostname}"
+                print(f"✅ Named tunnel connected: {tunnel_url}")
+                return tunnel_url, tunnel_process
+            if 'ERR' in content and ('credential' in content.lower() or 'authentication' in content.lower()):
+                print(f"⚠️  Named tunnel auth error. Re-run: ./scripts/setup_tunnel.sh")
+                try:
+                    tunnel_process.kill()
+                except OSError:
+                    pass
+                return None
+    
+    # If we waited 20s and no connection, check if process is still alive
+    if tunnel_process.poll() is not None:
+        print(f"⚠️  Named tunnel process exited with code {tunnel_process.returncode}")
+        return None
+    
+    # Process is alive but no confirmed connection - assume it's working (DNS may just be slow)
+    tunnel_url = f"https://{hostname}"
+    print(f"⚠️  Named tunnel started but connection not confirmed yet. Assuming {tunnel_url}")
+    return tunnel_url, tunnel_process
+
+
+def _try_quick_tunnel(port: int):
+    """Try to start a quick tunnel with aggressive retries.
+    
+    Returns (tunnel_url, tunnel_process) if successful, or (None, None) if all attempts fail.
+    """
+    MAX_ATTEMPTS = 2
+    
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        print(f"🚇 Starting cloudflared quick tunnel for port {port} (attempt {attempt}/{MAX_ATTEMPTS})...")
+        
+        _kill_quick_tunnels()
+        time.sleep(0.5)
+        
+        tunnel_log = Path("/tmp/cloudflared.log")
+        tunnel_log.unlink(missing_ok=True)
+        
+        tunnel_process = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+            stdout=open(tunnel_log, "w"),
+            stderr=subprocess.STDOUT
+        )
+        Path("/tmp/cloudflared_quick.pid").write_text(str(tunnel_process.pid))
+        
+        # Wait for tunnel URL (up to 15 seconds)
+        print("⏳ Waiting for tunnel URL...")
+        tunnel_url = None
+        api_error = False
+        for _ in range(30):
+            time.sleep(0.5)
+            if tunnel_log.exists():
+                content = tunnel_log.read_text()
+                match = _re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
+                if match:
+                    tunnel_url = match.group(0)
+                    break
+                if 'status_code="500' in content or 'Worker threw exception' in content:
+                    print(f"   ⚠️  Cloudflare quick tunnel API returned 500 error")
+                    api_error = True
+                    break
+        
+        if tunnel_url:
+            return tunnel_url, tunnel_process
+        
+        # Kill the failed process
+        try:
+            tunnel_process.kill()
+        except OSError:
+            pass
+        
+        if attempt < MAX_ATTEMPTS:
+            wait_time = 5
+            if api_error:
+                print(f"   Quick tunnel API is down. Retrying in {wait_time}s...")
+            else:
+                print(f"   Retrying in {wait_time}s...")
+            time.sleep(wait_time)
+    
+    print("⚠️  Quick tunnel unavailable, trying ngrok fallback...")
+    return None, None
+
+
+def _try_ngrok(port: int):
+    """Try to start an ngrok tunnel as fallback.
+    
+    Requires ngrok to be installed and configured with an authtoken.
+    Returns (tunnel_url, tunnel_process) if successful, or (None, None) if ngrok is unavailable.
+    """
+    import shutil
+    
+    if not shutil.which("ngrok"):
+        print("   ngrok not found in PATH, skipping ngrok fallback.")
+        return None, None
+    
+    # Check if ngrok has an authtoken configured
+    config_path = Path.home() / ".config" / "ngrok" / "ngrok.yml"
+    if not config_path.exists():
+        print("   ngrok not configured (no authtoken). Run: ngrok config add-authtoken <TOKEN>")
+        return None, None
+    
+    print(f"🚇 Starting ngrok tunnel for port {port}...")
+    
+    # Kill any existing ngrok processes
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline') or []
+                if any('ngrok' in c for c in cmdline):
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except ImportError:
+        subprocess.run(["pkill", "-f", "ngrok"], capture_output=True)
+    
+    time.sleep(0.5)
+    
+    ngrok_log = Path("/tmp/ngrok.log")
+    ngrok_log.unlink(missing_ok=True)
+    
+    tunnel_process = subprocess.Popen(
+        ["ngrok", "http", str(port), "--log", str(ngrok_log), "--log-format", "json"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    
+    # Wait for ngrok to start and get the URL from its log file or local API
+    print("⏳ Waiting for ngrok tunnel URL...")
+    import json as _json
+    
+    for i in range(20):  # Up to 10 seconds
+        time.sleep(0.5)
+        
+        # Method 1: Parse log file for the tunnel URL (most reliable)
+        if ngrok_log.exists():
+            try:
+                for line in ngrok_log.read_text().strip().split('\n'):
+                    entry = _json.loads(line)
+                    url = entry.get('url', '')
+                    if url.startswith('https://'):
+                        print(f"✅ ngrok tunnel connected: {url}")
+                        return url, tunnel_process
+            except (_json.JSONDecodeError, Exception):
+                pass
+        
+        # Method 2: Try ngrok API on port 4040 and common alternates
+        for api_port in [4040, 4041, 4042, 4043]:
+            try:
+                resp = subprocess.run(
+                    ["curl", "-s", f"http://localhost:{api_port}/api/tunnels"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if resp.returncode == 0 and resp.stdout.strip():
+                    data = _json.loads(resp.stdout)
+                    tunnels = data.get("tunnels", [])
+                    for t in tunnels:
+                        public_url = t.get("public_url", "")
+                        if public_url.startswith("https://"):
+                            print(f"✅ ngrok tunnel connected: {public_url}")
+                            return public_url, tunnel_process
+            except (subprocess.TimeoutExpired, _json.JSONDecodeError, Exception):
+                pass
+    
+    # Check if process died
+    if tunnel_process.poll() is not None:
+        print(f"⚠️  ngrok process exited with code {tunnel_process.returncode}")
+        # Print any log output for debugging
+        if ngrok_log.exists():
+            content = ngrok_log.read_text()
+            for line in content.strip().split('\n')[-5:]:
+                try:
+                    entry = _json.loads(line)
+                    if entry.get('lvl') == 'error' or entry.get('err'):
+                        print(f"   ngrok error: {entry.get('msg', '')} {entry.get('err', '')}")
+                except _json.JSONDecodeError:
+                    pass
+        return None, None
+    
+    print("⚠️  ngrok started but couldn't get tunnel URL from API.")
+    try:
+        tunnel_process.kill()
+    except OSError:
+        pass
+    return None, None
+
+
+# ============ End Tunnel Helpers ============
 
 
 def _stop_display_only(listener, display_cameras: bool):
@@ -81,7 +365,25 @@ _CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConfig) -> LeRobotDataset:
     from pathlib import Path
     
-    if cfg.resume:
+    # ------------------------------------------------------------------
+    # Phase 1 auto-resume: if dataset already exists AND has a phase1
+    # checkpoint, resume from where we left off instead of creating a
+    # new dataset.  This makes Phase 1 crash-safe.
+    # ------------------------------------------------------------------
+    phase1_resumed = False
+    dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
+    dataset_path = dataset_root / cfg.repo_id
+    checkpoint_path = dataset_path / "phase1_checkpoint.json"
+
+    if cfg.resume or (
+        dataset_path.exists()
+        and (dataset_path / "meta" / "info.json").exists()
+        and checkpoint_path.exists()
+    ):
+        # Resume: open existing dataset and restore crowd state
+        print(f"🔄 Phase 1 auto-resume: found existing dataset + checkpoint")
+        print(f"   Dataset: {dataset_path}")
+        print(f"   Checkpoint: {checkpoint_path}")
         dataset = LeRobotDataset(
             cfg.repo_id,
             root=cfg.root,
@@ -92,13 +394,23 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                 num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
             )
         sanity_check_dataset_robot_compatibility(dataset, robot, cfg.fps, cfg.video)
-    else:
-        # Check if dataset already exists and auto-rename to prevent overwrite
-        dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
-        dataset_path = dataset_root / cfg.repo_id
-        
+
+        # Restore crowd state from checkpoint
+        result = crowd_interface.load_phase1_checkpoint(checkpoint_path)
+        if result.get("status") == "success":
+            phase1_resumed = True
+            print(f"✅ Crowd state restored from checkpoint")
+            print(f"   Saved at: {result.get('saved_at_iso', 'unknown')}")
+            print(f"   Resuming from episode {dataset.meta.total_episodes}")
+        else:
+            print(f"⚠️  Failed to load checkpoint: {result.get('message')}")
+            print(f"   Starting Phase 1 from scratch with new dataset name")
+            # Fall through to create new dataset below
+            phase1_resumed = False
+
+    if not phase1_resumed and not cfg.resume:
+        # Check if dataset already exists WITHOUT a checkpoint — auto-rename to prevent overwrite
         if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
-            # Dataset already exists - find a unique name
             original_repo_id = cfg.repo_id
             counter = 1
             while True:
@@ -113,7 +425,7 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             print(f"⚠️  Dataset already exists at: {dataset_path}")
             print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {cfg.repo_id}")
         
-        # Create empty dataset or load existing saved episodes
+        # Create empty dataset
         sanity_check_dataset_name(cfg.repo_id, cfg.policy)
         dataset = LeRobotDataset.create(
             cfg.repo_id,
@@ -125,10 +437,10 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
         )
 
-    crowd_interface.init_dataset(cfg, robot)
+    crowd_interface.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
 
     # If continuing from a previous dataset, drive robot to positions
-    if _CROWD_CONFIG.continue_from_dataset:
+    if _CROWD_CONFIG.continue_from_dataset and not phase1_resumed:
         print(f"🔄 Continue mode active")
         
         # First, drive to home position (same as normal reset)
@@ -195,10 +507,15 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     crowd_interface.set_events(events)
 
     # Skip safety stop in continue mode to avoid moving the robot from its positioned state
-    if has_method(robot, "teleop_safety_stop") and not _CROWD_CONFIG.continue_from_dataset:
+    if has_method(robot, "teleop_safety_stop") and not _CROWD_CONFIG.continue_from_dataset and not phase1_resumed:
         robot.teleop_safety_stop()
 
-    recorded_episodes = 0
+    # When resuming, count already-saved episodes so we record the right total
+    already_recorded = dataset.meta.total_episodes if phase1_resumed else 0
+    if already_recorded > 0:
+        print(f"📊 Already recorded {already_recorded} episodes, need {cfg.num_episodes - already_recorded} more")
+
+    recorded_episodes = already_recorded
     while True:
         if recorded_episodes >= cfg.num_episodes:
             break
@@ -246,6 +563,15 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
         
         # Clear the "end" marker for this episode now that it's been saved
         crowd_interface.state_manager.episodes_marked_as_end.discard(current_episode_index)
+
+        # Save incremental Phase 1 checkpoint after every episode
+        # so we can resume from any crash
+        if _CROWD_CONFIG.asynchronous_mode:
+            try:
+                cp = crowd_interface.save_phase1_checkpoint()
+                print(f"💾 Incremental checkpoint saved ({recorded_episodes}/{cfg.num_episodes} episodes)")
+            except Exception as e:
+                print(f"⚠️  Failed to save incremental checkpoint: {e}")
 
         if events["stop_recording"]:
             break
@@ -304,6 +630,11 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                             # All states labeled AND all pre-approvals complete
                             print(f"\n✅ All {total} states have been labeled by users!")
                             print(f"✅ All pre-approvals completed!")
+                            
+                            # Wait for pre-approval worker thread to fully drain
+                            # (ensures finalization timers are scheduled before we force them)
+                            print(f"   Draining pre-approval queue...")
+                            crowd_interface.state_manager.pre_approval_queue.join()
                             
                             # Batch save all data collection policy episodes with consistent schema
                             # This is synchronous and will block until all episodes are saved
@@ -384,37 +715,30 @@ def control_robot(cfg: ControlPipelineConfig):
     server_thread = Thread(target=http_server.serve_forever, name="flask-wsgi", daemon=True)
     server_thread.start()
     
-    # Start cloudflared tunnel pointing to the Flask port
-    print(f"🚇 Starting cloudflared tunnel for port {port}...")
-    subprocess.Popen(
-        ["pkill", "-f", "cloudflared"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    ).wait()
-    time.sleep(0.5)
-    
-    tunnel_log = Path("/tmp/cloudflared.log")
-    tunnel_log.unlink(missing_ok=True)
-    
-    tunnel_process = subprocess.Popen(
-        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
-        stdout=open(tunnel_log, "w"),
-        stderr=subprocess.STDOUT
-    )
-    
-    # Wait for tunnel URL to appear
-    print("⏳ Waiting for tunnel URL...")
+    # ============ Tunnel Setup ============
+    # Priority: 1) --tunnel-url flag, 2) Named tunnel (setup_tunnel.sh), 3) Quick tunnel (fallback)
+    import re as _re
     tunnel_url = None
-    for _ in range(30):  # Wait up to 15 seconds
-        time.sleep(0.5)
-        if tunnel_log.exists():
-            content = tunnel_log.read_text()
-            import re
-            match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
-            if match:
-                tunnel_url = match.group(0)
-                break
+    tunnel_process = None
     
+    if _CROWD_CONFIG.tunnel_url:
+        # (1) Manual URL provided via CLI
+        tunnel_url = _CROWD_CONFIG.tunnel_url
+        print(f"🚇 Using manually specified tunnel URL: {tunnel_url}")
+    
+    else:
+        # (2) Try named tunnel (setup_tunnel.sh), then quick tunnel, then ngrok
+        named_result = _try_named_tunnel(port)
+        if named_result:
+            tunnel_url, tunnel_process = named_result
+        else:
+            # (3) Quick tunnel fallback with aggressive retries
+            tunnel_url, tunnel_process = _try_quick_tunnel(port)
+            if not tunnel_url:
+                # (4) ngrok fallback
+                tunnel_url, tunnel_process = _try_ngrok(port)
+    
+    # Deploy frontend if tunnel is active
     if tunnel_url:
         print(f"✅ Tunnel active: {tunnel_url}")
         print(f"🚀 Auto-deploying frontend to Netlify...")
@@ -449,7 +773,12 @@ def control_robot(cfg: ControlPipelineConfig):
             if deploy_result.stderr:
                 print(f"   Error: {deploy_result.stderr[:200]}")
     else:
-        print("⚠️  Could not detect tunnel URL, check /tmp/cloudflared.log")
+        print("❌ Could not start tunnel.")
+        print("   Options:")
+        print(f"     1. Set up a reliable named tunnel: ./scripts/setup_tunnel.sh <your-domain.com>")
+        print(f"     2. Re-run with --tunnel-url=<URL> to provide a manual tunnel URL")
+        print(f"     3. Start a tunnel manually: cloudflared tunnel --url http://localhost:{port}")
+        print(f"   ⚠️  Server is running on port {port} but not publicly accessible.")
     print()
 
     # ============ Phase 2 Only Mode ============
@@ -588,6 +917,11 @@ def control_robot(cfg: ControlPipelineConfig):
                     else:
                         print(f"\n✅ All {total} states have been labeled by users!")
                         print(f"✅ All pre-approvals completed!")
+                        
+                        # Wait for pre-approval worker thread to fully drain
+                        # (ensures finalization timers are scheduled before we force them)
+                        print(f"   Draining pre-approval queue...")
+                        crowd_interface.state_manager.pre_approval_queue.join()
                         
                         print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
                         crowd_interface.save_all_finalized_episodes()

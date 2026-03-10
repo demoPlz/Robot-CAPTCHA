@@ -19,11 +19,11 @@ python backend/collect_data.py \
   --control.fps=30 \
   --control.single_task="Pour the content of the red cup into the teal container" \
   --task-name=pour \
-  --control.repo_id=pour/pour_10_phase1_mar4 \
-  --control.data_collection_policy_repo_id=pour/pour_10_phase1_mar4_dcp \
+  --control.repo_id=pour/pour_15_phase1_mar6 \
+  --control.data_collection_policy_repo_id=pour/pour_15_phase1_mar6_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
-  --control.num_episodes=10 \
+  --control.num_episodes=15 \
   --control.push_to_hub=false \
   --control.num_image_writer_processes=8 \
   --control.play_sound=false \

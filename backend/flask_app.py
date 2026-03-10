@@ -504,14 +504,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             txt = (data.get("text_prompt") or "").strip()
 
             updated = False
+            p_info = None
             with crowd_interface.state_lock:
                 # pending?
                 p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
                 p_info = p_ep.get(sid)
-                if p_info is not None:
-                    crowd_interface.set_prompt_ready(p_info, ep, sid, txt if txt else None, vid)
-                    updated = True
-                else:
+                if p_info is None:
                     # completed metadata path
                     c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
                     c_info = c_ep.get(sid)
@@ -522,6 +520,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         c_info["video_prompt"] = vid
                         c_info["prompt_ready"] = True
                         updated = True
+
+            # Call set_prompt_ready OUTSIDE state_lock to avoid deadlock
+            # (set_prompt_ready may re-acquire state_lock for "End" auto-fill)
+            if p_info is not None:
+                crowd_interface.set_prompt_ready(p_info, ep, sid, txt if txt else None, vid)
+                updated = True
 
             if not updated:
                 return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
@@ -1056,6 +1060,33 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             else:
                 return jsonify({"status": "error", "message": "Events not initialized"}), 400
         except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/pose-worker-status", methods=["GET"])
+    @require_monitor_auth
+    def pose_worker_status():
+        """Get health status of all pose estimation workers."""
+        try:
+            status = crowd_interface.pose_estimator.get_worker_status()
+            return jsonify({"status": "ok", "workers": status})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/restart-pose-workers", methods=["POST"])
+    @require_monitor_auth
+    def restart_pose_workers():
+        """Kill and restart all pose estimation workers without disrupting data collection.
+        
+        Safe to call at any time. Recovers orphaned jobs from tmp/ back to inbox/.
+        The results watcher thread continues running undisturbed.
+        """
+        try:
+            result = crowd_interface.pose_estimator.restart_workers()
+            return jsonify({"status": "ok", **result})
+        except Exception as e:
+            print(f"❌ Error restarting pose workers: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # =========================

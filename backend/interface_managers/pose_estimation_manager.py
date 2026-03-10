@@ -642,14 +642,99 @@ class PoseEstimationManager:
             if done:
                 return True
 
-            # if time.time() > deadline:
-            #     with self.state_lock:
-            #         poses_now = list(self.pending_states_by_episode.get(episode_id, {}).get(state_id, {}).get("object_poses", {}).keys())
-            #     print(f"⚠️  Timed out waiting for poses (ep={episode_id}, state={state_id}). "
-            #         f"Have={poses_now}, expected={expected_objs}")
-            #     return False
+            if time.time() > deadline:
+                with self.state_lock:
+                    poses_now = list(self.pending_states_by_episode.get(episode_id, {}).get(state_id, {}).get("object_poses", {}).keys())
+                print(f"⚠️  Timed out waiting for poses (ep={episode_id}, state={state_id}). "
+                    f"Have={poses_now}, expected={expected_objs}")
+                # Use fallback (last known) poses for any missing objects
+                with self.state_lock:
+                    ep = self.pending_states_by_episode.get(episode_id)
+                    if ep and state_id in ep:
+                        st = ep[state_id]
+                        if "object_poses" not in st:
+                            st["object_poses"] = {}
+                        for obj in expected_objs:
+                            if obj not in st["object_poses"]:
+                                fallback = self.last_known_poses.get(obj)
+                                if fallback is not None:
+                                    print(f"⚠️  Using last known pose for {obj} (timed out)")
+                                    st["object_poses"][obj] = fallback
+                                else:
+                                    print(f"❌ No pose available for {obj} (timed out, no fallback)")
+                                    st["object_poses"][obj] = None
+                return False
 
             time.sleep(0.02)
+
+    def _recover_orphaned_jobs(self):
+        """Move any claimed jobs from tmp/ back to inbox/ so they can be re-processed.
+        
+        When a worker dies mid-job, the claimed file sits in tmp/ forever.
+        This rescues those files so a restarted worker can pick them up.
+        """
+        recovered = 0
+        for f in self.pose_tmp.glob("*.json"):
+            try:
+                dst = self.pose_inbox / f.name
+                os.replace(str(f), str(dst))
+                print(f"   🔄 Recovered orphaned job: {f.name}")
+                recovered += 1
+            except Exception as e:
+                print(f"   ⚠️  Failed to recover {f.name}: {e}")
+        if recovered:
+            print(f"   ✅ Recovered {recovered} orphaned job(s)")
+
+    def restart_workers(self) -> dict:
+        """Restart all pose workers without disrupting the data collection session.
+        
+        This is safe to call at any time. It:
+        1. Stops existing workers (graceful then force kill)
+        2. Recovers any orphaned jobs from tmp/ back to inbox/
+        3. Starts fresh workers that pick up pending jobs
+        
+        The results watcher thread is NOT restarted (it's still running).
+        
+        Returns:
+            Dict with restart status info
+        """
+        print("🔄 === RESTARTING POSE WORKERS ===")
+        
+        # 1. Stop old workers
+        old_pids = {obj: proc.pid for obj, proc in self._pose_worker_procs.items()}
+        self.stop()
+        
+        # 2. Recover orphaned jobs
+        self._recover_orphaned_jobs()
+        
+        # 3. Start fresh workers
+        self._start_pose_workers()
+        
+        new_pids = {obj: proc.pid for obj, proc in self._pose_worker_procs.items()}
+        print("✅ === POSE WORKERS RESTARTED ===")
+        print(f"   Old PIDs: {old_pids}")
+        print(f"   New PIDs: {new_pids}")
+        
+        # Count pending jobs in inbox
+        pending_jobs = len(list(self.pose_inbox.glob("*.json")))
+        
+        return {
+            "old_pids": {k: v for k, v in old_pids.items()},
+            "new_pids": {k: v for k, v in new_pids.items()},
+            "recovered_jobs": len(list(self.pose_tmp.glob("*.json"))),  # any remaining means recovery failed
+            "pending_jobs": pending_jobs,
+        }
+
+    def get_worker_status(self) -> dict:
+        """Return health status.of all pose workers."""
+        status = {}
+        for obj, proc in self._pose_worker_procs.items():
+            rc = proc.poll()
+            if rc is None:
+                status[obj] = {"alive": True, "pid": proc.pid}
+            else:
+                status[obj] = {"alive": False, "pid": proc.pid, "exit_code": rc}
+        return status
 
     def stop(self):
         """Stop all pose worker processes.

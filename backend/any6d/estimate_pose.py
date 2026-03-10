@@ -61,6 +61,7 @@ class PoseEngines:
     langsam: LangSAM
     any6d: Any6D
     fpose: FoundationPose
+    _original_mesh: Optional[trimesh.Trimesh] = None  # pristine mesh for reset
 
 
 def create_engines(
@@ -82,6 +83,9 @@ def create_engines(
     m = mesh.copy()
     _ = m.vertex_normals
 
+    # Keep a pristine copy of the mesh so we can restore it after register_any6d mutates it
+    original_mesh = m.copy()
+
     glctx_any6d = dr.RasterizeCudaContext()
     any6d = Any6D(mesh=m, debug=debug, debug_dir="./output/any6d_debug", glctx=glctx_any6d)
 
@@ -98,7 +102,7 @@ def create_engines(
         debug=debug,
         debug_dir="./output/any6d_debug",
     )
-    return PoseEngines(langsam=langsam, any6d=any6d, fpose=fpose)
+    return PoseEngines(langsam=langsam, any6d=any6d, fpose=fpose, _original_mesh=original_mesh)
 
 
 def reset_tracking(engines: PoseEngines) -> None:
@@ -109,7 +113,15 @@ def reset_tracking(engines: PoseEngines) -> None:
     - Any6D.pose_last: Last pose from Any6D estimation
     - PoseRefinePredictor.last_trans_update: Cached translation delta
     - PoseRefinePredictor.last_rot_update: Cached rotation delta
+    - Mesh vertices: Restored to pristine state (register_any6d mutates them)
     """
+    # Restore original mesh geometry — register_any6d scales vertices in-place
+    if engines._original_mesh is not None:
+        pristine = engines._original_mesh.copy()
+        engines.any6d.reset_object(mesh=pristine, symmetry_tfs=engines.any6d.symmetry_tfs)
+        # Also update FoundationPose's reference to the mesh
+        engines.fpose.mesh = engines.any6d.mesh
+
     # Clear FoundationPose tracking state
     engines.fpose.pose_last = None
     
