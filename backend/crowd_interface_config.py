@@ -81,13 +81,13 @@ class CrowdInterfaceConfig:
 
         # ========== Home Position ==========
         # Robot home position in degrees: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper_rotate, gripper]
-        if self.task_name in ("insertion", "switches"):
+        if self.task_name in ("insertion",):
             self.home_position_deg: list[float] = [0, 75, 75, -90, 0, 0, -1]
         else:
             self.home_position_deg: list[float] = [0, 60, 75, -60, 0, 0, 2]
 
-        # Gripper starts closed for insertion/switches, open for everything else
-        self.initial_gripper_open: bool = (self.task_name not in ("insertion", "switches"))
+        # Gripper starts closed for insertion, open for everything else
+        self.initial_gripper_open: bool = (self.task_name not in ("insertion",))
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
@@ -105,7 +105,7 @@ class CrowdInterfaceConfig:
         # Switches
         self.objects: dict[str, str] = {"switch_teal": "Teal Cylinder", 
                                         "switch_yellow" : "Yellow Cylinder", 
-                                        "switch_dark_blue" : "Dark Blue Cylinder",
+                                        "switch_dark_blue" : "Navy Blue Cylinder",
                                         "switch_green" : "Green Cylinder"}
         
         # Insertion

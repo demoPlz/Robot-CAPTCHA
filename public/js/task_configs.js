@@ -85,9 +85,9 @@ const TASK_CONFIGS = {
       x: 0.20, y: 0.40, z: 0.20,
       roll: 1.0, pitch: 0.81, yaw: 0.81,
     },
-    homePositionDeg: [0, 75, 75, -90, 0, 0, -1],
-    homeGripper: -1,
-    hideRobotInTopView: true,
+    homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
+    homeGripper: 1,
+    hideRobotInTopView: false,
   },
 };
 
