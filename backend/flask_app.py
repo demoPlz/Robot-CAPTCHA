@@ -172,6 +172,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             payload["demo_video"] = crowd_interface.video_manager.get_demo_video_config()
             # Tell frontend which mode we're in (focus group vs crowdsourcing)
             payload["crowdsourcing_mode"] = crowd_interface.use_mturk
+            # Tell frontend the task name (used for per-task rendering, e.g. hiding robot in top view)
+            payload["task_name"] = crowd_interface.task_name or "default"
 
             response = jsonify(payload)
             # Prevent caching

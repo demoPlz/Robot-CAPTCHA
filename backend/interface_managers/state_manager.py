@@ -75,6 +75,7 @@ class StateManager:
         snapshot_views_callback,
         save_episode_callback,
         state_ready_callback=None,  # NEW: Called when critical state becomes ready for labeling
+        home_position_deg: list[float] | None = None,
     ):
         """Initialize state manager.
 
@@ -119,6 +120,7 @@ class StateManager:
         self.use_manual_prompt = use_manual_prompt
         self.use_sim = use_sim
         self.task_text = task_text
+        self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
         self._obs_cache_root = obs_cache_root
 
         # Shared state data structures (references)
@@ -826,9 +828,9 @@ class StateManager:
             joint_positions = response_data["joint_positions"]
             gripper_action = response_data["gripper"]
             
-            # Define home position: [0, 60°, 75°, -60°, 0°, 0°, 2°] in radians
+            # Define home position in radians (from config)
             import math
-            HOME_POSITION_DEG = [0, 60, 75, -60, 0, 0, 2]
+            HOME_POSITION_DEG = self.home_position_deg
             HOME_POSITION_RAD = [deg * math.pi / 180.0 for deg in HOME_POSITION_DEG]
             
             # Detect gripper-only: compare with previous state's joint positions
@@ -2280,9 +2282,8 @@ class StateManager:
         state_info["video_prompt"] = video_id  # Updated field name
         state_info["prompt_ready"] = True
 
-        # Check if this is a critical state with "end" text - auto-fill with current position
-        # Accept "End", "End.", "end", "end." etc.
-        if text and text.strip().rstrip(".").lower() == "end":
+        # Check if this is a critical state with "end." text - auto-fill with current position
+        if text and text.strip().lower() == "end.":
             with self.state_lock:
                 self._auto_fill_end_state_locked(state_info, episode_id, state_id)
 
@@ -3085,7 +3086,7 @@ class StateManager:
         # Move REAL robot to home then dock position at the start of async labeling
         import math
         import time
-        HOME_POSITION_DEG = [0, 60, 75, -60, 0, 0, 2]
+        HOME_POSITION_DEG = self.home_position_deg
         HOME_POSITION_RAD = [deg * math.pi / 180.0 for deg in HOME_POSITION_DEG]
         DOCK_POSITION_RAD = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Sleep pose - all joints at 0
         
@@ -3242,16 +3243,11 @@ class StateManager:
             # Calculate completion status for each state
             states_needing_labels = 0
             states_completed = 0
-            total_approved = 0
-            total_submissions = 0
-            total_needed = total_states * self.required_responses_per_critical_state
             
             for pool_key, state_info in self.async_state_pool.items():
                 # Count APPROVED submissions for critical states
-                exec_history = state_info.get("execution_history", [])
-                num_approved = sum(1 for entry in exec_history if entry.get("approval") == 1)
-                total_approved += num_approved
-                total_submissions += len(exec_history)
+                num_approved = sum(1 for entry in state_info.get("execution_history", []) 
+                                  if entry.get("approval") == 1)
                 if num_approved < self.required_responses_per_critical_state:
                     states_needing_labels += 1
                 else:
@@ -3278,10 +3274,6 @@ class StateManager:
                 "total_states": total_states,
                 "states_needing_labels": states_needing_labels,
                 "states_completed": states_completed,
-                "total_approved": total_approved,
-                "total_submissions": total_submissions,
-                "total_needed": total_needed,
-                "required_per_state": self.required_responses_per_critical_state,
                 "total_users": total_users,
                 "users_maxed_out": users_maxed_out,
                 "pending_approvals_queue": queue_length,
@@ -3570,16 +3562,10 @@ class StateManager:
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
         
-        # Count unique states that should have obs files
-        # States may appear in multiple dicts (e.g. completed + buffer), so deduplicate by (ep, sid)
-        unique_state_keys = set()
-        total_states_raw = 0
-        for states_dict in [self.pending_states_by_episode, self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
-            for ep, states in states_dict.items():
-                total_states_raw += len(states)
-                for sid in states:
-                    unique_state_keys.add((ep, sid))
-        total_states = len(unique_state_keys)
+        # Count total states that should have obs files
+        total_states = sum(len(s) for s in self.pending_states_by_episode.values())
+        total_states += sum(len(s) for s in self.completed_states_by_episode.values())
+        total_states += sum(len(s) for s in self.completed_states_buffer_by_episode.values())
         
         # Verify obs files were copied
         obs_cache_dir = checkpoint_dir / "obs_cache"
@@ -3654,25 +3640,6 @@ class StateManager:
                 self.completed_states_buffer_by_episode[ep_key] = {
                     int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
                 }
-            
-            # CRITICAL: Restore shared object references between the three dicts.
-            # During normal Phase 1 operation, pending/completed/buffer all point to
-            # the SAME Python dict for a given (episode, state) key. Deserialization
-            # creates independent copies, which breaks code that mutates one dict
-            # (e.g. appending to execution_history) and expects the change to be
-            # visible through the other dicts.  Without this, the pre-approval
-            # worker writes to an orphaned object and labels are silently lost.
-            shared_refs_count = 0
-            for ep in self.pending_states_by_episode:
-                for sid in self.pending_states_by_episode[ep]:
-                    canonical = self.pending_states_by_episode[ep][sid]
-                    if ep in self.completed_states_by_episode and sid in self.completed_states_by_episode[ep]:
-                        self.completed_states_by_episode[ep][sid] = canonical
-                        shared_refs_count += 1
-                    if ep in self.completed_states_buffer_by_episode and sid in self.completed_states_buffer_by_episode[ep]:
-                        self.completed_states_buffer_by_episode[ep][sid] = canonical
-            if shared_refs_count > 0:
-                print(f"   🔗 Restored {shared_refs_count} shared object references across state dicts")
             
             # Restore episode metadata
             self.episode_start_times = {

@@ -1,0 +1,98 @@
+// ============================================================================
+// PER-TASK CONFIGURATION
+// Limits, spans, and home positions for each task.
+// Add new tasks here; unknown tasks fall back to '_default'.
+// ============================================================================
+const TASK_CONFIGS = {
+  _default: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.40  },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 1     },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,           // meters
+      roll: 1.0, pitch: 0.81, yaw: 0.81,   // radians
+    },
+    homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
+    homeGripper: 1,    // 1 = open, -1 = closed
+    hideRobotInTopView: false,
+  },
+  drawer: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.40  },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 1     },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,
+      roll: 1.0, pitch: 0.81, yaw: 0.81,
+    },
+    homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
+    homeGripper: 1,
+    hideRobotInTopView: false,
+  },
+  pour: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.40  },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 1     },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,
+      roll: 1.0, pitch: 0.81, yaw: 0.81,
+    },
+    homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
+    homeGripper: 1,
+    hideRobotInTopView: false,
+  },
+  insertion: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.40  },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 1     },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,
+      roll: 1.0, pitch: 0.81, yaw: 0.81,
+    },
+    homePositionDeg: [0, 75, 75, -90, 0, 0, -1],
+    homeGripper: -1,
+    hideRobotInTopView: true,
+  },
+  switches: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.40  },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 1     },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,
+      roll: 1.0, pitch: 0.81, yaw: 0.81,
+    },
+    homePositionDeg: [0, 75, 75, -90, 0, 0, -1],
+    homeGripper: -1,
+    hideRobotInTopView: true,
+  },
+};
+
+/** Get config for the current task (falls back to _default). */
+function getTaskConfig() {
+  const name = window.__INIT_STATE?.task_name;
+  return TASK_CONFIGS[name] || TASK_CONFIGS._default;
+}

@@ -1820,7 +1820,9 @@
     "three-mesh-bvh":      "/js/vendor/three-mesh-bvh/index.module.js"
   }
 }
-</script></head><body>
+</script>
+<script src="/js/task_configs.js"></script>
+</head><body>
   <!-- Centering mount for the WebGL canvas; avoids CSS stretching -->
   <div id="page-wrapper">
     <div id="viewport"></div>
@@ -2286,6 +2288,8 @@ const VIEW_SCALE = 0.8;
 // MR MODE CONFIGURATION - Set to true to enable Mixed Reality mode
 // ============================================================================
 const MR_MODE_ENABLED = true; // Set to true to show webcam views with robot overlay
+
+// Per-task config (TASK_CONFIGS, getTaskConfig) lives in /js/task_configs.js
 
 // Multi-view system
 const views = new Map(); // viewName -> {camera, renderer, container, name}
@@ -6087,15 +6091,8 @@ loader.load(
 
 
     /* 2) build lil-GUI sliders ----------------------------------- */
-    // ---- absolute hard limits (same for all users) ----
-    const ABS_LIMITS = {
-      x:     { min: 0.10,  max: 0.63  },
-      y:     { min: -0.30, max: 0.30  },
-      z:     { min: 0.025, max: 0.40  },
-      roll:  { min: -1.9, max: 1.9  },
-      pitch: { min: -1, max: 1  },
-      yaw:   { min: -0.81, max: 0.81  },
-    };
+    // ---- absolute hard limits (from per-task config) ----
+    const ABS_LIMITS = getTaskConfig().absLimits;
 
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
     // --- interactive target pose (driven by sliders/marker) ---
@@ -6920,8 +6917,9 @@ loader.load(
       const poseResetToDefault = slidersAtDefault();
       const slidersChangedAxes = getChangedAxes();
 
-      // When user explicitly clicks Home button and submits, force gripper to open
-      const gripperValue = homePositionClicked ? 1 : gripDir;
+      // When user explicitly clicks Home button and submits, force gripper per task config
+      const homeGripperValue = getTaskConfig().homeGripper;
+      const gripperValue = homePositionClicked ? homeGripperValue : gripDir;
       
       // Check if this is an autofill submission
       const isAutofillSubmission = confirmBtn.dataset.autofillMode === 'true';
@@ -7247,7 +7245,8 @@ loader.load(
 
       // Define your Home angles (in radians) using Math.PI
       const D2R = Math.PI / 180;
-      const HOME_RAD = [0, 60, 75, -60, 0, 0, 2].map(d => d * D2R);
+      const HOME_DEG = getTaskConfig().homePositionDeg;
+      const HOME_RAD = HOME_DEG.map(d => d * D2R);
 
       // We'll map the angles onto the joint *order* provided by the server's
       // original backend joint positions (not IK-modified ones).
@@ -7432,13 +7431,14 @@ loader.load(
       });
     }
 
+    const _tc = getTaskConfig();
     const spanDefs = [
-      ['x',     0.20],   // meters
-      ['y',     0.40],
-      ['z',     0.20],
-      ['roll',  1.0],   // radians
-      ['pitch', 0.81],
-      ['yaw',   0.81],
+      ['x',     _tc.sliderSpans.x],
+      ['y',     _tc.sliderSpans.y],
+      ['z',     _tc.sliderSpans.z],
+      ['roll',  _tc.sliderSpans.roll],
+      ['pitch', _tc.sliderSpans.pitch],
+      ['yaw',   _tc.sliderSpans.yaw],
     ];
 
     // Keep references so dragging can clamp to slider ranges & update displays
@@ -7710,18 +7710,28 @@ loader.load(
         // Set which rotation wheels are visible for this view
         setWheelVisibilityForView(view);
 
-        // For top view, make entire robot semi-transparent (including grippers)
+        // For top view: hide robot entirely or semi-transparent based on task config
         if (view.name === 'top') {
-          robot.traverse(o => {
-            if (!o.isMesh) return;
-            applyGhostToMesh(o);
-          });
+          const hideRobotInTop = getTaskConfig().hideRobotInTopView;
+
+          if (hideRobotInTop) {
+            robot.visible = false;
+          } else {
+            robot.traverse(o => {
+              if (!o.isMesh) return;
+              applyGhostToMesh(o);
+            });
+          }
           
           scene.background = null;
           view.renderer.render(scene, view.camera);
           
-          // Restore normal ghosting for other views (grippers opaque, body transparent)
-          setGhostMode(true);
+          if (hideRobotInTop) {
+            robot.visible = true;
+          } else {
+            // Restore normal ghosting for other views (grippers opaque, body transparent)
+            setGhostMode(true);
+          }
         } else {
           // Normal rendering for other sim views (grippers opaque, body semi-transparent)
           scene.background = null;

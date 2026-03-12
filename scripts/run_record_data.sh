@@ -18,9 +18,9 @@ python backend/collect_data.py \
   --control.type=record \
   --control.fps=30 \
   --control.single_task="Pour the content of the red cup into the teal container" \
-  --task-name=pour \
-  --control.repo_id=pour/pour_15_phase1_mar6 \
-  --control.data_collection_policy_repo_id=pour/pour_15_phase1_mar6_dcp \
+  --task-name=insertion \
+  --control.repo_id=insertion/test_mar10 \
+  --control.data_collection_policy_repo_id=insertion/test_mar10_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
   --control.num_episodes=15 \

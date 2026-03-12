@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "pour"  # Single-word identifier for the task
+        self.task_name: str = "switches"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
@@ -37,10 +37,6 @@ class CrowdInterfaceConfig:
         # Phase 2 only mode: skip robot/admin collection, load checkpoint, serve async pool directly
         self.phase2_only: str | None = None  # Path to phase1_checkpoint.json
         self.output_repo_id: str | None = None  # Override repo_id for Phase 2 output dataset
-        
-        # ========== Tunnel Settings ==========
-        # Manually specify a tunnel URL instead of auto-starting a quick tunnel
-        self.tunnel_url: str | None = None  # e.g. https://my-tunnel.trycloudflare.com
         
         # ========== Expert Worker Integration ==========
         # Number of expert workers who will label via localhost
@@ -83,6 +79,16 @@ class CrowdInterfaceConfig:
         # USD file path for Isaac Sim (relative to repo root)
         self.usd_path: str = f"public/assets/usd/{self.task_name}.usd"
 
+        # ========== Home Position ==========
+        # Robot home position in degrees: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper_rotate, gripper]
+        if self.task_name in ("insertion", "switches"):
+            self.home_position_deg: list[float] = [0, 75, 75, -90, 0, 0, -1]
+        else:
+            self.home_position_deg: list[float] = [0, 60, 75, -60, 0, 0, 2]
+
+        # Gripper starts closed for insertion/switches, open for everything else
+        self.initial_gripper_open: bool = (self.task_name not in ("insertion", "switches"))
+
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
         # Note: Keys must match USD prim names in Isaac Sim
@@ -94,13 +100,13 @@ class CrowdInterfaceConfig:
         # self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
 
         # Pour
-        self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup" : "Red Cylinder"}
+        # self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup" : "Red Cylinder"}
 
         # Switches
-        # self.objects: dict[str, str] = {"switch_teal": "Teal Cylinder", 
-        #                                 "switch_yellow" : "Yellow Cylinder", 
-        #                                 "switch_dark_blue" : "Dark Blue Cylinder",
-        #                                 "switch_green" : "Green Cylinder"}
+        self.objects: dict[str, str] = {"switch_teal": "Teal Cylinder", 
+                                        "switch_yellow" : "Yellow Cylinder", 
+                                        "switch_dark_blue" : "Dark Blue Cylinder",
+                                        "switch_green" : "Green Cylinder"}
         
         # Insertion
         # self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
@@ -130,10 +136,21 @@ class CrowdInterfaceConfig:
         # }
 
         # Pour
+        # self.object_mesh_paths: dict[str, str] = {
+        #     "container": str((repo_root / "public" / "assets" / "container.stl").resolve()),
+        #     "cup": str((repo_root / "public" / "assets" / "cup.stl").resolve()),
+        # }
+
+        # Insertion
         self.object_mesh_paths: dict[str, str] = {
-            "container": str((repo_root / "public" / "assets" / "container.stl").resolve()),
-            "cup": str((repo_root / "public" / "assets" / "cup.stl").resolve()),
+             "socket": str((repo_root / "public" / "assets" / "socket.stl").resolve()),
         }
+
+        # Switches
+        self.object_mesh_paths: dict[str, str] = {"switch_teal": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
+                                        "switch_yellow" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
+                                        "switch_dark_blue" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve()),
+                                        "switch_green" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve())}
 
         # Mesh scale factor (e.g., 0.001 to convert mm to meters)
         self.mesh_scale: float = 0.001
@@ -235,11 +252,6 @@ class CrowdInterfaceConfig:
             "--output-repo-id",
             type=str,
             help="Override output repo_id for Phase 2 dataset (default: uses checkpoint's repo_id)"
-        )
-        parser.add_argument(
-            "--tunnel-url",
-            type=str,
-            help="Manually specify a tunnel URL (skips quick tunnel auto-start)"
         )
 
         # UI settings
@@ -421,8 +433,6 @@ class CrowdInterfaceConfig:
             config.phase2_only = args.phase2_only
         if args.output_repo_id is not None:
             config.output_repo_id = args.output_repo_id
-        if hasattr(args, 'tunnel_url') and args.tunnel_url is not None:
-            config.tunnel_url = args.tunnel_url
         if args.use_manual_prompt:
             config.use_manual_prompt = True
         if args.show_demo_videos:
@@ -551,6 +561,8 @@ class CrowdInterfaceConfig:
             "mturk_min_approval_rate": self.mturk_min_approval_rate,
             "mturk_min_approved_hits": self.mturk_min_approved_hits,
             "mturk_require_location": self.mturk_require_location,
+            # Home position
+            "home_position_deg": self.home_position_deg,
         }
 
         # Optional: demo video recording (only include if enabled)

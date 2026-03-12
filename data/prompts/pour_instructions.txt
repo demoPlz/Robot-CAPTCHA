@@ -1,0 +1,4 @@
+TITLE: "Pour" Task Hints
+The red cylinder is a cup that can be grasped and tilted.
+<br>
+The green container is the target for pouring.

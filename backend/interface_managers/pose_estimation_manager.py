@@ -268,9 +268,12 @@ class PoseEstimationManager:
             print(f"⚠️  Failed to cleanup job queues: {e}")
 
     def _start_pose_workers(self):
-        """Spawn ONE persistent worker per object (they run continuously and process jobs sequentially). Worker script
-        path can be overridden via $POSE_WORKER_SCRIPT.
-
+        """Spawn ONE persistent worker per unique mesh (they run continuously and process jobs sequentially).
+        
+        Objects sharing the same mesh are handled by a single worker, which uses the job's prompt field
+        to differentiate between them (e.g., different colored switches sharing the same mesh).
+        
+        Worker script path can be overridden via $POSE_WORKER_SCRIPT.
         Set SKIP_POSE_WORKERS=1 to disable auto-spawning (useful for manual debugging).
 
         """
@@ -293,21 +296,35 @@ class PoseEstimationManager:
         worker_env = os.environ.copy()
         worker_env["LD_LIBRARY_PATH"] = cuda_lib_path
 
-        # Spawn ONE persistent worker per object (parallel processing)
-        print("🔄 Starting pose estimation workers (one per object)...")
-
-        # Track ready status for each worker (True=ready, False=pending, None=failed)   
-        # Only spawn workers for objects in self.objects (filter by presence in objects dict)
-        workers_status = {obj: False for obj in self.object_mesh_paths.keys() if not self.objects or obj in self.objects}
-        status_lock = Lock()
-
+        # Group objects by mesh path (objects with same mesh share one worker)
+        mesh_to_objects = {}
         for obj, mesh_path in self.object_mesh_paths.items():
             # Skip objects not in self.objects
             if self.objects and obj not in self.objects:
                 continue
-            
-            lang_prompt = (self.objects or {}).get(obj, obj)
+            if mesh_path not in mesh_to_objects:
+                mesh_to_objects[mesh_path] = []
+            mesh_to_objects[mesh_path].append(obj)
 
+        # Spawn ONE persistent worker per unique mesh
+        num_workers = len(mesh_to_objects)
+        num_objects = sum(len(objs) for objs in mesh_to_objects.values())
+        print(f"🔄 Starting {num_workers} pose estimation worker(s) for {num_objects} object(s)...")
+        for mesh_path, objects_list in mesh_to_objects.items():
+            print(f"   Mesh: {Path(mesh_path).name} → Objects: {', '.join(objects_list)}")
+
+        # Track ready status for each object (True=ready, False=pending, None=failed)
+        # All objects served by a worker become ready when that worker is ready
+        workers_status = {}
+        for objs_list in mesh_to_objects.values():
+            for obj in objs_list:
+                workers_status[obj] = False
+        status_lock = Lock()
+
+        for mesh_path, objects_list in mesh_to_objects.items():
+            # Use first object as the worker identifier for logging
+            worker_id = objects_list[0] if len(objects_list) == 1 else f"{objects_list[0]}+{len(objects_list)-1}more"
+            
             cmd = [
                 "conda",
                 "run",
@@ -318,12 +335,10 @@ class PoseEstimationManager:
                 worker_script,
                 "--jobs-dir",
                 str(self.pose_jobs_root),
-                "--object",
-                obj,
+                "--objects",  # Changed from --object to --objects
+                ",".join(objects_list),  # Comma-separated list
                 "--mesh",
                 str(mesh_path),
-                "--prompt",
-                str(lang_prompt),
                 "--mesh-scale",
                 str(self.mesh_scale),
             ]
@@ -332,34 +347,41 @@ class PoseEstimationManager:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=worker_env
                 )
-                self._pose_worker_procs[obj] = proc
-                print(f"✓ Pose worker for '{obj}' started (PID {proc.pid})")
+                # Store proc under the first object name (for tracking)
+                self._pose_worker_procs[worker_id] = proc
+                print(f"✓ Pose worker for {len(objects_list)} object(s) started (PID {proc.pid})")
 
                 # Start thread to print worker output and detect ready/failure signals
-                def _print_worker_output(proc, obj_name):
+                def _print_worker_output(proc, worker_id, objects_list):
                     try:
                         for line in iter(proc.stdout.readline, ""):
                             if line:
-                                print(f"[{obj_name}] {line.rstrip()}")
+                                print(f"[{worker_id}] {line.rstrip()}")
                                 # Detect ready signal: "✅ worker ready (watching ...)"
                                 if "✅" in line and "worker ready" in line:
                                     with status_lock:
-                                        workers_status[obj_name] = True
+                                        # Mark all objects served by this worker as ready
+                                        for obj in objects_list:
+                                            workers_status[obj] = True
                                 # Detect initialization failures: "✖ mesh load failed" or "✖ engines init failed"
                                 elif "✖" in line and ("mesh load failed" in line or "engines init failed" in line):
                                     with status_lock:
-                                        workers_status[obj_name] = None  # None indicates failure
+                                        # Mark all objects served by this worker as failed
+                                        for obj in objects_list:
+                                            workers_status[obj] = None
                     except Exception:
                         pass
                     finally:
                         proc.stdout.close()
 
-                Thread(target=_print_worker_output, args=(proc, obj), daemon=True).start()
+                Thread(target=_print_worker_output, args=(proc, worker_id, objects_list), daemon=True).start()
 
             except Exception as e:
-                print(f"⚠️  Failed to start pose worker for '{obj}': {e}")
+                print(f"⚠️  Failed to start pose worker for '{worker_id}': {e}")
                 with status_lock:
-                    workers_status[obj] = None  # Mark as failed
+                    # Mark all objects served by this worker as failed
+                    for obj in objects_list:
+                        workers_status[obj] = None
 
         # Wait for all workers to be ready or fail (with timeout)
         print("⏳ Waiting for pose workers to initialize...")
@@ -621,11 +643,14 @@ class PoseEstimationManager:
 
         # ---------- Wait for watcher to fold ALL results into state ----------
         # NOTE: Do NOT hold self.state_lock while sleeping; watcher needs it.
+        # Use dynamic timeout that resets when progress is made (poses arrive sequentially)
         try:
-            timeout = float(timeout_s if timeout_s is not None else os.getenv("POSE_WAIT_TIMEOUT_S", "20.0"))
+            per_object_timeout = float(timeout_s if timeout_s is not None else os.getenv("POSE_WAIT_TIMEOUT_S", "20.0"))
         except Exception:
-            timeout = 20.0
-        deadline = time.time() + max(0.0, timeout)
+            per_object_timeout = 20.0
+        
+        deadline = time.time() + per_object_timeout
+        last_pose_count = 0  # Track progress
 
         # We consider a job "done" when the watcher has inserted a key for that object,
         # regardless of success (pose may be None on failure). Presence == finished.
@@ -637,10 +662,17 @@ class PoseEstimationManager:
                     return False
                 st = ep[state_id]
                 poses = st.get("object_poses", {})
+                current_pose_count = len(poses)
                 done = all(obj in poses for obj in expected_objs)
 
             if done:
                 return True
+
+            # **Reset timeout if we made progress (new pose arrived)**
+            if current_pose_count > last_pose_count:
+                last_pose_count = current_pose_count
+                deadline = time.time() + per_object_timeout  # Reset deadline
+                print(f"⏱️  Progress: {current_pose_count}/{len(expected_objs)} poses received, timeout reset")
 
             if time.time() > deadline:
                 with self.state_lock:

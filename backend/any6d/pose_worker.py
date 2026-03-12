@@ -47,10 +47,12 @@ if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
     try:
         import debugpy
 
-        # Use a different port for each object to avoid conflicts
-        object_name = sys.argv[sys.argv.index("--object") + 1] if "--object" in sys.argv else "unknown"
+        # Use a different port for each worker to avoid conflicts
+        # Parse --objects argument to get first object name for port calculation
+        objects_arg = sys.argv[sys.argv.index("--objects") + 1] if "--objects" in sys.argv else "unknown"
+        first_object = objects_arg.split(',')[0].strip()
         # Hash object name to get a consistent port offset (0-9)
-        port_offset = hash(object_name) % 10
+        port_offset = hash(first_object) % 10
         debug_port = 5678 + port_offset
 
         # Check if already listening (in case of restart)
@@ -58,15 +60,16 @@ if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
             try:
                 debugpy.listen(("localhost", debug_port))
                 print(f"\n{'='*60}", flush=True)
-                print(f"🐛 [{object_name}] DEBUGPY READY", flush=True)
+                print(f"🐛 [{first_object}] DEBUGPY READY", flush=True)
                 print(f"🐛 Port: {debug_port}", flush=True)
-                print(f"🐛 Attach config: 'Attach to Pose Worker ({object_name})'", flush=True)
+                print(f"🐛 Objects: {objects_arg}", flush=True)
+                print(f"🐛 Attach config: 'Attach to Pose Worker ({first_object})'", flush=True)
                 print(f"🐛 WAITING FOR DEBUGGER TO ATTACH...", flush=True)
                 print(f"{'='*60}\n", flush=True)
 
                 # BLOCK until debugger attaches
                 debugpy.wait_for_client()
-                print(f"✅ [{object_name}] Debugger attached! Continuing...\n", flush=True)
+                print(f"✅ [{first_object}] Debugger attached! Continuing...\n", flush=True)
 
                 # Optional: break at the start
                 # debugpy.breakpoint()
@@ -164,13 +167,20 @@ def _as_K_array(K_like) -> np.ndarray:
     return K
 
 
-def claim_job(inbox: Path, tmpdir: Path, object_name: str) -> Path | None:
-    """Atomically move one job for 'object_name' from inbox -> tmpdir and return its path."""
+def claim_job(inbox: Path, tmpdir: Path, object_names: list[str]) -> Path | None:
+    """Atomically move one job for any object in 'object_names' from inbox -> tmpdir and return its path.
+    
+    Args:
+        inbox: Directory containing job files
+        tmpdir: Directory to move claimed jobs to
+        object_names: List of object names this worker handles (jobs for any of these will be claimed)
+    """
     for p in inbox.glob("*.json"):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 hdr = json.load(f)
-            if hdr.get("object") != object_name:
+            # Accept job if it's for any of our objects
+            if hdr.get("object") not in object_names:
                 continue
         except Exception:
             # unreadable; try to move it aside to avoid hot-looping
@@ -205,10 +215,9 @@ def write_json_atomic(obj: dict, outdir: Path, name: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs-dir", required=True, type=Path)
-    ap.add_argument("--object", required=True, help="Object name this worker owns")
+    ap.add_argument("--objects", required=True, help="Comma-separated list of object names this worker handles")
     ap.add_argument("--mesh", required=True, type=str)
     ap.add_argument("--mesh-scale", type=float, default=1.0, help="Scale factor to apply to mesh (e.g., 0.001 for mm to m)")
-    ap.add_argument("--prompt", default=None, type=str)
     ap.add_argument("--est-refine-iter", type=int, default=None)
     ap.add_argument("--track-refine-iter", type=int, default=None)
     ap.add_argument("--save-viz", action="store_true", help="Save RGB overlay PNG per job")
@@ -216,13 +225,24 @@ def main():
     ap.add_argument("--num-frames", type=int, default=5, help="Number of frames to average (multi-frame mode)")
     ap.add_argument("--repeated-inference", action="store_true", default=False, help="Run inference multiple times on same frame for outlier rejection")
     ap.add_argument("--num-inferences", type=int, default=5, help="Number of inferences to run (repeated mode)")
+    ap.add_argument("--rgb-noise-std", type=float, default=1.0, help="RGB noise std dev for repeated inference (default: 1.0)")
+    ap.add_argument("--depth-noise-std", type=float, default=0.001, help="Depth noise std dev for repeated inference (default: 0.001)")
     ap.add_argument("--inlier-threshold", type=float, default=0.05, help="Distance threshold for outlier rejection (meters)")
     ap.add_argument("--min-inliers", type=int, default=2, help="Minimum inliers required for valid result")
     args = ap.parse_args()
+    
+    # Parse comma-separated object names
+    object_names = [obj.strip() for obj in args.objects.split(',')]
+    
+    # Create worker ID for logging (show first object, or "obj1+2more" for multiple)
+    if len(object_names) == 1:
+        worker_id = object_names[0]
+    else:
+        worker_id = f"{object_names[0]}+{len(object_names)-1}more"
 
     # Set up signal handler for graceful shutdown
     def signal_handler(signum, frame):
-        print(f"\n[{args.object}] 🛑 Received signal {signum}, shutting down...", flush=True)
+        print(f"\n[{worker_id}] 🛑 Received signal {signum}, shutting down...", flush=True)
         sys.exit(0)
     
     import signal
@@ -237,38 +257,39 @@ def main():
     tmpdir.mkdir(parents=True, exist_ok=True)
 
     # Load mesh & create engines (expensive) once
-    print(f"[{args.object}] 🔄 Initializing models...", flush=True)
+    print(f"[{worker_id}] 🔄 Initializing models...", flush=True)
+    print(f"[{worker_id}]    Handling objects: {', '.join(object_names)}", flush=True)
     try:
         mesh = trimesh.load(args.mesh)
         if mesh.is_empty:
             raise RuntimeError("mesh is empty")
         if args.mesh_scale != 1.0:
             mesh.apply_scale(args.mesh_scale)
-            print(f"[{args.object}] Applied mesh scale factor {args.mesh_scale}", flush=True)
+            print(f"[{worker_id}] Applied mesh scale factor {args.mesh_scale}", flush=True)
         _ = mesh.vertex_normals
     except Exception as e:
-        print(f"[{args.object}] ✖ mesh load failed: {e}", flush=True)
+        print(f"[{worker_id}] ✖ mesh load failed: {e}", flush=True)
         sys.exit(1)
 
     try:
         engines = create_engines(mesh, debug=0)
     except Exception as e:
-        print(f"[{args.object}] ✖ engines init failed: {e}", flush=True)
+        print(f"[{worker_id}] ✖ engines init failed: {e}", flush=True)
         sys.exit(2)
 
-    print(f"[{args.object}] ✅ worker ready (watching {inbox})", flush=True)
+    print(f"[{worker_id}] ✅ worker ready (watching {inbox})", flush=True)
 
     # Set up parent death detection (Linux only)
     if HAS_PDEATHSIG:
         try:
             # When parent dies, this process receives SIGTERM
             libc.prctl(PR_SET_PDEATHSIG, sig.SIGTERM)
-            print(f"[{args.object}] ✓ Parent death detection enabled (will exit if parent dies)", flush=True)
+            print(f"[{worker_id}] ✓ Parent death detection enabled (will exit if parent dies)", flush=True)
         except Exception as e:
-            print(f"[{args.object}] ⚠️  Failed to set parent death signal: {e}", flush=True)
+            print(f"[{worker_id}] ⚠️  Failed to set parent death signal: {e}", flush=True)
 
     while True:
-        job_path = claim_job(inbox, tmpdir, args.object)
+        job_path = claim_job(inbox, tmpdir, object_names)
         if not job_path:
             time.sleep(0.1)
             continue
@@ -277,7 +298,7 @@ def main():
             with open(job_path, "r", encoding="utf-8") as f:
                 job = json.load(f)
         except Exception as e:
-            print(f"[{args.object}] ⚠️ bad job file {job_path.name}: {e}", flush=True)
+            print(f"[{worker_id}] ⚠️ bad job file {job_path.name}: {e}", flush=True)
             try:
                 job_path.unlink()
             except Exception:
@@ -287,9 +308,10 @@ def main():
         job_id = job.get("job_id", "unknown")
         episode_id = int(job.get("episode_id"))
         state_id = int(job.get("state_id"))
+        object_name = job.get("object")  # Get object name from job
         obs_path = job.get("obs_path")  # Single observation (legacy)
         obs_paths = job.get("obs_paths")  # Multiple observations (multi-frame)
-        prompt = job.get("prompt") or args.prompt or args.object
+        prompt = job.get("prompt", object_name)  # Use job's prompt (for color-specific masks)
         K = _as_K_array(job.get("K"))
         est_iters = int(job.get("est_refine_iter") or args.est_refine_iter or 20)
         track_iters = int(job.get("track_refine_iter") or args.track_refine_iter or 8)
@@ -302,42 +324,42 @@ def main():
             use_repeated = bool(job.get("repeated_inference"))
         
         if use_multi_frame and obs_paths:
-            print(f"[{args.object}] 🔍 Processing MULTI-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
-            print(f"[{args.object}]    {len(obs_paths)} observations, prompt: {prompt}", flush=True)
+            print(f"[{object_name}] 🔍 Processing MULTI-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{object_name}]    {len(obs_paths)} observations, prompt: {prompt}", flush=True)
         elif use_repeated:
-            print(f"[{args.object}] 🔍 Processing REPEATED-INFERENCE job {job_id} (ep={episode_id}, state={state_id})", flush=True)
-            print(f"[{args.object}]    {args.num_inferences} inferences with noise, prompt: {prompt}", flush=True)
+            print(f"[{object_name}] 🔍 Processing REPEATED-INFERENCE job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{object_name}]    {args.num_inferences} inferences with noise, prompt: {prompt}", flush=True)
         else:
-            print(f"[{args.object}] 🔍 Processing SINGLE-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
-            print(f"[{args.object}]    obs_path: {obs_path}, prompt: {prompt}", flush=True)
+            print(f"[{object_name}] 🔍 Processing SINGLE-FRAME job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+            print(f"[{object_name}]    obs_path: {obs_path}, prompt: {prompt}", flush=True)
 
         result = {
             "job_id": job_id,
             "episode_id": episode_id,
             "state_id": state_id,
-            "object": args.object,
+            "object": object_name,
             "success": False,
             "retry_count": job.get("retry_count", 0),  # Preserve retry count for retry logic
         }
 
         try:
             if use_multi_frame and obs_paths:
-                print(f"[{args.object}] 📂 Loading {len(obs_paths)} observations...", flush=True)
+                print(f"[{object_name}] 📂 Loading {len(obs_paths)} observations...", flush=True)
                 observations = _load_observations(obs_paths, K)
                 if not observations:
                     raise RuntimeError("Failed to load any observations from provided paths")
-                print(f"[{args.object}] ✓ Loaded {len(observations)} observations successfully", flush=True)
+                print(f"[{object_name}] ✓ Loaded {len(observations)} observations successfully", flush=True)
             else:
-                print(f"[{args.object}] 📂 Loading observation from {obs_path}...", flush=True)
+                print(f"[{object_name}] 📂 Loading observation from {obs_path}...", flush=True)
                 obs = _load_obs(obs_path)
-                print(f"[{args.object}] 🖼️  Extracting RGB and depth...", flush=True)
+                print(f"[{object_name}] 🖼️  Extracting RGB and depth...", flush=True)
                 rgb_t, depth_t = _extract_rgb_depth(obs)
                 print(
-                    f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})",
+                    f"[{object_name}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})",
                     flush=True,
                 )
         except Exception as e:
-            print(f"[{args.object}] ❌ Failed to load observation(s): {e}", flush=True)
+            print(f"[{object_name}] ❌ Failed to load observation(s): {e}", flush=True)
             result["error"] = f"obs load/extract failed: {e}"
             write_json_atomic(result, outbox, f"{job_id}.json")
             try:
@@ -353,7 +375,7 @@ def main():
             
             if use_multi_frame and obs_paths:
                 # Multi-frame mode with outlier rejection
-                print(f"[{args.object}] 🎯 Running MULTI-FRAME pose estimation ({len(observations)} frames)...", flush=True)
+                print(f"[{object_name}] 🎯 Running MULTI-FRAME pose estimation ({len(observations)} frames)...", flush=True)
                 out = estimate_pose_multi_frame(
                     mesh=mesh,
                     observations=observations,
@@ -376,11 +398,11 @@ def main():
                     result["num_inliers"] = out.extras.get("num_inliers", 0)
                     result["num_outliers"] = out.extras.get("num_outliers", 0)
                     
-                    print(f"[{args.object}] ✅ Multi-frame pose estimation SUCCESS!", flush=True)
-                    print(f"[{args.object}]    Processed: {result['num_frames_processed']} frames", flush=True)
-                    print(f"[{args.object}]    Success: {result['successful_frames']}, Failed: {result['failed_frames']}", flush=True)
-                    print(f"[{args.object}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
-                    print(f"[{args.object}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
+                    print(f"[{object_name}] ✅ Multi-frame pose estimation SUCCESS!", flush=True)
+                    print(f"[{object_name}]    Processed: {result['num_frames_processed']} frames", flush=True)
+                    print(f"[{object_name}]    Success: {result['successful_frames']}, Failed: {result['failed_frames']}", flush=True)
+                    print(f"[{object_name}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
+                    print(f"[{object_name}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
                 else:
                     result["error"] = out.extras.get("error", "multi-frame pose failed")
                     if "successful_frames" in out.extras:
@@ -394,7 +416,7 @@ def main():
                     if "failed_frames" in result:
                         error_msg += f", failed={result['failed_frames']}"
                     
-                    print(f"[{args.object}] ❌ Multi-frame pose estimation FAILED: {error_msg}", flush=True)
+                    print(f"[{object_name}] ❌ Multi-frame pose estimation FAILED: {error_msg}", flush=True)
                 
                 # Use last observation for visualization
                 rgb_t = observations[-1]['rgb']
@@ -402,7 +424,7 @@ def main():
                 
             elif use_repeated:
                 # Repeated inference mode with noise perturbations
-                print(f"[{args.object}] 🎯 Running REPEATED-INFERENCE pose estimation ({args.num_inferences} inferences)...", flush=True)
+                print(f"[{object_name}] 🎯 Running REPEATED-INFERENCE pose estimation ({args.num_inferences} inferences)...", flush=True)
                 out = estimate_pose_repeated(
                     mesh=mesh,
                     rgb_t=rgb_t,
@@ -429,11 +451,11 @@ def main():
                     result["num_inliers"] = out.extras.get("num_inliers", 0)
                     result["num_outliers"] = out.extras.get("num_outliers", 0)
                     
-                    print(f"[{args.object}] ✅ Repeated-inference pose estimation SUCCESS!", flush=True)
-                    print(f"[{args.object}]    Inferences: {result['num_inferences']}", flush=True)
-                    print(f"[{args.object}]    Success: {result['successful_inferences']}, Failed: {result['failed_inferences']}", flush=True)
-                    print(f"[{args.object}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
-                    print(f"[{args.object}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
+                    print(f"[{object_name}] ✅ Repeated-inference pose estimation SUCCESS!", flush=True)
+                    print(f"[{object_name}]    Inferences: {result['num_inferences']}", flush=True)
+                    print(f"[{object_name}]    Success: {result['successful_inferences']}, Failed: {result['failed_inferences']}", flush=True)
+                    print(f"[{object_name}]    Inliers: {result['num_inliers']}, Outliers: {result['num_outliers']}", flush=True)
+                    print(f"[{object_name}]    Averaged pose: {result['pose_cam_T_obj']}", flush=True)
                 else:
                     result["error"] = out.extras.get("error", "repeated inference failed")
                     if "successful_inferences" in out.extras:
@@ -447,13 +469,13 @@ def main():
                     if "failed_inferences" in result:
                         error_msg += f", failed={result['failed_inferences']}"
                     
-                    print(f"[{args.object}] ❌ Repeated-inference pose estimation FAILED: {error_msg}", flush=True)
+                    print(f"[{object_name}] ❌ Repeated-inference pose estimation FAILED: {error_msg}", flush=True)
                 
             else:
                 # Single-frame mode (original behavior)
                 reset_tracking(engines)
                 
-                print(f"[{args.object}] 🎯 Running pose estimation...", flush=True)
+                print(f"[{object_name}] 🎯 Running pose estimation...", flush=True)
                 out = estimate_pose_from_tensors(
                     mesh=mesh,
                     rgb_t=rgb_t,
@@ -472,10 +494,10 @@ def main():
                     result["mask_area"] = int(out.extras.get("mask_area", 0))
                     if "score" in out.extras:
                         result["score"] = float(out.extras["score"])
-                    print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
+                    print(f"[{object_name}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
                     if "score" in result:
-                        print(f"[{args.object}]    confidence score: {result['score']:.3f}", flush=True)
-                    print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
+                        print(f"[{object_name}]    confidence score: {result['score']:.3f}", flush=True)
+                    print(f"[{object_name}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
                 else:
                     # Extract all available error information
                     result["error"] = out.extras.get("error", "pose failed")
@@ -496,12 +518,12 @@ def main():
                         error_parts.append(f"score={result['score']:.3f}")
 
                     error_msg = ", ".join(error_parts)
-                    print(f"[{args.object}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
-                    print(f"[{args.object}]    extras: {out.extras}", flush=True)
+                    print(f"[{object_name}] ❌ Pose estimation FAILED: {error_msg}", flush=True)
+                    print(f"[{object_name}]    extras: {out.extras}", flush=True)
                     
         except Exception as e:
             result["error"] = f"pose exception: {e}"
-            print(f"[{args.object}] ❌ Pose estimation EXCEPTION: {e}", flush=True)
+            print(f"[{object_name}] ❌ Pose estimation EXCEPTION: {e}", flush=True)
             import traceback
 
             traceback.print_exc()
@@ -545,24 +567,24 @@ def main():
                 mask_path = outbox / f"viz_{job_id}_{status_str}_mask.png"
                 cv2.imwrite(str(mask_path), viz["mask_gray"])
 
-            print(f"[{args.object}] 💾 Saved visualization to {png_path}", flush=True)
+            print(f"[{object_name}] 💾 Saved visualization to {png_path}", flush=True)
         except Exception as e:
             # viz is best-effort, but log errors for debugging
-            print(f"[{args.object}] ⚠️ Visualization failed: {e}", flush=True)
+            print(f"[{object_name}] ⚠️ Visualization failed: {e}", flush=True)
 
         # Emit result JSON
         try:
             write_json_atomic(result, outbox, f"{job_id}.json")
             print(
-                f"[{args.object}] 📤 Result written to outbox: {job_id}.json (success={result['success']})", flush=True
+                f"[{object_name}] 📤 Result written to outbox: {job_id}.json (success={result['success']})", flush=True
             )
         except Exception as e:
-            print(f"[{args.object}] ⚠️ failed to write result for {job_id}: {e}", flush=True)
+            print(f"[{object_name}] ⚠️ failed to write result for {job_id}: {e}", flush=True)
 
         # Remove the claimed job file
         try:
             job_path.unlink()
-            print(f"[{args.object}] 🗑️  Job file removed", flush=True)
+            print(f"[{object_name}] 🗑️  Job file removed", flush=True)
         except Exception:
             pass
         
@@ -601,7 +623,7 @@ def main():
                 # torch.cuda.reset_peak_memory_stats()
                 
         except Exception as e:
-            print(f"[{args.object}] ⚠️ Cleanup warning: {e}", flush=True)
+            print(f"[{object_name}] ⚠️ Cleanup warning: {e}", flush=True)
 
 
 if __name__ == "__main__":

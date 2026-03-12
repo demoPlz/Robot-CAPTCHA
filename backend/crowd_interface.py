@@ -124,6 +124,8 @@ class CrowdInterface:
         mturk_min_approval_rate: int = 95,
         mturk_min_approved_hits: int = 100,
         mturk_require_location: list[str] | None = None,
+        # --- home position ---
+        home_position_deg: list[float] | None = None,
     ):
 
         # --- Shutdown tracking ---
@@ -219,6 +221,10 @@ class CrowdInterface:
         self.task_text = task_text
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
+        # Gripper starts closed for insertion/switches tasks, open for everything else
+        self.initial_gripper_open = (task_name not in ("insertion", "switches"))
+        # Home position (degrees): defaults to standard if not provided
+        self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
         # Frontend URL for serving uncompressed videos from CDN
         self.frontend_url = frontend_url
 
@@ -390,6 +396,7 @@ class CrowdInterface:
             persist_obs_callback=self._persist_obs_to_disk,
             snapshot_views_callback=self.snapshot_latest_views,
             save_episode_callback=self.dataset_manager.save_episode,
+            home_position_deg=self.home_position_deg,
         )
 
     # =========================
@@ -673,14 +680,14 @@ class CrowdInterface:
     # Dataset Management (Delegated to DatasetManager)
     # =========================
 
-    def init_dataset(self, cfg, robot, phase1_resumed: bool = False):
+    def init_dataset(self, cfg, robot):
         """Initialize dataset for data collection policy training.
 
         Delegates to DatasetManager.
 
         """
         # Initialize dataset (may set single_task from cfg, but we use config task_text for UI)
-        dataset_task = self.dataset_manager.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
+        dataset_task = self.dataset_manager.init_dataset(cfg, robot)
         
         # Use task_text from config if provided, otherwise fall back to dataset's single_task
         if not self.task_text:
@@ -1401,20 +1408,6 @@ class CrowdInterface:
                 timer.cancel()
                 # Manually trigger finalization now (caller already holds state_lock)
                 self.state_manager._finalize_episode_logic(episode_id)
-            
-            # Safety net: finalize any episodes whose states are all in
-            # completed_states_buffer but that were missed by the timer flow
-            # (e.g. race between pre-approval worker and this call).
-            if not hasattr(self.state_manager, '_finalized_episodes'):
-                self.state_manager._finalized_episodes = {}
-            
-            for ep_id in list(self.state_manager.completed_states_buffer_by_episode.keys()):
-                if ep_id in self.state_manager._finalized_episodes:
-                    continue  # Already finalized
-                # Check if episode has no more pending states
-                if not self.state_manager.pending_states_by_episode.get(ep_id):
-                    print(f"🔧 Safety-net finalization for episode {ep_id}")
-                    self.state_manager._finalize_episode_logic(ep_id)
         
         if not hasattr(self.state_manager, '_finalized_episodes'):
             print(f"⚠️  No finalized episodes to save")

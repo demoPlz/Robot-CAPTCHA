@@ -1,0 +1,35 @@
+=== 1 ===
+Move only horizontally (use the Simulated: Top-view)
+The gripper should be positioned above and behind the cup
+The tip of the red cross should be around touching the cup from the top view.
+
+=== 2 ===
+The gripper is lowered to the very bottom.
+The gripper maintains its position behind the cup
+The gripper fingers are still open
+
+=== 3 ===
+The gripper is tilted to be parallel to the table surface
+The gripper position relative to the cup is maintained
+
+=== 4 ===
+The gripper is pushed forward toward the cup
+The gripper is positioned to grasp the cup firmly (deep grip)
+The cup is between the gripper fingers
+
+=== 5 ===
+The gripper is closed around the cup
+The cup is securely held
+
+=== 6 ===
+The cup is lifted off the table
+The cup is raised to be level with the side of the container
+The cup remains upright during lifting
+
+=== 7 ===
+The cup is tilted to pour contents into the container
+The pouring position allows liquid to flow into the container
+
+=== 8 ===
+The task is complete
+No further action is needed

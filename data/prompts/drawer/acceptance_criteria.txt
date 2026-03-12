@@ -1,0 +1,75 @@
+=== 1 ===
+The gripper is positioned in front of the middle drawer handle
+The gripper is at the correct height to grasp the handle
+The gripper is aligned horizontally with the handle
+
+=== 2 ===
+The gripper is closed around the drawer handle
+The handle is securely held
+
+=== 3 ===
+The drawer is pulled open by moving the arm backward
+The drawer is pulled far enough to access the interior
+
+=== 4 ===
+The gripper is opened to release the handle
+The drawer remains open
+
+=== 5 ===
+The arm is moved back to a neutral/home position
+The gripper is clear of the drawer
+
+=== 6 ===
+The gripper is positioned above the cube on the desk
+The gripper is in the general area to prepare for grasping
+
+=== 7 ===
+The gripper is lowered and tilted to be vertical
+The gripper is approximately 3cm above the cube
+The right yellow alignment line is aligned with the object's side
+
+=== 8 ===
+The gripper is rotated to match the cube's grasp angle
+Fine positioning adjustments are made
+
+=== 9 ===
+The gripper rotation is finalized for the grasp
+The gripper is properly aligned with the cube
+
+=== 10 ===
+The gripper is lowered to contact the cube
+The gripper is in position to close and grasp
+
+=== 11 ===
+The gripper is closed around the cube
+The cube is securely held
+
+=== 12 ===
+The gripper is raised with the cube
+The cube clears the height of the drawer handle
+Safe clearance is maintained
+
+=== 13 ===
+The gripper is moved horizontally over the open drawer
+The cube is positioned above the drawer interior
+
+=== 14 ===
+The gripper is opened to release the cube
+The cube drops into the drawer
+
+=== 15 ===
+The gripper is moved to the left of the drawer
+The gripper is positioned to push the drawer closed
+
+=== 16 ===
+The gripper is lowered to drawer level
+The gripper is tilted to the left
+The gripper is ready to push the drawer
+
+=== 17 ===
+The drawer is pushed closed by moving the gripper
+The drawer is fully closed
+
+=== 18 ===
+The task is complete
+No further action is needed

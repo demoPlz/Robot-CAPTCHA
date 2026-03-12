@@ -54,8 +54,5 @@ external/**/*.obj
 # Checkpoints
 outputs*/
 
-# Text files
-*.txt
-
 # special
 scripts/submit_train_job.sh
