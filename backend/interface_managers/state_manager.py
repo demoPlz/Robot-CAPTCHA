@@ -628,6 +628,51 @@ class StateManager:
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
 
+    def redo_pose_estimation(self, episode_id: str, state_id: int) -> bool:
+        """Manually re-trigger pose estimation for a given state.
+        
+        Returns True if successful, False if state not found or poses could not be generated.
+        """
+        print(f"🔄 Admin requested manual pose estimation redo for ep={episode_id}, state={state_id}")
+        
+        with self.state_lock:
+            ep = self.pending_states_by_episode.get(episode_id)
+            if not ep or state_id not in ep:
+                print(f"⚠️  Cannot redo pose estimation: state {state_id} not found in episode {episode_id}")
+                return False
+            info = ep[state_id]
+            
+            # Force skip_pose_estimation to False so it actually runs
+            if info.get("skip_pose_estimation", False):
+                print(f"🔄 Overriding skip_pose_estimation=True for manual redo")
+                info["skip_pose_estimation"] = False
+        
+        # Run pose estimation (blocks until ready)
+        poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
+            episode_id, state_id, info, wait=True, timeout_s=None
+        )
+        
+        if not poses_ready:
+            print(f"❌ Manual pose estimation failed for ep={episode_id}, state={state_id}")
+            return False
+            
+        print(f"✅ Manual pose estimation completed successfully")
+        
+        # Trigger sim capture if using sim
+        with self.state_lock:
+            # Re-fetch in case dict changed
+            ep = self.pending_states_by_episode.get(episode_id)
+            if not ep or state_id not in ep:
+                return False
+            info = ep[state_id]
+            
+            if self.use_sim:
+                info["sim_ready"] = False
+                print(f"🔄 Triggering new sim capture with updated poses...")
+                self.sim_manager.enqueue_sim_capture(episode_id, state_id, info)
+                
+        return True
+
     def get_latest_state(self, user_email: str = None) -> dict:
         """Get a pending state from current serving episode. 
         

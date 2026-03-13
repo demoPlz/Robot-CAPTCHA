@@ -221,8 +221,7 @@ class CrowdInterface:
         self.task_text = task_text
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
-        # Gripper starts closed for insertion/switches tasks, open for everything else
-        self.initial_gripper_open = (task_name not in ("insertion", "switches"))
+
         # Home position (degrees): defaults to standard if not provided
         self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
         # Frontend URL for serving uncompressed videos from CDN

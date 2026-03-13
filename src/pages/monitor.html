@@ -63,11 +63,12 @@
         .robot-state.resetting { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.7;} }
         .error-message { background:#fef2f2; border:1px solid #fecaca; color:#dc2626; padding:12px; border-radius:6px; font-size:14px; text-align:center; }
-        .control-buttons { display:flex; flex-direction:column; gap:12px; }
+        .control-buttons { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
         .control-button {
-            display:flex; align-items:center; justify-content:center; gap:8px; padding:12px 16px; border:none; border-radius:10px; font-size:14px; font-weight:600;
-            cursor:pointer; transition:all .2s ease; box-shadow:0 2px 8px rgba(0,0,0,.1);
+            display:flex; align-items:center; justify-content:center; gap:6px; padding:10px 8px; border:none; border-radius:10px; font-size:12px; font-weight:600;
+            cursor:pointer; transition:all .2s ease; box-shadow:0 2px 8px rgba(0,0,0,.1); text-align:center;
         }
+        .control-buttons .stop-btn { grid-column: 1 / -1; }
         .control-button:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,.15); }
         .control-button:active { transform:translateY(0); box-shadow:0 2px 8px rgba(0,0,0,.1); }
         .control-button:disabled { opacity:.6; cursor:not-allowed; transform:none; }
@@ -594,6 +595,7 @@
                         <button class="control-button flush-now-btn" id="flush-now-btn"><span class="control-icon">💾</span>Flush Now</button>
                         <button class="control-button continue-btn" id="continue-btn" style="display:none;"><span class="control-icon">▶️</span>Continue</button>
                         <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
+                        <button class="control-button" id="global-redo-pose-btn" style="background:#0284c7;color:#fff;" title="Redo pose estimation for the current state"><span class="control-icon">🔄</span>Redo Pose for State</button>
                         <button class="control-button" id="restart-pose-btn" style="background:#7c3aed;color:#fff;" title="Kill and restart pose estimation workers (safe at any time)"><span class="control-icon">🔧</span>Restart Pose Workers</button>
                     </div>
                 </div>
@@ -1469,7 +1471,6 @@
                 const el = document.getElementById(`episode-${current.id}`);
                 if (el) {
                     el.classList.add('current');
-                    if (!userIsScrolling) el.scrollIntoView({ behavior:'smooth', block:'nearest' });
                 }
             }
         }
@@ -1554,7 +1555,19 @@
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
+
+                    // Track the most recent state for Phase 1 operations like "Redo Pose" and "Save Tutorial State"
+                    if (data.episode_id !== undefined && data.state_id !== undefined) {
+                        currentServedState = {
+                            episode_id: data.episode_id,
+                            state_id: data.state_id
+                        };
+                    } else {
+                        currentServedState = null;
+                    }
+
                     updateTutorialSaveUI(data);
+
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
@@ -1648,13 +1661,8 @@
             if (!tutorialSection) return;
             
             if (data.tutorial_state_capture_enabled && data.state_id !== undefined && data.episode_id !== undefined) {
-                currentServedState = {
-                    episode_id: data.episode_id,
-                    state_id: data.state_id
-                };
                 tutorialSection.style.display = 'flex';
             } else {
-                currentServedState = null;
                 tutorialSection.style.display = 'none';
             }
         }
@@ -1664,7 +1672,6 @@
             if (tutorialSection) {
                 tutorialSection.style.display = 'none';
             }
-            currentServedState = null;
         }
 
         async function showApprovalModal(data) {
@@ -1810,6 +1817,9 @@
                 approvalMarkEndBtn.disabled = false;
             }
         }
+
+
+
 
         async function handleApprovalReject() {
             if (!currentApprovalState) return;
@@ -2880,6 +2890,42 @@
         stopBtn.addEventListener('click', handleStop);
         markCriticalBtn.addEventListener('click', handleMarkCritical);
         
+        // Redo pose for current state button
+        const globalRedoPoseBtn = document.getElementById('global-redo-pose-btn');
+        globalRedoPoseBtn.addEventListener('click', async () => {
+            if (!currentServedState) {
+                showToast('❌ No state is currently being served', 2000);
+                return;
+            }
+
+            try {
+                globalRedoPoseBtn.disabled = true;
+                globalRedoPoseBtn.innerHTML = '⏳ Redoing...';
+                
+                const response = await fetch(`${API_BASE_URL}/api/control/redo-pose-estimation`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: currentServedState.episode_id,
+                        state_id: currentServedState.state_id
+                    })
+                });
+
+                if (response.ok) {
+                    showToast('✅ Pose estimation redone successfully');
+                } else {
+                    const data = await response.json();
+                    showToast(`❌ Failed: ${data.message || 'unknown error'}`, 3000);
+                }
+            } catch (e) {
+                console.error('Error redoing pose estimation:', e);
+                showToast('❌ Error redoing pose estimation', 2000);
+            } finally {
+                globalRedoPoseBtn.disabled = false;
+                globalRedoPoseBtn.innerHTML = '<span class="control-icon">🔄</span>Redo Pose for State';
+            }
+        });
+
         // Restart pose workers button
         const restartPoseBtn = document.getElementById('restart-pose-btn');
         restartPoseBtn.addEventListener('click', async () => {

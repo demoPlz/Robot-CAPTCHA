@@ -780,6 +780,32 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/redo-pose-estimation", methods=["POST"])
+    @require_monitor_auth
+    def redo_pose_estimation():
+        """Manually re-trigger pose estimation for a state."""
+        try:
+            data = request.json
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+
+            success = crowd_interface.state_manager.redo_pose_estimation(episode_id, state_id)
+
+            if not success:
+                return jsonify({"status": "error", "message": "Failed to redo pose estimation"}), 400
+
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"❌ Error in redo-pose-estimation endpoint: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+
     @app.route("/api/control/pending-pre-execution-approval", methods=["GET"])
     @require_monitor_auth
     def get_pending_pre_execution_approval():
