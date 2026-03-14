@@ -805,7 +805,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
-
     @app.route("/api/control/pending-pre-execution-approval", methods=["GET"])
     @require_monitor_auth
     def get_pending_pre_execution_approval():

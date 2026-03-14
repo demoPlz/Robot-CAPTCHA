@@ -45,14 +45,19 @@ echo "   (Flask will auto-select an available port)"
 echo "   (Cloudflared tunnel will be started automatically)"
 echo ""
 
+# Dynamically read task config from crowd_interface_config.py
+TASK_NAME=$(python3 -c "import sys; sys.path.insert(0,'backend'); from crowd_interface_config import CrowdInterfaceConfig; print(CrowdInterfaceConfig().task_name)")
+TASK_TEXT=$(python3 -c "import sys; sys.path.insert(0,'backend'); from crowd_interface_config import CrowdInterfaceConfig; print(CrowdInterfaceConfig().task_text)")
+echo "   Task: $TASK_NAME ($TASK_TEXT)"
+
 conda run -n csui --no-capture-output python backend/collect_data.py \
   --phase2-only "$CHECKPOINT_PATH" \
   --robot.type=trossen_ai_single_arm \
   --control.type=record \
   --control.fps=30 \
-  --control.single_task="Pour the content of the red cup into the teal container" \
-  --task-name=pour \
-  --control.repo_id=$USER/phase2_dummy \
+  --control.single_task="${TASK_TEXT}" \
+  --task-name=${TASK_NAME} \
+  --control.repo_id=${TASK_NAME}/phase2_dummy \
   --control.num_episodes=1 \
   --control.push_to_hub=false \
   --show-demo-videos \

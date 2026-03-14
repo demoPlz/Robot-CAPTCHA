@@ -1471,6 +1471,7 @@
                 const el = document.getElementById(`episode-${current.id}`);
                 if (el) {
                     el.classList.add('current');
+                    // Auto-scroll removed: let the user stay where they are
                 }
             }
         }
@@ -1556,7 +1557,7 @@
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
 
-                    // Track the most recent state for Phase 1 operations like "Redo Pose" and "Save Tutorial State"
+                    // Always track the currently served state for Redo Pose (independent of tutorial mode)
                     if (data.episode_id !== undefined && data.state_id !== undefined) {
                         currentServedState = {
                             episode_id: data.episode_id,
@@ -1567,12 +1568,12 @@
                     }
 
                     updateTutorialSaveUI(data);
-
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
                     updateRobotState(data.is_resetting, data.reset_countdown);
                     updateControlButtons(data.is_resetting);
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     hideTutorialSaveUI();
+                    currentServedState = null;
                 }
             } catch (e) {
                 console.error('Error fetching latest state:', e);
@@ -1817,9 +1818,6 @@
                 approvalMarkEndBtn.disabled = false;
             }
         }
-
-
-
 
         async function handleApprovalReject() {
             if (!currentApprovalState) return;

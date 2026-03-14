@@ -263,8 +263,28 @@ class StateManager:
         state_id = self.next_state_id
         self.next_state_id += 1
 
+        # Prepare snapshot views, and include observation cameras so they are persisted to disk
+        snapshot_views = self._snapshot_views_callback()
+
+        # Ensure obs_wrist and obs_main are explicitly included for persistence
+        import numpy as np
+
+        for cam_key, obs_key in [("obs_main", "observation.images.cam_main"), ("obs_wrist", "observation.images.cam_wrist")]:
+            if obs_key in obs_dict:
+                try:
+                    # Convert tensor to uint8 rgb numpy array
+                    rgb = self.obs_stream._to_uint8_rgb(obs_dict[obs_key])
+                    if rgb is not None:
+                        if cam_key == "obs_wrist" and "insertion" in (getattr(self.sim_manager, "task_name", "") or ""):
+                            rgb = np.ascontiguousarray(np.rot90(rgb, 2))
+                        # Encode to JPEG base64 using the stream manager's encoder
+                        jpeg_b64 = self.obs_stream._encoder_func(rgb)
+                        snapshot_views[cam_key] = jpeg_b64
+                except Exception as e:
+                    print(f"⚠️ Failed to encode {cam_key} for view persistence: {e}")
+
         # Persist views to disk to avoid storing in memory
-        view_paths = self._persist_views_callback(episode_id, state_id, self._snapshot_views_callback())  # legacy
+        view_paths = self._persist_views_callback(episode_id, state_id, snapshot_views)
 
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():

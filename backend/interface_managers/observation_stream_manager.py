@@ -27,15 +27,18 @@ class ObservationStreamManager:
 
     """
 
-    def __init__(self, encoder_func, queue_maxsize: int | None = None):
+    def __init__(self, encoder_func, task_name: str | None = None, queue_maxsize: int | None = None):
         """Initialize observation stream manager.
 
         Args:
             encoder_func: Function to encode RGB image to base64 JPEG (from WebcamManager)
+            task_name: Task name string passed from backend configuration
+
             queue_maxsize: Max queue size for background encoding (defaults to env OBS_STREAM_QUEUE or 8)
 
         """
         self._encoder_func = encoder_func
+        self.task_name = task_name
 
         # Queue and worker state
         import os
@@ -114,9 +117,11 @@ class ObservationStreamManager:
                 name, img = item
                 rgb = self._to_uint8_rgb(img)
                 if rgb is not None:
+                    if name == "obs_wrist" and "insertion" in (getattr(self, "task_name", "") or ""):
+                        rgb = np.ascontiguousarray(np.rot90(rgb, 2))
                     self._latest_obs_jpeg[name] = self._encoder_func(rgb)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ obs_stream_worker error for {item[0] if isinstance(item, tuple) else '?'}: {e}")
             finally:
                 try:
                     self._obs_img_queue.task_done()

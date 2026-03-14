@@ -68,7 +68,7 @@ const TASK_CONFIGS = {
       x: 0.20, y: 0.40, z: 0.20,
       roll: 1.0, pitch: 0.81, yaw: 0.81,
     },
-    homePositionDeg: [0, 100, 90, -78, 0, 0, -1],
+    homePositionDeg: [0, 100, 80, -67, 0, 0, -1],
     homeGripper: -1,
     hideRobotInTopView: true,
   },
@@ -76,7 +76,7 @@ const TASK_CONFIGS = {
     absLimits: {
       x:     { min: 0.10,  max: 0.63  },
       y:     { min: -0.30, max: 0.30  },
-      z:     { min: 0.03, max: 0.15  },
+      z:     { min: 0.025, max: 0.40  },
       roll:  { min: -1.9,  max: 1.9   },
       pitch: { min: -1,    max: 1     },
       yaw:   { min: -0.81, max: 0.81  },
@@ -87,7 +87,7 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 100, 90, -78, 0, 0, -1],
     homeGripper: -1,
-    hideRobotInTopView: false,
+    hideRobotInTopView: true,
   },
 };
 

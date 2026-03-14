@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "switches"  # Single-word identifier for the task
+        self.task_name: str = "insertion"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
 
         # ========== Labeling Requirements ==========
@@ -81,37 +81,66 @@ class CrowdInterfaceConfig:
 
         # ========== Home Position ==========
         # Robot home position in degrees: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper_rotate, gripper]
-        if self.task_name in ("insertion", "switches"):
+        if self.task_name == "insertion":
+            self.home_position_deg: list[float] = [0, 45, 40, -83, 0, 0, -1]
+        elif self.task_name == "switches":
             self.home_position_deg: list[float] = [0, 100, 90, -78, 0, 0, -1]
         else:
             self.home_position_deg: list[float] = [0, 60, 75, -60, 0, 0, 2]
 
+        # Gripper starts closed for insertion, open for everything else
+        self.initial_gripper_open: bool = (self.task_name not in ("insertion", "switches"))
 
         # ========== Object Tracking ==========
         # Object names and their language descriptions for pose estimation
         # Note: Keys must match USD prim names in Isaac Sim
 
-        # Drawer (long)
-        # self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
+        repo_root = Path(__file__).resolve().parent.parent
 
-        # Drawer
-        # self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
-
-        # Pour
-        # self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup" : "Red Cylinder"}
-
-        # Switches
-        self.objects: dict[str, str] = {"switch_teal": "Teal Bowl", 
-                                        "switch_yellow" : "Yellow Bowl", 
-                                        "switch_dark_blue" : "Navy Blue Bowl",
-                                        "switch_green" : "Green Bowl"}
-        
-        # Insertion
-        # self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
-
-        # Sorting
-        # self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
-
+        if self.task_name == "drawer":
+            self.objects: dict[str, str] = {"Cube_Red": "Red cube"}
+            self.object_mesh_paths: dict[str, str] = {
+                "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+            }
+        elif self.task_name == "drawer_long":
+            self.objects: dict[str, str] = {"Cube_Blue": "Blue cube", "Cube_Red": "Red cube", "Tennis": "Tennis ball"}
+            self.object_mesh_paths: dict[str, str] = {
+                "Cube_Blue": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+                "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+                "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve()),
+            }
+        elif self.task_name == "pour":
+            self.objects: dict[str, str] = {"container": "Teal Cube Container", "cup": "Red Cylinder"}
+            self.object_mesh_paths: dict[str, str] = {
+                "container": str((repo_root / "public" / "assets" / "container.stl").resolve()),
+                "cup": str((repo_root / "public" / "assets" / "cup.stl").resolve()),
+            }
+        elif self.task_name == "switches":
+            self.objects: dict[str, str] = {
+                "switch_teal": "Teal Cylinder", 
+                "switch_yellow": "Yellow Cylinder", 
+                "switch_dark_blue": "Navy Blue Cylinder",
+                "switch_green": "Green Cylinder"
+            }
+            self.object_mesh_paths: dict[str, str] = {
+                "switch_teal": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
+                "switch_yellow": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
+                "switch_dark_blue": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()),
+                "switch_green": str((repo_root / "public" / "assets" / "sleeve.stl").resolve())
+            }
+        elif self.task_name == "insertion":
+            self.objects: dict[str, str] = {"socket": "Orange Cylinder"}
+            self.object_mesh_paths: dict[str, str] = {
+                "socket": str((repo_root / "public" / "assets" / "socket.stl").resolve()),
+            }
+        elif self.task_name == "sorting":
+            self.objects: dict[str, str] = {"container_green": "Green Container"}
+            self.object_mesh_paths: dict[str, str] = {
+                "container_green": str((repo_root / "public" / "assets" / "container.stl").resolve()),
+            }
+        else:
+            self.objects: dict[str, str] = {}
+            self.object_mesh_paths: dict[str, str] = {}
         
         # ========== Pose Estimation Mode ==========
         # When True, skip real pose estimation and use random fixed poses
@@ -122,33 +151,6 @@ class CrowdInterfaceConfig:
             "y_min": -0.3, "y_max": 0.3,
             "z_min": 0.0, "z_max": 0.3
         }
-
-        # Resolve mesh paths for pose estimation (relative to repo root)
-        repo_root = Path(__file__).resolve().parent.parent
-        
-        # Drawer
-        # self.object_mesh_paths: dict[str, str] = {
-        #     "Cube_Blue": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
-        #     "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
-        #     "Tennis": str((repo_root / "public" / "assets" / "sphere.obj").resolve()),
-        # }
-
-        # Pour
-        # self.object_mesh_paths: dict[str, str] = {
-        #     "container": str((repo_root / "public" / "assets" / "container.stl").resolve()),
-        #     "cup": str((repo_root / "public" / "assets" / "cup.stl").resolve()),
-        # }
-
-        # Insertion
-        self.object_mesh_paths: dict[str, str] = {
-             "socket": str((repo_root / "public" / "assets" / "socket.stl").resolve()),
-        }
-
-        # Switches
-        self.object_mesh_paths: dict[str, str] = {"switch_teal": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
-                                        "switch_yellow" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
-                                        "switch_dark_blue" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve()),
-                                        "switch_green" : str((repo_root / "public" / "assets" / "sleeve.stl").resolve())}
 
         # Mesh scale factor (e.g., 0.001 to convert mm to meters)
         self.mesh_scale: float = 0.001

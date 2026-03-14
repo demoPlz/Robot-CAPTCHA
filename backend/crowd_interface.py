@@ -221,7 +221,8 @@ class CrowdInterface:
         self.task_text = task_text
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.task_name = task_name
-
+        # Gripper starts closed for insertion/switches tasks, open for everything else
+        self.initial_gripper_open = (task_name not in ("insertion", "switches"))
         # Home position (degrees): defaults to standard if not provided
         self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
         # Frontend URL for serving uncompressed videos from CDN
@@ -258,7 +259,7 @@ class CrowdInterface:
         )
 
         # Observation stream manager
-        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64)
+        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64, task_name=task_name)
 
         # Sim manager
         self.sim_manager = SimManager(
@@ -466,6 +467,12 @@ class CrowdInterface:
         views = {}
         view_paths = out.pop("view_paths", None)  # don't expose file paths to the client
         views = self._load_views_from_disk(view_paths)
+
+        # Fallback: inject live obs_wrist only if not already loaded from per-state disk snapshot
+        if "obs_wrist" not in views:
+            latest_obs = self.obs_stream.get_latest_obs_jpeg()
+            if "obs_wrist" in latest_obs:
+                views["obs_wrist"] = latest_obs["obs_wrist"]
 
         out["views"] = views
         out["camera_poses"] = self.calibration.get_camera_poses()

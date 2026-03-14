@@ -234,7 +234,7 @@ class SimManager:
                 sim_result = result.get("result", {})
                 sim_to_our_mapping = {"front_rgb": "front", "left_rgb": "left", "right_rgb": "right", "top_rgb": "top"}
 
-                view_paths = {}
+                view_paths = state_info.get("view_paths", {})
                 for sim_name, our_name in sim_to_our_mapping.items():
                     if sim_name in sim_result:
                         view_paths[our_name] = sim_result[sim_name]
