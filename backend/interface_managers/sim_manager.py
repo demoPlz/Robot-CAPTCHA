@@ -29,6 +29,7 @@ class SimManager:
         obs_cache_root: Path,
         state_lock: Lock,
         pending_states_by_episode: dict,
+        completed_states_by_episode: dict,
         webcam_manager=None,
         calibration_manager=None,
         max_animation_users: int = 2,
@@ -59,6 +60,7 @@ class SimManager:
         self.obs_cache_root = obs_cache_root
         self.state_lock = state_lock
         self.pending_states_by_episode = pending_states_by_episode
+        self.completed_states_by_episode = completed_states_by_episode
         self.webcam_manager = webcam_manager
         self.calibration_manager = calibration_manager
         self.max_animation_users = max_animation_users
@@ -302,10 +304,14 @@ class SimManager:
         state_config = None
         if episode_id is not None and state_id is not None:
             with self.state_lock:
-                # Try pending states first
+                # Try pending states first, then completed (state may have been removed from pending)
                 ep = self.pending_states_by_episode.get(episode_id)
                 if ep and state_id in ep:
                     state_config = ep[state_id].get("sim_config")
+                if state_config is None:
+                    ep = self.completed_states_by_episode.get(episode_id)
+                    if ep and state_id in ep:
+                        state_config = ep[state_id].get("sim_config")
 
         try:
             result = self.isaac_manager.start_user_animation_managed(

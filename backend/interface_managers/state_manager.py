@@ -263,28 +263,8 @@ class StateManager:
         state_id = self.next_state_id
         self.next_state_id += 1
 
-        # Prepare snapshot views, and include observation cameras so they are persisted to disk
-        snapshot_views = self._snapshot_views_callback()
-
-        # Ensure obs_wrist and obs_main are explicitly included for persistence
-        import numpy as np
-
-        for cam_key, obs_key in [("obs_main", "observation.images.cam_main"), ("obs_wrist", "observation.images.cam_wrist")]:
-            if obs_key in obs_dict:
-                try:
-                    # Convert tensor to uint8 rgb numpy array
-                    rgb = self.obs_stream._to_uint8_rgb(obs_dict[obs_key])
-                    if rgb is not None:
-                        if cam_key == "obs_wrist" and "insertion" in (getattr(self.sim_manager, "task_name", "") or ""):
-                            rgb = np.ascontiguousarray(np.rot90(rgb, 2))
-                        # Encode to JPEG base64 using the stream manager's encoder
-                        jpeg_b64 = self.obs_stream._encoder_func(rgb)
-                        snapshot_views[cam_key] = jpeg_b64
-                except Exception as e:
-                    print(f"⚠️ Failed to encode {cam_key} for view persistence: {e}")
-
         # Persist views to disk to avoid storing in memory
-        view_paths = self._persist_views_callback(episode_id, state_id, snapshot_views)
+        view_paths = self._persist_views_callback(episode_id, state_id, self._snapshot_views_callback())  # legacy
 
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():
@@ -647,51 +627,6 @@ class StateManager:
                     print(
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
-
-    def redo_pose_estimation(self, episode_id: str, state_id: int) -> bool:
-        """Manually re-trigger pose estimation for a given state.
-        
-        Returns True if successful, False if state not found or poses could not be generated.
-        """
-        print(f"🔄 Admin requested manual pose estimation redo for ep={episode_id}, state={state_id}")
-        
-        with self.state_lock:
-            ep = self.pending_states_by_episode.get(episode_id)
-            if not ep or state_id not in ep:
-                print(f"⚠️  Cannot redo pose estimation: state {state_id} not found in episode {episode_id}")
-                return False
-            info = ep[state_id]
-            
-            # Force skip_pose_estimation to False so it actually runs
-            if info.get("skip_pose_estimation", False):
-                print(f"🔄 Overriding skip_pose_estimation=True for manual redo")
-                info["skip_pose_estimation"] = False
-        
-        # Run pose estimation (blocks until ready)
-        poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
-            episode_id, state_id, info, wait=True, timeout_s=None
-        )
-        
-        if not poses_ready:
-            print(f"❌ Manual pose estimation failed for ep={episode_id}, state={state_id}")
-            return False
-            
-        print(f"✅ Manual pose estimation completed successfully")
-        
-        # Trigger sim capture if using sim
-        with self.state_lock:
-            # Re-fetch in case dict changed
-            ep = self.pending_states_by_episode.get(episode_id)
-            if not ep or state_id not in ep:
-                return False
-            info = ep[state_id]
-            
-            if self.use_sim:
-                info["sim_ready"] = False
-                print(f"🔄 Triggering new sim capture with updated poses...")
-                self.sim_manager.enqueue_sim_capture(episode_id, state_id, info)
-                
-        return True
 
     def get_latest_state(self, user_email: str = None) -> dict:
         """Get a pending state from current serving episode. 
@@ -3308,15 +3243,23 @@ class StateManager:
             # Calculate completion status for each state
             states_needing_labels = 0
             states_completed = 0
+            total_approved = 0
             
             for pool_key, state_info in self.async_state_pool.items():
                 # Count APPROVED submissions for critical states
                 num_approved = sum(1 for entry in state_info.get("execution_history", []) 
                                   if entry.get("approval") == 1)
+                total_approved += num_approved
                 if num_approved < self.required_responses_per_critical_state:
                     states_needing_labels += 1
                 else:
                     states_completed += 1
+            
+            # Total needed = total states * required responses per state
+            total_needed = total_states * self.required_responses_per_critical_state
+            
+            # Total submissions = sum of all user submission counts
+            total_submissions = sum(len(s) for s in self.async_user_submissions.values())
             
             # User statistics
             total_users = len(self.async_user_submissions)
@@ -3339,6 +3282,9 @@ class StateManager:
                 "total_states": total_states,
                 "states_needing_labels": states_needing_labels,
                 "states_completed": states_completed,
+                "total_approved": total_approved,
+                "total_needed": total_needed,
+                "total_submissions": total_submissions,
                 "total_users": total_users,
                 "users_maxed_out": users_maxed_out,
                 "pending_approvals_queue": queue_length,
@@ -3684,6 +3630,13 @@ class StateManager:
         
         with self.state_lock:
             # Restore state data
+            # CRITICAL: All three dicts (pending, completed, buffer) must share the SAME
+            # dict object for matching (episode_id, state_id) keys. Otherwise the pre-approval
+            # worker writes execution_history to the completed dict, but submit_action reads
+            # from the pending dict (stale), and overwrites the completed dict on completion,
+            # dropping all auto-approvals (the "approved count drops by 8" bug).
+            
+            # Step 1: Deserialize pending_states_by_episode (authoritative source)
             self.pending_states_by_episode.clear()
             for ep, states in checkpoint["pending_states_by_episode"].items():
                 # Convert episode_id to int if numeric
@@ -3692,19 +3645,33 @@ class StateManager:
                     int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
                 }
             
+            # Step 2: Build completed_states_by_episode using SHARED references from pending
             self.completed_states_by_episode.clear()
             for ep, states in checkpoint["completed_states_by_episode"].items():
                 ep_key = int(ep) if ep.isdigit() else ep
-                self.completed_states_by_episode[ep_key] = {
-                    int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
-                }
+                self.completed_states_by_episode[ep_key] = {}
+                for sid, s in states.items():
+                    sid_key = int(sid)
+                    # Share the same dict object if it exists in pending
+                    if ep_key in self.pending_states_by_episode and sid_key in self.pending_states_by_episode[ep_key]:
+                        self.completed_states_by_episode[ep_key][sid_key] = self.pending_states_by_episode[ep_key][sid_key]
+                    else:
+                        # State only in completed (e.g. fully done autofill states) - deserialize separately
+                        self.completed_states_by_episode[ep_key][sid_key] = self._deserialize_state_from_checkpoint(s, checkpoint_dir)
             
+            # Step 3: Build completed_states_buffer using SHARED references (pending > completed > new)
             self.completed_states_buffer_by_episode.clear()
             for ep, states in checkpoint["completed_states_buffer_by_episode"].items():
                 ep_key = int(ep) if ep.isdigit() else ep
-                self.completed_states_buffer_by_episode[ep_key] = {
-                    int(sid): self._deserialize_state_from_checkpoint(s, checkpoint_dir) for sid, s in states.items()
-                }
+                self.completed_states_buffer_by_episode[ep_key] = {}
+                for sid, s in states.items():
+                    sid_key = int(sid)
+                    if ep_key in self.pending_states_by_episode and sid_key in self.pending_states_by_episode[ep_key]:
+                        self.completed_states_buffer_by_episode[ep_key][sid_key] = self.pending_states_by_episode[ep_key][sid_key]
+                    elif ep_key in self.completed_states_by_episode and sid_key in self.completed_states_by_episode[ep_key]:
+                        self.completed_states_buffer_by_episode[ep_key][sid_key] = self.completed_states_by_episode[ep_key][sid_key]
+                    else:
+                        self.completed_states_buffer_by_episode[ep_key][sid_key] = self._deserialize_state_from_checkpoint(s, checkpoint_dir)
             
             # Restore episode metadata
             self.episode_start_times = {

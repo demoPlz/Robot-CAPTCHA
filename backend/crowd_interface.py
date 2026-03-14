@@ -259,7 +259,7 @@ class CrowdInterface:
         )
 
         # Observation stream manager
-        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64, task_name=task_name)
+        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64)
 
         # Sim manager
         self.sim_manager = SimManager(
@@ -270,6 +270,7 @@ class CrowdInterface:
             obs_cache_root=self._obs_cache_root,
             state_lock=self.state_lock,
             pending_states_by_episode=self.pending_states_by_episode,
+            completed_states_by_episode=self.completed_states_by_episode,
             webcam_manager=self.webcam_manager,
             calibration_manager=self.calibration,
             max_animation_users=self.max_animation_users,
@@ -467,12 +468,6 @@ class CrowdInterface:
         views = {}
         view_paths = out.pop("view_paths", None)  # don't expose file paths to the client
         views = self._load_views_from_disk(view_paths)
-
-        # Fallback: inject live obs_wrist only if not already loaded from per-state disk snapshot
-        if "obs_wrist" not in views:
-            latest_obs = self.obs_stream.get_latest_obs_jpeg()
-            if "obs_wrist" in latest_obs:
-                views["obs_wrist"] = latest_obs["obs_wrist"]
 
         out["views"] = views
         out["camera_poses"] = self.calibration.get_camera_poses()
