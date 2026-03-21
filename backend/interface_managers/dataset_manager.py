@@ -836,10 +836,18 @@ class DatasetManager:
             return {}
 
     def _delete_obs_from_disk(self, path: str | None):
-        """Delete observation file from disk cache after saving."""
+        """Delete observation file from disk cache after saving.
+        
+        Skips deletion if the file is inside a checkpoint's obs_cache/ directory,
+        since checkpoints are meant to be reusable across multiple Phase 2 runs.
+        """
         if not path:
             return
         try:
+            # Never delete obs files from checkpoint obs_cache directories
+            # These are meant to be persistent and reusable
+            if "/obs_cache/" in path or "\\obs_cache\\" in path:
+                return
             os.remove(path)
         except Exception:
             pass

@@ -8,9 +8,10 @@ final_executed_action) and correctly updates all metadata (episode counts, frame
 
 Usage:
     python scripts/merge_datasets.py \
-        --source-repo-ids yilong/dataset1 yilong/dataset2 yilong/dataset3 \
-        --target-repo-id yilong/merged_dataset \
-        --root /home/yilong/.cache/huggingface/lerobot
+        --source-paths \
+            /home/yilong/.cache/huggingface/lerobot/insertion/teleop_25_1_mar14 \
+            /home/yilong/.cache/huggingface/lerobot/insertion/teleop_25_2_mar14 \
+        --target-path /home/yilong/.cache/huggingface/lerobot/insertion/teleop_merged
 """
 
 import logging
@@ -20,36 +21,47 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.utils.utils import init_logging
 
 
+def _split_path(full_path: str | Path) -> tuple[Path, str]:
+    """Split a full dataset path into (root, repo_id).
+    
+    E.g. '/home/user/.cache/huggingface/lerobot/insertion/teleop_25_1_mar14'
+      -> (Path('/home/user/.cache/huggingface/lerobot/insertion/teleop_25_1_mar14'), 'insertion/teleop_25_1_mar14')
+    """
+    p = Path(full_path)
+    repo_id = f"{p.parent.name}/{p.name}"
+    return p, repo_id
+
+
 def merge_datasets(
-    source_repo_ids: list[str],
-    target_repo_id: str,
-    root: str | Path | None = None,
+    source_paths: list[str],
+    target_path: str,
 ) -> LeRobotDataset:
     """Merge multiple LeRobot datasets into one.
     
     Args:
-        source_repo_ids: List of source dataset repo IDs to merge
-        target_repo_id: Target dataset repo ID
-        root: Root directory for datasets
+        source_paths: List of full filesystem paths to source datasets
+        target_path: Full filesystem path for target dataset
         
     Returns:
         Merged LeRobotDataset
     """
-    if not source_repo_ids:
+    if not source_paths:
         raise ValueError("Must provide at least one source dataset")
     
-    logging.info(f"Merging {len(source_repo_ids)} datasets into {target_repo_id}")
+    logging.info(f"Merging {len(source_paths)} datasets into {target_path}")
     
     # Load first source to get schema
-    logging.info(f"Loading first source dataset: {source_repo_ids[0]}")
-    first_source = LeRobotDataset(source_repo_ids[0], root=root)
+    first_root, first_repo_id = _split_path(source_paths[0])
+    logging.info(f"Loading first source dataset: {first_repo_id} at {first_root}")
+    first_source = LeRobotDataset(first_repo_id, root=first_root)
     
     # Create target dataset with same schema
-    logging.info(f"Creating target dataset: {target_repo_id}")
+    target_root, target_repo_id = _split_path(target_path)
+    logging.info(f"Creating target dataset: {target_repo_id} at {target_root}")
     target_dataset = LeRobotDataset.create(
         repo_id=target_repo_id,
         fps=first_source.fps,
-        root=root,
+        root=target_root,
         features=first_source.features,
         use_videos=len(first_source.meta.video_keys) > 0,
     )
@@ -61,11 +73,12 @@ def merge_datasets(
     total_frames = 0
     
     # Process each source dataset
-    for src_idx, src_repo_id in enumerate(source_repo_ids):
-        logging.info(f"\n[{src_idx+1}/{len(source_repo_ids)}] Processing {src_repo_id}")
+    for src_idx, src_path in enumerate(source_paths):
+        src_root, src_repo_id = _split_path(src_path)
+        logging.info(f"\n[{src_idx+1}/{len(source_paths)}] Processing {src_repo_id}")
         
         # Load source (reuse first_source if it's the first one)
-        source = first_source if src_idx == 0 else LeRobotDataset(src_repo_id, root=root)
+        source = first_source if src_idx == 0 else LeRobotDataset(src_repo_id, root=src_root)
         
         logging.info(f"  Episodes: {source.num_episodes}, Frames: {source.num_frames}")
         
@@ -125,7 +138,7 @@ def merge_datasets(
     logging.info(f"\n✅ Merge complete!")
     logging.info(f"   Total episodes: {total_episodes}")
     logging.info(f"   Total frames: {total_frames}")
-    logging.info(f"   Target dataset: {target_repo_id}")
+    logging.info(f"   Target dataset: {target_path}")
     
     return target_dataset
 
@@ -135,19 +148,15 @@ def main():
     
     parser = argparse.ArgumentParser(description="Merge multiple LeRobot datasets")
     parser.add_argument(
-        "--source-repo-ids",
+        "--source-paths",
         nargs="+",
         required=True,
-        help="Source dataset repo IDs to merge (space-separated)",
+        help="Full filesystem paths to source datasets (space-separated)",
     )
     parser.add_argument(
-        "--target-repo-id",
+        "--target-path",
         required=True,
-        help="Target dataset repo ID",
-    )
-    parser.add_argument(
-        "--root",
-        help="Root directory for datasets (default: ~/.cache/huggingface/lerobot)",
+        help="Full filesystem path for target merged dataset",
     )
     parser.add_argument(
         "--push-to-hub",
@@ -160,9 +169,8 @@ def main():
     init_logging()
     
     target_dataset = merge_datasets(
-        source_repo_ids=args.source_repo_ids,
-        target_repo_id=args.target_repo_id,
-        root=args.root,
+        source_paths=args.source_paths,
+        target_path=args.target_path,
     )
     
     if args.push_to_hub:

@@ -1710,72 +1710,50 @@ class IsaacSimWorker:
 
             if user_id == 0:
                 # User 0: Use original object references - reset to absolute positions
-
-                if "Cube_Blue" in object_states and "Cube_Blue" in self.objects:
-                    state = object_states["Cube_Blue"]
-                    if state is not None:  # Skip if pose estimation failed
+                # Dynamically iterate over all objects in config (works for any task)
+                for obj_name, state in object_states.items():
+                    # Skip non-RigidPrim objects (trays handled separately in drawer reset)
+                    if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                        continue
+                    if state is None:  # Skip if pose estimation failed
+                        continue
+                    if obj_name in self.objects and self.objects[obj_name] is not None:
                         pos = np.array(state["pos"])
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        if self.objects["Cube_Blue"].is_valid():
-                            # Reset position AND clear physics state
-                            self.objects["Cube_Blue"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["Cube_Blue"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["Cube_Blue"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-
-                if "Cube_Red" in object_states and "Cube_Red" in self.objects:
-                    state = object_states["Cube_Red"]
-                    if state is not None:  # Skip if pose estimation failed
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        if self.objects["Cube_Red"].is_valid():
-                            # Reset position AND clear physics state
-                            self.objects["Cube_Red"].set_world_pose(position=pos, orientation=rot)
-                            self.objects["Cube_Red"].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects["Cube_Red"].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-
-                if "Tennis" in object_states and "Tennis" in self.objects:
-                    state = object_states["Tennis"]
-                    if state is not None:  # Skip if pose estimation failed
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        if self.objects["Tennis"].is_valid():
-                            # Reset position AND clear physics state - CRITICAL for sphere/ball objects
-                            self.objects["Tennis"].set_world_pose(position=pos, orientation=rot)
+                        if self.objects[obj_name].is_valid():
+                            self.objects[obj_name].set_world_pose(position=pos, orientation=rot)
+                            self.objects[obj_name].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            self.objects[obj_name].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
 
                 # Calculate the spatial offset for this environment (same as sync logic)
-                environment_spacing = 50.0
-                spatial_offset = np.array([user_id * environment_spacing, user_id * environment_spacing, 0])
+                spatial_offset = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, 0])
 
-                # Reset each object using scene registry with spatial offset
-                object_mappings = [
-                    ("Cube_Blue", f"Cube_Blue_user_{user_id}"),
-                    ("Cube_Red", f"Cube_Red_user_{user_id}"),
-                    ("Tennis", f"tennis_user_{user_id}"),
-                ]
+                # Dynamically reset all objects using scene registry with spatial offset
+                for obj_name, state in object_states.items():
+                    # Skip non-RigidPrim objects (trays handled separately)
+                    if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                        continue
+                    if state is None:  # Skip if pose estimation failed
+                        continue
 
-                for config_key, scene_name in object_mappings:
-                    if config_key in object_states:
-                        state = object_states[config_key]
-                        if state is None:  # Skip if pose estimation failed
-                            continue
+                    # CRITICAL: Apply spatial offset to object position (same as sync)
+                    original_pos = np.array(state["pos"])
+                    offset_pos = original_pos + spatial_offset
+                    rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
 
-                        # CRITICAL: Apply spatial offset to object position (same as sync)
-                        original_pos = np.array(state["pos"])
-                        offset_pos = original_pos + spatial_offset
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                    # For Tennis ball, use lowercase naming convention for scene registry
+                    scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
-                        # Try to get object from scene registry
-                        if self.world.scene.object_exists(scene_name):
-                            scene_obj = self.world.scene.get_object(scene_name)
-                            # Reset position AND clear physics state
-                            scene_obj.set_world_pose(position=offset_pos, orientation=rot)
-                            scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-
-                            # TODO this might not work for tennis ball
+                    # Try to get object from scene registry
+                    if self.world.scene.object_exists(scene_name):
+                        scene_obj = self.world.scene.get_object(scene_name)
+                        # Reset position AND clear physics state
+                        scene_obj.set_world_pose(position=offset_pos, orientation=rot)
+                        scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
             # STEP 4: Reset drawer position
             self.set_drawer_joints(user_id=user_id, config=config_to_use)
