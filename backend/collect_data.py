@@ -389,10 +389,15 @@ def control_robot(cfg: ControlPipelineConfig):
     server_thread = Thread(target=http_server.serve_forever, name="flask-wsgi", daemon=True)
     server_thread.start()
     
-    # Start cloudflared tunnel pointing to the Flask port
+    # Start tunnel (try cloudflared first, fall back to ngrok)
+    import re
+    tunnel_url = None
+    tunnel_process = None
+    
+    # --- Attempt 1: cloudflared quick tunnel ---
     print(f"🚇 Starting cloudflared tunnel for port {port}...")
     subprocess.Popen(
-        ["pkill", "-f", "cloudflared"],
+        ["pkill", "-f", "cloudflared.*tunnel.*url"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     ).wait()
@@ -402,24 +407,69 @@ def control_robot(cfg: ControlPipelineConfig):
     tunnel_log.unlink(missing_ok=True)
     
     tunnel_process = subprocess.Popen(
-        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}", "--protocol", "http2"],
         stdout=open(tunnel_log, "w"),
         stderr=subprocess.STDOUT
     )
     
-    # Wait for tunnel URL to appear
     print("⏳ Waiting for tunnel URL...")
-    tunnel_url = None
     for _ in range(30):  # Wait up to 15 seconds
         time.sleep(0.5)
         if tunnel_log.exists():
             content = tunnel_log.read_text()
-            import re
+            # Check for fatal errors first (500, unmarshal failures)
+            if "500 Internal Server Error" in content or "failed to unmarshal" in content:
+                print("⚠️  Cloudflared quick tunnel API returned 500 error")
+                tunnel_process.terminate()
+                tunnel_process = None
+                break
             match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', content)
             if match:
                 tunnel_url = match.group(0)
                 break
     
+    # --- Attempt 2: ngrok fallback ---
+    if not tunnel_url:
+        print("🔄 Falling back to ngrok...")
+        # Kill any existing ngrok
+        subprocess.Popen(
+            ["pkill", "-f", "ngrok"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        ).wait()
+        time.sleep(0.5)
+        
+        ngrok_log = Path("/tmp/ngrok.log")
+        ngrok_log.unlink(missing_ok=True)
+        
+        tunnel_process = subprocess.Popen(
+            ["ngrok", "http", str(port), "--log", str(ngrok_log), "--log-format", "json"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        print("⏳ Waiting for ngrok tunnel URL...")
+        for _ in range(30):  # Wait up to 15 seconds
+            time.sleep(0.5)
+            try:
+                import urllib.request
+                resp = urllib.request.urlopen("http://localhost:4040/api/tunnels", timeout=2)
+                data = json.loads(resp.read().decode())
+                tunnels = data.get("tunnels", [])
+                for t in tunnels:
+                    public_url = t.get("public_url", "")
+                    if public_url.startswith("https://"):
+                        tunnel_url = public_url
+                        break
+                if tunnel_url:
+                    break
+            except Exception:
+                continue
+        
+        if not tunnel_url:
+            print("⚠️  ngrok also failed to start. Check /tmp/ngrok.log")
+    
+    # --- Deploy to Netlify with tunnel URL ---
     if tunnel_url:
         print(f"✅ Tunnel active: {tunnel_url}")
         print(f"🚀 Auto-deploying frontend to Netlify...")
@@ -454,7 +504,7 @@ def control_robot(cfg: ControlPipelineConfig):
             if deploy_result.stderr:
                 print(f"   Error: {deploy_result.stderr[:200]}")
     else:
-        print("⚠️  Could not detect tunnel URL, check /tmp/cloudflared.log")
+        print("⚠️  Could not detect tunnel URL from cloudflared or ngrok")
     print()
 
     # ============ Phase 2 Only Mode ============

@@ -2309,8 +2309,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 return send_from_directory(public_dir, filepath)
             
             # For HTML files, try dist first
-            if filepath.startswith("pages/") or filepath.endswith(".html"):
-                # HTML files are in dist/src/pages/ after build
+            if filepath.startswith("src/pages/") or filepath.startswith("pages/") or filepath.endswith(".html"):
+                # Strip src/ prefix if present (URLs may use /src/pages/ or /pages/)
+                if filepath.startswith("src/"):
+                    filepath = filepath[4:]  # "src/pages/x.html" -> "pages/x.html"
                 if not filepath.startswith("pages/"):
                     filepath = f"pages/{filepath}"
                 
