@@ -565,41 +565,55 @@ def control_robot(cfg: ControlPipelineConfig):
         else:
             cache_root = root_path
         
-        # Check if dataset already exists and auto-rename to prevent overwrite
+        # Check if dataset already exists and decide: resume or create new
         dataset_path = cache_root / output_repo_id
+        output_dataset_root = None
+        
         if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
-            # Dataset already exists - find a unique name
-            original_repo_id = output_repo_id
-            counter = 1
-            while True:
-                new_repo_id = f"{original_repo_id}_new{counter}"
-                new_path = cache_root / new_repo_id
-                # Check that new path either doesn't exist OR has no valid dataset
-                if not new_path.exists() or not (new_path / "meta" / "info.json").exists():
-                    output_repo_id = new_repo_id
-                    break
-                counter += 1
+            # Dataset exists - check if it has a Phase 2 checkpoint to resume from
+            if (dataset_path / "phase2_checkpoint.json").exists():
+                # Resume mode: clean up dataset artifacts but keep checkpoint
+                # (dataset is empty since no episodes were saved yet — only checkpoint matters)
+                import shutil
+                print(f"📂 Found Phase 2 checkpoint in {dataset_path} — cleaning dataset for re-creation")
+                for item in dataset_path.iterdir():
+                    if item.name == "phase2_checkpoint.json":
+                        continue  # keep checkpoint
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                # Fall through to dataset creation below
+            else:
+                # No checkpoint - auto-rename to prevent overwrite
+                original_repo_id = output_repo_id
+                counter = 1
+                while True:
+                    new_repo_id = f"{original_repo_id}_new{counter}"
+                    new_path = cache_root / new_repo_id
+                    if not new_path.exists() or not (new_path / "meta" / "info.json").exists():
+                        output_repo_id = new_repo_id
+                        break
+                    counter += 1
+                
+                print(f"⚠️  Dataset already exists at: {dataset_path}")
+                print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {output_repo_id}")
+        
+        if output_dataset_root is None:
+            print(f"   Output repo_id: {output_repo_id}")
             
-            print(f"⚠️  Dataset already exists at: {dataset_path}")
-            print(f"   Auto-renaming to prevent overwrite: {original_repo_id} → {output_repo_id}")
-        
-        print(f"   Output repo_id: {output_repo_id}")
-        
-        # Create dataset with video encoding (same as normal Phase 1+2 flow)
-        # Note: LeRobotDatasetMetadata.create uses root directly without appending repo_id,
-        # so we must pass the full output path, not just the cache root
-        output_dataset_root = cache_root / output_repo_id
-        crowd_interface.dataset_manager.dataset = LeRobotDataset.create(
-            repo_id=output_repo_id,
-            fps=dataset_config["fps"],
-            root=output_dataset_root,  # Full path including repo_id
-            robot_type=dataset_config.get("robot_type", "trossen_ai_single_arm"),
-            features=features,  # Use converted features with tuple shapes
-            use_videos=True,
-        )
-        # Don't start image_writer - use synchronous image writing for Phase 2
-        # (image_writer=None means _save_image uses write_image directly)
-        print(f"✅ Dataset created: {crowd_interface.dataset_manager.dataset.root}")
+            # Create dataset with video encoding (same as normal Phase 1+2 flow)
+            output_dataset_root = cache_root / output_repo_id
+            crowd_interface.dataset_manager.dataset = LeRobotDataset.create(
+                repo_id=output_repo_id,
+                fps=dataset_config["fps"],
+                root=output_dataset_root,
+                robot_type=dataset_config.get("robot_type", "trossen_ai_single_arm"),
+                features=features,
+                use_videos=True,
+            )
+            # Don't start image_writer - use synchronous image writing for Phase 2
+            print(f"✅ Dataset created: {crowd_interface.dataset_manager.dataset.root}")
         
         # Finalize admin phase and serve async pool (no robot needed)
         print(f"\n🚀 Finalizing admin phase and serving async pool...")
@@ -613,12 +627,24 @@ def control_robot(cfg: ControlPipelineConfig):
         states_count = finalize_result.get("states_in_pool", 0)
         print(f"✅ Async pool ready: {states_count} states available for user labeling")
         
+        # Check for existing Phase 2 checkpoint and resume
+        phase2_ckpt_path = Path(output_dataset_root) / "phase2_checkpoint.json"
+        if phase2_ckpt_path.exists():
+            print(f"\n📂 Found Phase 2 checkpoint: {phase2_ckpt_path}")
+            p2_result = crowd_interface.load_phase2_checkpoint(phase2_ckpt_path)
+            if p2_result.get("status") == "success":
+                print(f"   ✅ Resumed: {p2_result['restored_states']} states, {p2_result['restored_approved']} approved labels")
+            else:
+                print(f"   ⚠️  Failed to load Phase 2 checkpoint: {p2_result.get('message')}")
+        
         # Wait for users to complete all labeling (same loop as normal mode)
         print(f"\n⏳ Waiting for users to complete async labeling...")
         print(f"   (Press Ctrl+C to stop waiting and exit)")
         
         check_interval = 5
         last_status = None
+        last_checkpoint_count = 0
+        CHECKPOINT_INTERVAL = 50  # Auto-checkpoint every 50 completed labels
         
         try:
             while True:
@@ -632,6 +658,12 @@ def control_robot(cfg: ControlPipelineConfig):
                     print(f"   📊 Progress: {completed}/{total} states completed, {in_progress} in progress")
                     last_status = current_status
                 
+                # Auto-checkpoint every CHECKPOINT_INTERVAL labels
+                if completed >= last_checkpoint_count + CHECKPOINT_INTERVAL:
+                    print(f"\n🔄 Auto-checkpoint triggered at {completed} completed states...")
+                    crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
+                    last_checkpoint_count = completed
+                
                 if completed >= total and total > 0:
                     pending_queue = status.get("pending_approvals_queue", 0)
                     active_approval = status.get("active_approval", False)
@@ -644,6 +676,9 @@ def control_robot(cfg: ControlPipelineConfig):
                         print(f"\n✅ All {total} states have been labeled by users!")
                         print(f"✅ All pre-approvals completed!")
                         
+                        # Final checkpoint before saving
+                        crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
+                        
                         print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
                         crowd_interface.save_all_finalized_episodes()
                         print(f"✅ All episodes saved - ready for shutdown")
@@ -651,8 +686,10 @@ def control_robot(cfg: ControlPipelineConfig):
                 
                 time.sleep(check_interval)
         except KeyboardInterrupt:
-            print(f"\n⚠️  User interrupted - exiting with partial labeling")
+            print(f"\n⚠️  User interrupted - saving Phase 2 checkpoint before exit...")
+            crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
             print(f"   {completed}/{total} states completed")
+            print(f"   ✅ Checkpoint saved - restart to resume")
         
         crowd_interface.shutdown()
         print("Phase 2 Data Collection Completed")

@@ -565,7 +565,7 @@
                             </span>
                         </div>
                     </div>
-                    <div class="status-card">
+                    <div class="status-card" id="robot-state-card" style="display:none;">
                         <div class="robot-state stationary" id="robot-state">🛑 Robot Status Unknown</div>
                     </div>
                     <!-- Phase 2 Async Progress -->
@@ -585,6 +585,7 @@
                             <span id="async-submissions-text">0 submissions</span>
                             <span id="async-users-text">0 users</span>
                         </div>
+                        <button class="control-button" id="save-phase2-checkpoint-btn" style="margin-top:8px; background:#059669; color:#fff; width:100%; font-size:12px; padding:6px 10px;" title="Manually save Phase 2 labeling progress"><span class="control-icon">💾</span>Save Checkpoint</button>
                     </div>
                 </div>
                 <div class="control-section">
@@ -921,13 +922,39 @@
             }
         }
         let API_BASE_URL = 'http://127.0.0.1:9000';
+
+        // Detect if page is served directly from Flask (via ngrok/cloudflared tunnel)
+        function isSameOriginBackend() {
+            const h = location.hostname;
+            return h.includes('ngrok') || h.includes('trycloudflare');
+        }
+
+        // Wrap global fetch to add ngrok-skip-browser-warning header when needed
+        const _origFetch = window.fetch;
+        window.fetch = function(url, options = {}) {
+            const urlStr = typeof url === 'string' ? url : (url instanceof Request ? url.url : '');
+            if (urlStr.includes('ngrok') || isSameOriginBackend()) {
+                options = options || {};
+                options.headers = options.headers || {};
+                if (options.headers instanceof Headers) {
+                    options.headers.set('ngrok-skip-browser-warning', 'true');
+                } else {
+                    options.headers['ngrok-skip-browser-warning'] = 'true';
+                }
+            }
+            return _origFetch.call(window, url, options);
+        };
+
         async function initializeApiUrl() {
-            if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-                // Always try to read dynamic port from backend-config.json for localhost
+            if (isSameOriginBackend()) {
+                // Page served directly from Flask via ngrok/cloudflared — API is same origin
+                API_BASE_URL = window.location.origin;
+                console.log('[DEBUG] Monitor: same-origin backend detected:', API_BASE_URL);
+            } else if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 API_BASE_URL = await getCurrentCloudflaredUrl();
                 console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
             } else {
-                // Running on Netlify or other production host - get tunnel URL
+                // Running on Netlify - get tunnel URL
                 API_BASE_URL = await getCurrentCloudflaredUrl();
                 console.log('[DEBUG] Monitor using backend URL:', API_BASE_URL);
             }
@@ -2948,6 +2975,31 @@
                 restartPoseBtn.innerHTML = '<span class="control-icon">🔧</span>Restart Pose Workers';
             }
         });
+
+        // Save Phase 2 checkpoint button
+        const saveP2CkptBtn = document.getElementById('save-phase2-checkpoint-btn');
+        if (saveP2CkptBtn) {
+            saveP2CkptBtn.addEventListener('click', async () => {
+                saveP2CkptBtn.disabled = true;
+                saveP2CkptBtn.innerHTML = '⏳ Saving...';
+                try {
+                    const r = await fetch(`${API_BASE_URL}/api/control/save-phase2-checkpoint`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'}
+                    });
+                    const j = await r.json();
+                    if (j.status === 'success') {
+                        showToast(`✅ Checkpoint saved (${j.states_completed || 0} complete, ${j.total_approved || 0} approved)`);
+                    } else {
+                        showToast(`❌ ${j.message || 'Checkpoint failed'}`);
+                    }
+                } catch (e) {
+                    showToast('❌ Checkpoint save failed');
+                } finally {
+                    saveP2CkptBtn.disabled = false;
+                    saveP2CkptBtn.innerHTML = '<span class="control-icon">💾</span>Save Checkpoint';
+                }
+            });
+        }
 
         const flushNowBtn = document.getElementById('flush-now-btn');
         flushNowBtn.addEventListener('click', handleFlushNow);

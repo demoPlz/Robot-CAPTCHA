@@ -1916,6 +1916,10 @@ console.log('[SID]', SID);
 function apiFetch(path, options = {}) {
   const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
   const headers = { ...(options.headers || {}), 'X-Session-ID': SID };
+  // ngrok free tier intercepts requests without this header, returning HTML instead of JSON
+  if (isSameOriginBackend() || (API_BASE_URL && API_BASE_URL.includes('ngrok'))) {
+    headers['ngrok-skip-browser-warning'] = 'true';
+  }
   return fetch(url, { ...options, headers });
 }
 
@@ -1961,6 +1965,13 @@ async function getCurrentCloudflaredUrl() {
     console.error('Error getting backend URL from config:', error);
     return 'http://127.0.0.1:9000';
   }
+}
+
+// Detect if page is served directly from Flask (via ngrok/cloudflared tunnel)
+// In that case, the API is on the same origin — no need to read backend-config.json
+function isSameOriginBackend() {
+  const h = location.hostname;
+  return h.includes('ngrok') || h.includes('trycloudflare');
 }
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
@@ -3872,7 +3883,11 @@ loader.load(
     const isNetlifyEnvironment = !(location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     window.isNetlifyEnvironment = isNetlifyEnvironment;  // Make available globally
     
-    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    if (isSameOriginBackend()) {
+      // Page is served directly from Flask via ngrok/cloudflared — API is same origin
+      API_BASE_URL = window.location.origin;
+      console.log('[DEBUG] Same-origin backend detected (ngrok/cloudflared):', API_BASE_URL);
+    } else if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
       // Always read from backend-config.json for localhost
       API_BASE_URL = await getCurrentCloudflaredUrl();
       console.log('[DEBUG] Using dynamic backend URL for localhost:', API_BASE_URL);

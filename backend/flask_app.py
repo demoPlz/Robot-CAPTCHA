@@ -1117,6 +1117,20 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # =========================
+    # Phase 2 Checkpoint Endpoint
+    # =========================
+
+    @app.route("/api/control/save-phase2-checkpoint", methods=["POST"])
+    @require_monitor_auth
+    def save_phase2_checkpoint():
+        """Manually save a Phase 2 labeling checkpoint."""
+        try:
+            result = crowd_interface.save_phase2_checkpoint()
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    # =========================
     # Asynchronous Mode Endpoints
     # =========================
 
