@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,7 +57,11 @@ def _get_langsam() -> LangSAM:
 # ------------------------- Exclusion mask -------------------------
 
 _EXCLUSION_MASK_CACHE: Optional[list] = None  # None = not loaded, [] = no mask
-_EXCLUSION_MASK_PATH = _REPO_ROOT / "data" / "calib" / "pose_exclusion_mask.json"
+# Allow override via env var (pose_estimation_manager sets this per-task)
+_EXCLUSION_MASK_PATH = Path(os.environ.get(
+    "POSE_EXCLUSION_MASK",
+    str(_REPO_ROOT / "data" / "calib" / "pose_exclusion_mask.json")
+))
 
 
 def _load_exclusion_mask() -> list:

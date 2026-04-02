@@ -47,6 +47,7 @@ class PoseEstimationManager:
         use_random_poses: bool = False,
         random_pose_bounds: dict | None = None,
         mesh_scale: float = 1.0,
+        task_name: str | None = None,
     ):
         """Initialize pose estimation manager.
 
@@ -77,6 +78,7 @@ class PoseEstimationManager:
             "z_min": 0.0, "z_max": 0.3
         }
         self.mesh_scale = mesh_scale
+        self.task_name = task_name
 
         # Worker process management
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
@@ -295,6 +297,12 @@ class PoseEstimationManager:
         cuda_lib_path = f"{conda_prefix}/lib:{conda_prefix}/targets/x86_64-linux/lib"
         worker_env = os.environ.copy()
         worker_env["LD_LIBRARY_PATH"] = cuda_lib_path
+
+        # Set task-specific exclusion mask path for worker
+        if self.task_name:
+            repo_root = Path(__file__).resolve().parent.parent.parent
+            mask_path = repo_root / "data" / "calib" / f"pose_exclusion_mask_{self.task_name}.json"
+            worker_env["POSE_EXCLUSION_MASK"] = str(mask_path)
 
         # Group objects by mesh path (objects with same mesh share one worker)
         mesh_to_objects = {}

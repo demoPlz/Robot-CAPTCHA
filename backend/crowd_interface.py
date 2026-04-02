@@ -296,6 +296,7 @@ class CrowdInterface:
             use_random_poses=use_random_poses,
             random_pose_bounds=self.random_pose_bounds,
             mesh_scale=mesh_scale,
+            task_name=task_name,
         )
 
         # Drawer position manager (only if joint_tracking is configured)

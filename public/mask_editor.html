@@ -116,8 +116,21 @@
     const statusEl = document.getElementById('status');
     const polyCountEl = document.getElementById('polyCount');
 
-    // Backend URL — same origin
-    const API_BASE = '';
+    // Backend URL — read from backend-config.json (Flask auto-selects port)
+    let API_BASE = '';
+    async function initApiBase() {
+      try {
+        const res = await fetch('/backend-config.json');
+        const cfg = await res.json();
+        if (cfg.backendUrl) {
+          API_BASE = cfg.backendUrl;
+          console.log('Backend URL:', API_BASE);
+        }
+      } catch (e) {
+        // Fallback: try same origin (in case served directly by Flask)
+        console.warn('Could not load backend-config.json, using same origin');
+      }
+    }
 
     // State
     let bgImage = null;        // The camera image as an Image object
@@ -326,8 +339,10 @@
     }
 
     // --- Init ---
-    loadCameraImage();
-    loadSavedMask();
+    initApiBase().then(() => {
+      loadCameraImage();
+      loadSavedMask();
+    });
 
     // Auto-refresh image every 3 seconds
     setInterval(loadCameraImage, 3000);

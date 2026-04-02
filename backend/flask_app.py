@@ -62,7 +62,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     CORS(
         app,
         resources={r"/api/*": {"origins": "*"}},
-        allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID", "X-Monitor-Token"],
+        allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID", "X-Monitor-Token", "X-Monitor-Auth"],
         methods=["GET", "POST", "OPTIONS"],
         supports_credentials=False,
         expose_headers=["Content-Type"],
@@ -73,7 +73,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """Ensure CORS headers are always present for Cloudflare Tunnel compatibility."""
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning, X-Session-ID, X-Monitor-Token"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, ngrok-skip-browser-warning, X-Session-ID, X-Monitor-Token, X-Monitor-Auth"
         return response
 
     def require_monitor_auth(f):
@@ -1119,9 +1119,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/control/pose-mask", methods=["GET"])
     @require_monitor_auth
     def get_pose_mask():
-        """Get saved polygon exclusion mask for LangSAM."""
+        """Get saved polygon exclusion mask for LangSAM (task-specific)."""
         try:
-            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / "pose_exclusion_mask.json"
+            task = crowd_interface.task_name or "default"
+            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / f"pose_exclusion_mask_{task}.json"
             if mask_path.exists():
                 with open(mask_path, "r") as f:
                     data = json.load(f)
@@ -1133,27 +1134,21 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/control/pose-mask", methods=["POST"])
     @require_monitor_auth
     def save_pose_mask():
-        """Save polygon exclusion mask for LangSAM."""
+        """Save polygon exclusion mask for LangSAM (task-specific)."""
         try:
             data = request.get_json(force=True, silent=True)
             if data is None or "polygons" not in data:
                 return jsonify({"status": "error", "message": "Missing 'polygons' field"}), 400
 
-            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / "pose_exclusion_mask.json"
+            task = crowd_interface.task_name or "default"
+            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / f"pose_exclusion_mask_{task}.json"
             mask_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(mask_path, "w") as f:
                 json.dump({"polygons": data["polygons"]}, f, indent=2)
 
-            # Invalidate cached mask in estimate_pose module
-            try:
-                from any6d.estimate_pose import invalidate_exclusion_mask_cache
-                invalidate_exclusion_mask_cache()
-            except Exception:
-                pass
-
-            print(f"💾 Saved pose exclusion mask with {len(data['polygons'])} polygon(s) to {mask_path}")
-            return jsonify({"status": "ok", "path": str(mask_path), "num_polygons": len(data["polygons"])})
+            print(f"💾 Saved pose exclusion mask ({task}) with {len(data['polygons'])} polygon(s) to {mask_path}")
+            return jsonify({"status": "ok", "path": str(mask_path), "task": task, "num_polygons": len(data["polygons"])})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
