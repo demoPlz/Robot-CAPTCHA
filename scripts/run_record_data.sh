@@ -26,8 +26,8 @@ python backend/collect_data.py \
   --control.fps=30 \
   --control.single_task="${TASK_TEXT}" \
   --task-name=${TASK_NAME} \
-  --control.repo_id=${TASK_NAME}/${TASK_NAME}_30_mar20 \
-  --control.data_collection_policy_repo_id=${TASK_NAME}/${TASK_NAME}_30_mar20_dcp \
+  --control.repo_id=${TASK_NAME}/${TASK_NAME}_test_apr2 \
+  --control.data_collection_policy_repo_id=${TASK_NAME}/${TASK_NAME}_test_apr2_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
   --control.num_episodes=30 \

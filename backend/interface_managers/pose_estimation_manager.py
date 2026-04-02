@@ -547,6 +547,8 @@ class PoseEstimationManager:
                                 st["object_poses"][obj] = pose_world
                                 self.last_known_poses[obj] = pose_world
                                 print(f"✅ Updated last known pose for {obj}")
+                                print(f"📍 [{obj}] Sim location: pos=[{pose_world['pos'][0]:+.4f}, {pose_world['pos'][1]:+.4f}, {pose_world['pos'][2]:+.4f}], "
+                                      f"quat=[{pose_world['rot'][0]:+.4f}, {pose_world['rot'][1]:+.4f}, {pose_world['rot'][2]:+.4f}, {pose_world['rot'][3]:+.4f}]")
                     except Exception as e:
                         print(f"⚠️  Failed to process pose result {p.name}: {e}")
                         try:
@@ -645,7 +647,7 @@ class PoseEstimationManager:
         # NOTE: Do NOT hold self.state_lock while sleeping; watcher needs it.
         # Use dynamic timeout that resets when progress is made (poses arrive sequentially)
         try:
-            per_object_timeout = float(timeout_s if timeout_s is not None else os.getenv("POSE_WAIT_TIMEOUT_S", "20.0"))
+            per_object_timeout = float(timeout_s if timeout_s is not None else os.getenv("POSE_WAIT_TIMEOUT_S", "60.0"))
         except Exception:
             per_object_timeout = 20.0
         

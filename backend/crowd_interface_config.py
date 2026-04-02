@@ -19,8 +19,8 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "insertion"  # Single-word identifier for the task
-        self.task_text: str = "Put the objects on the desk into the middle drawer" # "Open the drawer, put the cube on the desk into the middle drawer, and close the drawer"
+        self.task_name: str = "sorting"  # Single-word identifier for the task
+        self.task_text: str = "Put the objects on the desk into the middle drawer" # Never change this. Policy language conditioning is irrelevant for this project
 
         # ========== Labeling Requirements ==========
         self.required_responses_per_state: int = 1  # Non-critical states
@@ -134,9 +134,11 @@ class CrowdInterfaceConfig:
                 "socket": str((repo_root / "public" / "assets" / "socket.stl").resolve()),
             }
         elif self.task_name == "sorting":
-            self.objects: dict[str, str] = {"container_green": "Green Container"}
+            self.objects: dict[str, str] = {"Cube_Yellow": "Yellow cube", "Cube_Green": "Green cube", "Cube_Cyan": "Cyan cube"}
             self.object_mesh_paths: dict[str, str] = {
-                "container_green": str((repo_root / "public" / "assets" / "container.stl").resolve()),
+                "Cube_Yellow": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+                "Cube_Green": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+                "Cube_Cyan": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
             }
         else:
             self.objects: dict[str, str] = {}
