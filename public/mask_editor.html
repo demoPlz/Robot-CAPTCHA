@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pose Exclusion Mask Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: #0f0f13;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 0.85rem;
+      color: #888;
+      margin-bottom: 16px;
+    }
+    .canvas-wrapper {
+      position: relative;
+      border: 2px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: crosshair;
+      background: #1a1a22;
+    }
+    canvas {
+      display: block;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      padding: 8px 18px;
+      border: 1px solid #444;
+      border-radius: 6px;
+      background: #1e1e28;
+      color: #ccc;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    button:hover { background: #2a2a38; border-color: #666; color: #fff; }
+    button.primary { background: #1a6b3c; border-color: #2a9d54; color: #fff; }
+    button.primary:hover { background: #22844a; }
+    button.danger { background: #6b1a1a; border-color: #9d2a2a; color: #fff; }
+    button.danger:hover { background: #842222; }
+    .status {
+      margin-top: 12px;
+      font-size: 0.8rem;
+      color: #888;
+      min-height: 1.2em;
+      text-align: center;
+    }
+    .status.ok { color: #4caf50; }
+    .status.err { color: #f44336; }
+    .info {
+      margin-top: 16px;
+      font-size: 0.78rem;
+      color: #666;
+      max-width: 660px;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .poly-count {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎯 Pose Exclusion Mask Editor</h1>
+  <p class="subtitle">Draw polygons to mask out regions from LangSAM detection</p>
+
+  <div class="canvas-wrapper" id="canvasWrapper">
+    <canvas id="canvas" width="640" height="480"></canvas>
+  </div>
+
+  <div class="toolbar">
+    <button onclick="undoLastPoint()">⬅ Undo Point</button>
+    <button onclick="finishPolygon()">✓ Finish Polygon</button>
+    <button onclick="deleteLastPolygon()" class="danger">🗑 Delete Last Polygon</button>
+    <button onclick="clearAll()" class="danger">✖ Clear All</button>
+    <button onclick="saveMask()" class="primary">💾 Save Mask</button>
+    <button onclick="refreshImage()">🔄 Refresh Image</button>
+  </div>
+
+  <div class="poly-count" id="polyCount">Polygons: 0 | Current points: 0</div>
+  <div class="status" id="status">Click on the image to start drawing a polygon</div>
+
+  <div class="info">
+    <strong>Instructions:</strong> Click to place polygon vertices. Click "Finish Polygon" to close it (or right-click).
+    Draw multiple polygons to mask different regions.
+    The masked regions will be whited-out before LangSAM processes the image.
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const polyCountEl = document.getElementById('polyCount');
+
+    // Backend URL — same origin
+    const API_BASE = '';
+
+    // State
+    let bgImage = null;        // The camera image as an Image object
+    let polygons = [];          // Array of completed polygons, each is [[x,y], ...]
+    let currentPoints = [];     // Points being drawn for the current polygon
+
+    // --- Image loading ---
+    async function loadCameraImage() {
+      try {
+        const res = await fetch(`${API_BASE}/api/monitor/latest-state`, {
+          headers: { 'X-Monitor-Auth': 'admin' }
+        });
+        const data = await res.json();
+        const obs = data.views?.obs_main;
+        if (!obs) {
+          setStatus('No obs_main image available. Is the robot running?', 'err');
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          bgImage = img;
+          // Set canvas to actual image size
+          canvas.width = img.width;
+          canvas.height = img.height;
+          redraw();
+          setStatus('Image loaded. Click to draw polygon vertices.', 'ok');
+        };
+        img.onerror = () => setStatus('Failed to decode image', 'err');
+        img.src = obs;
+      } catch (e) {
+        setStatus(`Failed to fetch image: ${e.message}`, 'err');
+      }
+    }
+
+    async function loadSavedMask() {
+      try {
+        const res = await fetch(`${API_BASE}/api/control/pose-mask`, {
+          headers: { 'X-Monitor-Auth': 'admin' }
+        });
+        const data = await res.json();
+        if (data.polygons && data.polygons.length > 0) {
+          polygons = data.polygons;
+          redraw();
+          updatePolyCount();
+          setStatus(`Loaded ${polygons.length} saved polygon(s)`, 'ok');
+        }
+      } catch (e) {
+        // No saved mask, that's fine
+      }
+    }
+
+    function refreshImage() {
+      loadCameraImage();
+    }
+
+    // --- Drawing ---
+    function redraw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Background image
+      if (bgImage) {
+        ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = '#1a1a22';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#555';
+        ctx.font = '16px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No image loaded — click "Refresh Image"', canvas.width / 2, canvas.height / 2);
+      }
+
+      // Draw completed polygons (semi-transparent white fill + outline)
+      for (const poly of polygons) {
+        drawPolygon(poly, 'rgba(255,255,255,0.35)', 'rgba(255,100,100,0.9)', true);
+      }
+
+      // Draw current polygon in-progress
+      if (currentPoints.length > 0) {
+        drawPolygon(currentPoints, 'rgba(0,200,255,0.15)', 'rgba(0,200,255,0.9)', false);
+
+        // Draw vertices
+        for (const [x, y] of currentPoints) {
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = '#00c8ff';
+          ctx.fill();
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+    }
+
+    function drawPolygon(points, fillColor, strokeColor, closed) {
+      if (points.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i][0], points[i][1]);
+      }
+      if (closed) ctx.closePath();
+
+      if (closed && fillColor) {
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+      }
+
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // --- Interaction ---
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = Math.round((e.clientX - rect.left) * scaleX);
+      const y = Math.round((e.clientY - rect.top) * scaleY);
+
+      currentPoints.push([x, y]);
+      redraw();
+      updatePolyCount();
+    });
+
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      finishPolygon();
+    });
+
+    function finishPolygon() {
+      if (currentPoints.length < 3) {
+        setStatus('Need at least 3 points to form a polygon', 'err');
+        return;
+      }
+      polygons.push([...currentPoints]);
+      currentPoints = [];
+      redraw();
+      updatePolyCount();
+      setStatus(`Polygon ${polygons.length} completed. Draw another or save.`, 'ok');
+    }
+
+    function undoLastPoint() {
+      if (currentPoints.length > 0) {
+        currentPoints.pop();
+        redraw();
+        updatePolyCount();
+      } else if (polygons.length > 0) {
+        setStatus('No points to undo. Use "Delete Last Polygon" to remove completed polygons.', 'err');
+      }
+    }
+
+    function deleteLastPolygon() {
+      if (polygons.length > 0) {
+        polygons.pop();
+        redraw();
+        updatePolyCount();
+        setStatus(`Deleted. ${polygons.length} polygon(s) remaining.`, 'ok');
+      }
+    }
+
+    function clearAll() {
+      polygons = [];
+      currentPoints = [];
+      redraw();
+      updatePolyCount();
+      setStatus('All polygons cleared.', 'ok');
+    }
+
+    async function saveMask() {
+      // Include current in-progress polygon if it has 3+ points
+      if (currentPoints.length >= 3) {
+        polygons.push([...currentPoints]);
+        currentPoints = [];
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/control/pose-mask`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Monitor-Auth': 'admin'
+          },
+          body: JSON.stringify({ polygons })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          setStatus(`✅ Saved ${polygons.length} polygon(s) to ${data.path}`, 'ok');
+        } else {
+          setStatus(`❌ Save failed: ${data.message}`, 'err');
+        }
+      } catch (e) {
+        setStatus(`❌ Save error: ${e.message}`, 'err');
+      }
+      redraw();
+      updatePolyCount();
+    }
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (type ? ` ${type}` : '');
+    }
+
+    function updatePolyCount() {
+      polyCountEl.textContent = `Polygons: ${polygons.length} | Current points: ${currentPoints.length}`;
+    }
+
+    // --- Init ---
+    loadCameraImage();
+    loadSavedMask();
+
+    // Auto-refresh image every 3 seconds
+    setInterval(loadCameraImage, 3000);
+  </script>
+</body>
+</html>

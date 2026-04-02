@@ -1116,6 +1116,47 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/pose-mask", methods=["GET"])
+    @require_monitor_auth
+    def get_pose_mask():
+        """Get saved polygon exclusion mask for LangSAM."""
+        try:
+            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / "pose_exclusion_mask.json"
+            if mask_path.exists():
+                with open(mask_path, "r") as f:
+                    data = json.load(f)
+                return jsonify(data)
+            return jsonify({"polygons": []})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/pose-mask", methods=["POST"])
+    @require_monitor_auth
+    def save_pose_mask():
+        """Save polygon exclusion mask for LangSAM."""
+        try:
+            data = request.get_json(force=True, silent=True)
+            if data is None or "polygons" not in data:
+                return jsonify({"status": "error", "message": "Missing 'polygons' field"}), 400
+
+            mask_path = Path(__file__).resolve().parent.parent / "data" / "calib" / "pose_exclusion_mask.json"
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(mask_path, "w") as f:
+                json.dump({"polygons": data["polygons"]}, f, indent=2)
+
+            # Invalidate cached mask in estimate_pose module
+            try:
+                from any6d.estimate_pose import invalidate_exclusion_mask_cache
+                invalidate_exclusion_mask_cache()
+            except Exception:
+                pass
+
+            print(f"💾 Saved pose exclusion mask with {len(data['polygons'])} polygon(s) to {mask_path}")
+            return jsonify({"status": "ok", "path": str(mask_path), "num_polygons": len(data["polygons"])})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     # =========================
     # Phase 2 Checkpoint Endpoint
     # =========================

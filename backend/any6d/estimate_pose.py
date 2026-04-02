@@ -53,6 +53,57 @@ def _get_langsam() -> LangSAM:
     return _LANGSAM_SINGLETON
 
 
+# ------------------------- Exclusion mask -------------------------
+
+_EXCLUSION_MASK_CACHE: Optional[list] = None  # None = not loaded, [] = no mask
+_EXCLUSION_MASK_PATH = _REPO_ROOT / "data" / "calib" / "pose_exclusion_mask.json"
+
+
+def _load_exclusion_mask() -> list:
+    """Load polygon exclusion mask from disk (cached)."""
+    global _EXCLUSION_MASK_CACHE
+    if _EXCLUSION_MASK_CACHE is not None:
+        return _EXCLUSION_MASK_CACHE
+    try:
+        import json
+        if _EXCLUSION_MASK_PATH.exists():
+            with open(_EXCLUSION_MASK_PATH, "r") as f:
+                data = json.load(f)
+            polys = data.get("polygons", [])
+            if polys:
+                print(f"🎭 Loaded {len(polys)} exclusion polygon(s) from {_EXCLUSION_MASK_PATH}", flush=True)
+            _EXCLUSION_MASK_CACHE = polys
+        else:
+            _EXCLUSION_MASK_CACHE = []
+    except Exception as e:
+        print(f"⚠️  Failed to load exclusion mask: {e}", flush=True)
+        _EXCLUSION_MASK_CACHE = []
+    return _EXCLUSION_MASK_CACHE
+
+
+def invalidate_exclusion_mask_cache() -> None:
+    """Clear the cached exclusion mask so it's reloaded on next use."""
+    global _EXCLUSION_MASK_CACHE
+    _EXCLUSION_MASK_CACHE = None
+    print("🎭 Exclusion mask cache invalidated", flush=True)
+
+
+def _apply_exclusion_mask(rgb_np: np.ndarray) -> np.ndarray:
+    """White-out exclusion polygons on a copy of the image.
+    
+    Returns the masked copy (original is not modified).
+    If no mask is configured, returns the original array directly (no copy).
+    """
+    polys = _load_exclusion_mask()
+    if not polys:
+        return rgb_np
+    masked = rgb_np.copy()
+    for poly_pts in polys:
+        pts = np.array(poly_pts, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.fillPoly(masked, [pts], color=(255, 255, 255))
+    return masked
+
+
 # ------------------------- Reusable engines -------------------------
 
 
@@ -356,7 +407,9 @@ def estimate_pose_from_tensors(
 
         reset_tracking(engines)
 
-        image_pil = Image.fromarray(rgb_np)
+        # Apply exclusion mask (white-out containers etc.) before LangSAM
+        rgb_for_langsam = _apply_exclusion_mask(rgb_np)
+        image_pil = Image.fromarray(rgb_for_langsam)
         out = langsam.predict([image_pil], [language_prompt])[0]
         masks = np.asarray(out.get("masks", []))
 
