@@ -462,14 +462,23 @@ def estimate_pose_from_tensors(
 
     # ---- Sanity checks on mask area
     area = int(ob_mask.sum())
+    lang_area = int(lang_mask.sum())
+    print(f"[PoseEst] 📐 '{language_prompt}': lang_mask_area={lang_area}, depth_filtered_area={area}, bounds=[{mask_min_pixels}, {mask_max_pixels}]")
+
     if area < mask_min_pixels or (mask_max_pixels > 0 and area > mask_max_pixels):
+        # If area is 0 or below minimum, treat as "not detected" — the object isn't really there
+        # (GDINO found something, but depth intersection proves it's not a real object)
+        is_absent = (area == 0)
+        reason = "not_detected" if is_absent else "mask area out of bounds"
+        if is_absent:
+            print(f"[PoseEst] 👻 '{language_prompt}': mask_area=0 after depth filtering — treating as absent")
         return PoseOutput(
             success=False,
             pose_cam_T_obj=None,
             mask=torch.from_numpy(ob_mask),
             bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
             to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
-            extras={"mask_area": area, "reason": "mask area out of bounds"},
+            extras={"mask_area": area, "reason": reason},
         )
 
     # ---- Validate depth quality in masked region
