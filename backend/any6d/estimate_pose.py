@@ -418,8 +418,24 @@ def estimate_pose_from_tensors(
         out = langsam.predict([image_pil], [language_prompt])[0]
         masks = np.asarray(out.get("masks", []))
 
-        scores = np.asarray(out["mask_scores"])
-        idx = int(np.argmax(scores)) if scores.size else 0
+        # Check GDINO detection scores — if empty, the object was not detected at all
+        gdino_scores = np.asarray(out.get("scores", []))
+        mask_scores = np.asarray(out.get("mask_scores", []))
+
+        if gdino_scores.size == 0 or masks.size == 0:
+            # Object is not present in the scene — no GDINO detections passed threshold
+            return PoseOutput(
+                success=False,
+                pose_cam_T_obj=None,
+                mask=None,
+                bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
+                to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
+                extras={"reason": "not_detected",
+                        "error": f"Object not detected by GDINO (prompt: '{language_prompt}')"},
+            )
+
+        idx = int(np.argmax(mask_scores)) if mask_scores.size else 0
+        best_gdino_score = float(gdino_scores[idx]) if idx < gdino_scores.size else 0.0
         lang_mask = masks[idx].astype(bool) if masks.size else np.zeros((H, W), dtype=bool)
     except Exception as e:
         return PoseOutput(

@@ -693,8 +693,11 @@ class IsaacSimWorker:
         for obj_name, pose in object_states.items():
             if pose:
                 print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
+            else:
+                print(f"[Worker]    {obj_name}: ABSENT (will be hidden)")
 
         # Dynamically set poses for all configured objects
+        from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
         for obj_name, obj_prim in self.objects.items():
             # Skip non-RigidPrim objects (like trays)
             if obj_name in ["tray_01", "tray_02", "tray_03"]:
@@ -703,9 +706,19 @@ class IsaacSimWorker:
             if obj_prim and obj_prim.is_valid():
                 state = object_states.get(obj_name)
                 if state:
+                    # Object detected — show it and set pose
+                    obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
+                    if obj_usd_prim and obj_usd_prim.IsValid():
+                        set_prim_visibility(obj_usd_prim, True)
                     pos = np.array(state["pos"])
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                     obj_prim.set_world_pose(position=pos, orientation=rot)
+                else:
+                    # Object absent (None pose) — hide it in sim
+                    obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
+                    if obj_usd_prim and obj_usd_prim.IsValid():
+                        set_prim_visibility(obj_usd_prim, False)
+                        print(f"[Worker]    👻 Hidden {obj_name} (not detected in scene)")
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -1051,6 +1064,7 @@ class IsaacSimWorker:
 
         import numpy as np
         import omni.usd
+        from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
         from pxr import Gf, UsdGeom
 
         object_states = config.get("object_poses", {})
@@ -1059,6 +1073,9 @@ class IsaacSimWorker:
         for user_id, env_data in self.user_environments.items():
             try:
                 self.robot.set_joint_positions(np.zeros(8, dtype=float))
+
+                # Determine world path for this user
+                world_path = "/World" if user_id == 0 else f"/Env_{user_id}"
 
                 # Update object poses for ALL environments using appropriate object references
                 if user_id == 0:
@@ -1071,12 +1088,21 @@ class IsaacSimWorker:
                             continue
                             
                         if obj_name in self.objects and self.objects[obj_name]:
-                            if state is not None:  # Skip if pose estimation failed
+                            obj_prim_ref = self.objects[obj_name]
+                            if state is not None:  # Object present — show and position
+                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
+                                if obj_usd_prim and obj_usd_prim.IsValid():
+                                    set_prim_visibility(obj_usd_prim, True)
                                 pos = np.array(state["pos"])
                                 rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                                self.objects[obj_name].set_world_pose(position=pos, orientation=rot)
-                                self.objects[obj_name].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                                self.objects[obj_name].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                                obj_prim_ref.set_world_pose(position=pos, orientation=rot)
+                                obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                            else:
+                                # Object absent — hide it
+                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
+                                if obj_usd_prim and obj_usd_prim.IsValid():
+                                    set_prim_visibility(obj_usd_prim, False)
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
@@ -1093,16 +1119,28 @@ class IsaacSimWorker:
                             continue
                             
                         state = object_states[obj_name]
-                        if state is None:  # Skip if pose estimation failed
+
+                        # For Tennis ball, use lowercase naming convention for scene registry
+                        scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
+
+                        if state is None:
+                            # Object absent — hide it in cloned environment
+                            obj_path = f"{world_path}/{obj_name}"
+                            obj_usd_prim = get_prim_at_path(obj_path)
+                            if obj_usd_prim and obj_usd_prim.IsValid():
+                                set_prim_visibility(obj_usd_prim, False)
                             continue
+
+                        # Object present — show and position with offset
+                        obj_path = f"{world_path}/{obj_name}"
+                        obj_usd_prim = get_prim_at_path(obj_path)
+                        if obj_usd_prim and obj_usd_prim.IsValid():
+                            set_prim_visibility(obj_usd_prim, True)
 
                         # CRITICAL: Apply spatial offset to object position
                         original_pos = np.array(state["pos"])
                         offset_pos = original_pos + spatial_offset
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-
-                        # For Tennis ball, use lowercase naming convention for scene registry
-                        scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
                         # Set object position using scene registry with offset
                         if self.world.scene.object_exists(scene_name):
@@ -1708,6 +1746,8 @@ class IsaacSimWorker:
                 },
             )
 
+            from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
+
             if user_id == 0:
                 # User 0: Use original object references - reset to absolute positions
                 # Dynamically iterate over all objects in config (works for any task)
@@ -1715,37 +1755,60 @@ class IsaacSimWorker:
                     # Skip non-RigidPrim objects (trays handled separately in drawer reset)
                     if obj_name in ["tray_01", "tray_02", "tray_03"]:
                         continue
-                    if state is None:  # Skip if pose estimation failed
-                        continue
                     if obj_name in self.objects and self.objects[obj_name] is not None:
-                        pos = np.array(state["pos"])
-                        rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-                        if self.objects[obj_name].is_valid():
-                            self.objects[obj_name].set_world_pose(position=pos, orientation=rot)
-                            self.objects[obj_name].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                            self.objects[obj_name].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        obj_prim_ref = self.objects[obj_name]
+                        if state is not None:
+                            # Object present — show and position
+                            if obj_prim_ref.is_valid():
+                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
+                                if obj_usd_prim and obj_usd_prim.IsValid():
+                                    set_prim_visibility(obj_usd_prim, True)
+                                pos = np.array(state["pos"])
+                                rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
+                                obj_prim_ref.set_world_pose(position=pos, orientation=rot)
+                                obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        else:
+                            # Object absent — hide it
+                            if obj_prim_ref.is_valid():
+                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
+                                if obj_usd_prim and obj_usd_prim.IsValid():
+                                    set_prim_visibility(obj_usd_prim, False)
 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
 
                 # Calculate the spatial offset for this environment (same as sync logic)
                 spatial_offset = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, 0])
+                world_path = f"/Env_{user_id}"
 
                 # Dynamically reset all objects using scene registry with spatial offset
                 for obj_name, state in object_states.items():
                     # Skip non-RigidPrim objects (trays handled separately)
                     if obj_name in ["tray_01", "tray_02", "tray_03"]:
                         continue
-                    if state is None:  # Skip if pose estimation failed
+
+                    # For Tennis ball, use lowercase naming convention for scene registry
+                    scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
+
+                    if state is None:
+                        # Object absent — hide it
+                        obj_path = f"{world_path}/{obj_name}"
+                        obj_usd_prim = get_prim_at_path(obj_path)
+                        if obj_usd_prim and obj_usd_prim.IsValid():
+                            set_prim_visibility(obj_usd_prim, False)
                         continue
+
+                    # Object present — show and position with offset
+                    obj_path = f"{world_path}/{obj_name}"
+                    obj_usd_prim = get_prim_at_path(obj_path)
+                    if obj_usd_prim and obj_usd_prim.IsValid():
+                        set_prim_visibility(obj_usd_prim, True)
 
                     # CRITICAL: Apply spatial offset to object position (same as sync)
                     original_pos = np.array(state["pos"])
                     offset_pos = original_pos + spatial_offset
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
-
-                    # For Tennis ball, use lowercase naming convention for scene registry
-                    scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
                     # Try to get object from scene registry
                     if self.world.scene.object_exists(scene_name):

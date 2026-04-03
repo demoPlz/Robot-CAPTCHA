@@ -1503,6 +1503,86 @@ class StateManager:
 
             return True
 
+    def redo_pose_estimation(self, episode_id: int, state_id: int) -> bool:
+        """Re-run pose estimation for an existing state.
+
+        Clears existing object_poses, re-enqueues pose jobs, waits for results,
+        and re-triggers sim capture. Used when pose estimation produced bad results
+        or after adjusting exclusion masks.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+
+        Returns:
+            bool: True if redo was successful
+        """
+        import threading
+
+        # Look up the state
+        with self.state_lock:
+            ep = self.pending_states_by_episode.get(episode_id)
+            if not ep or state_id not in ep:
+                print(f"⚠️  redo_pose_estimation: state {state_id} not found in episode {episode_id}")
+                return False
+
+            state_info = ep[state_id]
+
+            if not state_info.get("critical", False):
+                print(f"⚠️  redo_pose_estimation: state {state_id} is not a critical state")
+                return False
+
+            # Clear existing object_poses so pose estimation runs fresh
+            if "object_poses" in state_info:
+                old_poses = list(state_info["object_poses"].keys())
+                state_info["object_poses"] = {}
+                print(f"🔄 Cleared existing object_poses for state {state_id}: {old_poses}")
+
+            # Clear skip flag if set
+            state_info.pop("skip_pose_estimation", None)
+
+            # Mark sim as not ready (will be re-triggered after new poses)
+            if self.use_sim:
+                state_info["sim_ready"] = False
+
+            # Take a snapshot of the state info for the pose job
+            info_snapshot = state_info
+
+        print(f"🔄 Redoing pose estimation for episode={episode_id}, state={state_id}...")
+
+        # Run pose estimation + sim capture in a background thread so we don't block the endpoint
+        def _redo_worker():
+            try:
+                # Re-enqueue pose jobs and wait for results
+                poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
+                    episode_id, state_id, info_snapshot, wait=True, timeout_s=None
+                )
+
+                if poses_ready:
+                    print(f"✅ Pose estimation redo complete for state {state_id}")
+                else:
+                    print(f"⚠️  Pose estimation redo timed out for state {state_id}")
+
+                # Re-trigger sim capture if using sim and poses are ready
+                if self.use_sim and poses_ready:
+                    with self.state_lock:
+                        ep = self.pending_states_by_episode.get(episode_id)
+                        if ep and state_id in ep:
+                            current_info = ep[state_id]
+                            current_info["sim_ready"] = False
+                            self.sim_manager.enqueue_sim_capture(episode_id, state_id, current_info)
+                            print(f"🎬 Re-triggered sim capture for state {state_id}")
+
+            except Exception as e:
+                print(f"❌ redo_pose_estimation worker error: {e}")
+                import traceback
+                traceback.print_exc()
+
+        thread = threading.Thread(target=_redo_worker, daemon=True, name=f"redo-pose-{episode_id}-{state_id}")
+        thread.start()
+
+        return True
+
     # =========================
     # Pre-Execution Approval (New)
     # =========================

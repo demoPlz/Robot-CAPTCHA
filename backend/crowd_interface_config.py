@@ -134,11 +134,11 @@ class CrowdInterfaceConfig:
                 "socket": str((repo_root / "public" / "assets" / "socket.stl").resolve()),
             }
         elif self.task_name == "sorting":
-            self.objects: dict[str, str] = {"Cube_Yellow": "Yellow cube", "Cube_Green": "Green cube", "Cube_Cyan": "Cyan cube"}
+            self.objects: dict[str, str] = {"Cube_Yellow": "Yellow cube (NOT GREEN)", "Cube_Green": "Green cube (NOT YELLOW)", "Cube_Red": "Red cube"}
             self.object_mesh_paths: dict[str, str] = {
                 "Cube_Yellow": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
                 "Cube_Green": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
-                "Cube_Cyan": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
+                "Cube_Red": str((repo_root / "public" / "assets" / "cube.obj").resolve()),
             }
         else:
             self.objects: dict[str, str] = {}

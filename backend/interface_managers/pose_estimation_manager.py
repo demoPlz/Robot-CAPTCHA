@@ -479,7 +479,10 @@ class PoseEstimationManager:
                         retry_job_data = None
                         obs_path_for_retry = None
                         
-                        if pose_world is None:
+                        # Check if object was simply not detected (not in scene) — skip retries
+                        not_detected = result.get("reason") == "not_detected"
+                        
+                        if pose_world is None and not not_detected:
                             retry_count = result.get("retry_count", 0)
                             max_retries = 5
                             
@@ -533,23 +536,28 @@ class PoseEstimationManager:
                                 st["object_poses"] = {}
 
                             if pose_world is None:
-                                retry_count = result.get("retry_count", 0)
-                                max_retries = 5
-                                
-                                # Max retries exceeded or retry enqueue failed - use fallback
-                                if retry_count >= max_retries:
-                                    print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
-                                
-                                fallback_pose = self.last_known_poses.get(obj)
-                                if fallback_pose is not None:
-                                    print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
-                                    print(
-                                        f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}"
-                                    )
-                                    st["object_poses"][obj] = fallback_pose
-                                else:
-                                    print(f"❌ Pose estimation failed for {obj} and no previous pose available")
+                                if not_detected:
+                                    # Object not in scene — mark as absent, don't use fallback
+                                    print(f"👻 [{obj}] Not detected in scene — marking as absent (will be hidden in sim)")
                                     st["object_poses"][obj] = None
+                                else:
+                                    retry_count = result.get("retry_count", 0)
+                                    max_retries = 5
+                                    
+                                    # Max retries exceeded or retry enqueue failed - use fallback
+                                    if retry_count >= max_retries:
+                                        print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
+                                    
+                                    fallback_pose = self.last_known_poses.get(obj)
+                                    if fallback_pose is not None:
+                                        print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
+                                        print(
+                                            f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}"
+                                        )
+                                        st["object_poses"][obj] = fallback_pose
+                                    else:
+                                        print(f"❌ Pose estimation failed for {obj} and no previous pose available")
+                                        st["object_poses"][obj] = None
                             else:
                                 # SUCCESS: Store the new pose and update last known pose
                                 st["object_poses"][obj] = pose_world

@@ -525,8 +525,8 @@ class PersistentWorkerManager:
             
             # Use longer timeout for initialization commands since they load USD and create scene
             action = command.get("action", "")
-            if action in ["initialize_and_capture", "initialize_animation"]:
-                timeout = 120  # 2 minutes for initialization commands
+            if action in ["initialize_and_capture", "initialize_animation", "sync_animation_environments"]:
+                timeout = 120  # 2 minutes for initialization/sync commands
             else:
                 timeout = 30  # 30 seconds for regular commands
 
