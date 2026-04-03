@@ -419,11 +419,18 @@ def estimate_pose_from_tensors(
         masks = np.asarray(out.get("masks", []))
 
         # Check GDINO detection scores — if empty, the object was not detected at all
-        gdino_scores = np.asarray(out.get("scores", []))
-        mask_scores = np.asarray(out.get("mask_scores", []))
+        # np.atleast_1d handles scalar returns (single detection → 0-d array)
+        gdino_scores = np.atleast_1d(np.asarray(out.get("scores", [])))
+        mask_scores = np.atleast_1d(np.asarray(out.get("mask_scores", [])))
+        if masks.ndim == 2:
+            masks = masks[np.newaxis]  # (H,W) → (1,H,W)
+
+        # Log detection scores for tuning absence threshold
+        print(f"[PoseEst] 🔍 '{language_prompt}': GDINO scores={gdino_scores.tolist()}, mask_scores={mask_scores.tolist()}, num_detections={gdino_scores.size}")
 
         if gdino_scores.size == 0 or masks.size == 0:
             # Object is not present in the scene — no GDINO detections passed threshold
+            print(f"[PoseEst] 👻 '{language_prompt}': NOT DETECTED (0 detections passed threshold)")
             return PoseOutput(
                 success=False,
                 pose_cam_T_obj=None,
@@ -434,9 +441,11 @@ def estimate_pose_from_tensors(
                         "error": f"Object not detected by GDINO (prompt: '{language_prompt}')"},
             )
 
-        idx = int(np.argmax(mask_scores)) if mask_scores.size else 0
+        idx = int(np.argmax(mask_scores))
         best_gdino_score = float(gdino_scores[idx]) if idx < gdino_scores.size else 0.0
-        lang_mask = masks[idx].astype(bool) if masks.size else np.zeros((H, W), dtype=bool)
+        best_mask_score = float(mask_scores[idx]) if idx < mask_scores.size else 0.0
+        print(f"[PoseEst] ✅ '{language_prompt}': best detection idx={idx}, gdino_score={best_gdino_score:.4f}, mask_score={best_mask_score:.4f}")
+        lang_mask = masks[idx].astype(bool)
     except Exception as e:
         return PoseOutput(
             success=False,
