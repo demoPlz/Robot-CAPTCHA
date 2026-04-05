@@ -577,6 +577,24 @@ class StateManager:
                 return
             info = ep[latest_state_id]
 
+            # Inherit active_objects from previous critical state if not set on this one
+            if "active_objects" not in info:
+                # Search all state pools for previous critical states with active_objects
+                all_pools = [
+                    self.pending_states_by_episode.get(latest_episode_id, {}),
+                    self.completed_states_buffer_by_episode.get(latest_episode_id, {}),
+                    self.completed_states_by_episode.get(latest_episode_id, {}),
+                ]
+                prev_active = None
+                for pool in all_pools:
+                    for sid, sinfo in pool.items():
+                        if sid < latest_state_id and sinfo.get("critical") and "active_objects" in sinfo:
+                            if prev_active is None or sid > prev_active[0]:
+                                prev_active = (sid, sinfo["active_objects"])
+                if prev_active:
+                    info["active_objects"] = list(prev_active[1])
+                    print(f"📋 Inherited active_objects from state {prev_active[0]}: {info['active_objects']}")
+
         # Skip pose estimation if flag is set (poses already copied from last critical state)
         if info.get("skip_pose_estimation", False):
             print(f"⏭️  Skipping pose estimation (reusing poses from previous critical state)")
@@ -1414,13 +1432,15 @@ class StateManager:
                     "previous_critical_obs_path": previous_critical_obs_path,
                 }
 
-    def approve_critical_state(self, episode_id: int, state_id: int, skip_pose_estimation: bool = False) -> bool:
+    def approve_critical_state(self, episode_id: int, state_id: int, skip_pose_estimation: bool = False, active_objects: list | None = None) -> bool:
         """Approve a pending critical state (post-execution approval).
         
         Args:
             episode_id: Episode ID
             state_id: State ID  
             skip_pose_estimation: If True, reuse object poses from last critical state instead of running pose estimation
+            active_objects: Optional list of object keys to process (e.g., ["Cube_Yellow", "Cube_Red"]).
+                           Objects not in this list will be skipped and hidden in sim.
             
         Returns:
             bool: True if approval was successful
@@ -1442,6 +1462,11 @@ class StateManager:
                     if state_id in self.pending_states_by_episode[episode_id]:
                         state_info = self.pending_states_by_episode[episode_id][state_id]
                         state_info["approval_status"] = "approved"
+                        
+                        # Store active_objects selection for pose estimation filtering
+                        if active_objects:
+                            state_info["active_objects"] = active_objects
+                            print(f"🎯 Active objects for state {state_id}: {active_objects}")
                         
                         # Handle pose estimation skip
                         if skip_pose_estimation:

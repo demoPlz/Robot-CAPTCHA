@@ -735,6 +735,23 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 if img is not None:
                     previous_image_url = crowd_interface.encode_jpeg_base64(img)
 
+            # Look up inherited active_objects from previous critical state
+            inherited_active_objects = None
+            with crowd_interface.state_manager.state_lock:
+                all_pools = [
+                    crowd_interface.state_manager.pending_states_by_episode.get(pending["episode_id"], {}),
+                    crowd_interface.state_manager.completed_states_buffer_by_episode.get(pending["episode_id"], {}),
+                    crowd_interface.state_manager.completed_states_by_episode.get(pending["episode_id"], {}),
+                ]
+                prev_active = None
+                for pool in all_pools:
+                    for sid, sinfo in pool.items():
+                        if sid < pending["state_id"] and sinfo.get("critical") and "active_objects" in sinfo:
+                            if prev_active is None or sid > prev_active[0]:
+                                prev_active = (sid, sinfo["active_objects"])
+                if prev_active:
+                    inherited_active_objects = prev_active[1]
+
             return jsonify(
                 {
                     "status": "pending",
@@ -743,6 +760,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "current_image_url": current_image_url,
                     "previous_image_url": previous_image_url,
                     "tutorial_state_capture_enabled": crowd_interface.enable_tutorial_state_capture,
+                    "task_name": crowd_interface.task_name or "default",
+                    "all_objects": list((crowd_interface.objects or {}).keys()),
+                    "inherited_active_objects": inherited_active_objects,
                 }
             )
         except Exception as e:
@@ -761,12 +781,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             episode_id = data.get("episode_id")
             state_id = data.get("state_id")
             skip_pose_estimation = data.get("skip_pose_estimation", False)
+            active_objects = data.get("active_objects")  # e.g., ["Cube_Yellow", "Cube_Red"]
 
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
 
             success = crowd_interface.state_manager.approve_critical_state(
-                episode_id, state_id, skip_pose_estimation=skip_pose_estimation
+                episode_id, state_id, skip_pose_estimation=skip_pose_estimation, active_objects=active_objects
             )
 
             if not success:

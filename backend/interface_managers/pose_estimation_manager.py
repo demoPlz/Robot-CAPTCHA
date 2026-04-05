@@ -479,10 +479,7 @@ class PoseEstimationManager:
                         retry_job_data = None
                         obs_path_for_retry = None
                         
-                        # Check if object was simply not detected (not in scene) — skip retries
-                        not_detected = result.get("reason") == "not_detected"
-                        
-                        if pose_world is None and not not_detected:
+                        if pose_world is None:
                             retry_count = result.get("retry_count", 0)
                             max_retries = 5
                             
@@ -536,28 +533,23 @@ class PoseEstimationManager:
                                 st["object_poses"] = {}
 
                             if pose_world is None:
-                                if not_detected:
-                                    # Object not in scene — mark as absent, don't use fallback
-                                    print(f"👻 [{obj}] Not detected in scene — marking as absent (will be hidden in sim)")
-                                    st["object_poses"][obj] = None
+                                retry_count = result.get("retry_count", 0)
+                                max_retries = 5
+                                
+                                # Max retries exceeded or retry enqueue failed - use fallback
+                                if retry_count >= max_retries:
+                                    print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
+                                
+                                fallback_pose = self.last_known_poses.get(obj)
+                                if fallback_pose is not None:
+                                    print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
+                                    print(
+                                        f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}"
+                                    )
+                                    st["object_poses"][obj] = fallback_pose
                                 else:
-                                    retry_count = result.get("retry_count", 0)
-                                    max_retries = 5
-                                    
-                                    # Max retries exceeded or retry enqueue failed - use fallback
-                                    if retry_count >= max_retries:
-                                        print(f"⚠️  Max retries ({max_retries}) exceeded for {obj}")
-                                    
-                                    fallback_pose = self.last_known_poses.get(obj)
-                                    if fallback_pose is not None:
-                                        print(f"⚠️  Pose estimation failed for {obj}, using last known pose:")
-                                        print(
-                                            f"   Fallback: X={fallback_pose['pos'][0]:+.3f}, Y={fallback_pose['pos'][1]:+.3f}, Z={fallback_pose['pos'][2]:+.3f}"
-                                        )
-                                        st["object_poses"][obj] = fallback_pose
-                                    else:
-                                        print(f"❌ Pose estimation failed for {obj} and no previous pose available")
-                                        st["object_poses"][obj] = None
+                                    print(f"❌ Pose estimation failed for {obj} and no previous pose available")
+                                    st["object_poses"][obj] = None
                             else:
                                 # SUCCESS: Store the new pose and update last known pose
                                 st["object_poses"][obj] = pose_world
@@ -619,17 +611,32 @@ class PoseEstimationManager:
 
         # Only process objects that are in self.objects (if objects dict is provided)
         expected_objs = [obj for obj in self.object_mesh_paths.keys() if not self.objects or obj in self.objects]
+
+        # Filter by active_objects if specified (admin-selected subset, e.g., 2 of 3 cubes)
+        active_objects = state_info.get("active_objects")
+        if active_objects:
+            skipped = [obj for obj in expected_objs if obj not in active_objects]
+            expected_objs = [obj for obj in expected_objs if obj in active_objects]
+            # Immediately set skipped objects to None (will be hidden in sim)
+            if skipped:
+                with self.state_lock:
+                    ep = self.pending_states_by_episode.get(episode_id)
+                    if ep and state_id in ep:
+                        st = ep[state_id]
+                        if "object_poses" not in st:
+                            st["object_poses"] = {}
+                        for obj in skipped:
+                            st["object_poses"][obj] = None
+                            print(f"⏭️  [{obj}] Skipped (not in active_objects) — will be hidden in sim")
         
         if not expected_objs:
             # Nothing to do; treat as ready.
             return True
 
         # ---------- Enqueue jobs (do not mark object_poses yet) ----------
-        print(f"📬 Enqueueing pose jobs for episode={episode_id} state={state_id}")
-        for obj, mesh_path in self.object_mesh_paths.items():
-            # Skip objects not in self.objects
-            if self.objects and obj not in self.objects:
-                continue
+        print(f"📬 Enqueueing pose jobs for episode={episode_id} state={state_id} objects={expected_objs}")
+        for obj in expected_objs:
+            mesh_path = self.object_mesh_paths[obj]
                 
             job_id = f"{episode_id}_{state_id}_{obj}_{uuid.uuid4().hex[:8]}"
             job = {

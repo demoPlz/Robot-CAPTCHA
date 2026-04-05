@@ -425,20 +425,17 @@ def estimate_pose_from_tensors(
         if masks.ndim == 2:
             masks = masks[np.newaxis]  # (H,W) → (1,H,W)
 
-        # Log detection scores for tuning absence threshold
+        # Log detection scores for debugging
         print(f"[PoseEst] 🔍 '{language_prompt}': GDINO scores={gdino_scores.tolist()}, mask_scores={mask_scores.tolist()}, num_detections={gdino_scores.size}")
 
         if gdino_scores.size == 0 or masks.size == 0:
-            # Object is not present in the scene — no GDINO detections passed threshold
-            print(f"[PoseEst] 👻 '{language_prompt}': NOT DETECTED (0 detections passed threshold)")
             return PoseOutput(
                 success=False,
                 pose_cam_T_obj=None,
                 mask=None,
                 bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
                 to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
-                extras={"reason": "not_detected",
-                        "error": f"Object not detected by GDINO (prompt: '{language_prompt}')"},
+                extras={"error": f"No GDINO detections for '{language_prompt}'"},
             )
 
         idx = int(np.argmax(mask_scores))
@@ -466,19 +463,13 @@ def estimate_pose_from_tensors(
     print(f"[PoseEst] 📐 '{language_prompt}': lang_mask_area={lang_area}, depth_filtered_area={area}, bounds=[{mask_min_pixels}, {mask_max_pixels}]")
 
     if area < mask_min_pixels or (mask_max_pixels > 0 and area > mask_max_pixels):
-        # If area is 0 or below minimum, treat as "not detected" — the object isn't really there
-        # (GDINO found something, but depth intersection proves it's not a real object)
-        is_absent = (area == 0)
-        reason = "not_detected" if is_absent else "mask area out of bounds"
-        if is_absent:
-            print(f"[PoseEst] 👻 '{language_prompt}': mask_area=0 after depth filtering — treating as absent")
         return PoseOutput(
             success=False,
             pose_cam_T_obj=None,
             mask=torch.from_numpy(ob_mask),
             bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
             to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
-            extras={"mask_area": area, "reason": reason},
+            extras={"mask_area": area, "reason": "mask area out of bounds"},
         )
 
     # ---- Validate depth quality in masked region

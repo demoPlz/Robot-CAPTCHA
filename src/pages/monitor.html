@@ -783,6 +783,31 @@
                         Faster approval - uses previous object positions instead of running pose estimation
                     </div>
                 </div>
+
+                <!-- Object Selection (sorting task only) -->
+                <div id="approval-object-selector" style="display: none; margin-top: 16px; padding: 14px; background: #f0fdf4; border-radius: 8px; border: 1px solid #86efac;">
+                    <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #166534;">🎯 Select 2 cubes present in scene</div>
+                    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 14px; border-radius: 8px; border: 2px solid #eab308; background: #fefce8; transition: all 0.15s;">
+                            <input type="checkbox" class="cube-checkbox" data-object="Cube_Yellow" style="width: 18px; height: 18px; cursor: pointer; accent-color: #eab308;">
+                            <span style="display: inline-block; width: 14px; height: 14px; border-radius: 3px; background: #eab308;"></span>
+                            <span style="font-weight: 500; font-size: 14px;">Yellow</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 14px; border-radius: 8px; border: 2px solid #22c55e; background: #f0fdf4; transition: all 0.15s;">
+                            <input type="checkbox" class="cube-checkbox" data-object="Cube_Green" style="width: 18px; height: 18px; cursor: pointer; accent-color: #22c55e;">
+                            <span style="display: inline-block; width: 14px; height: 14px; border-radius: 3px; background: #22c55e;"></span>
+                            <span style="font-weight: 500; font-size: 14px;">Green</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 14px; border-radius: 8px; border: 2px solid #ef4444; background: #fef2f2; transition: all 0.15s;">
+                            <input type="checkbox" class="cube-checkbox" data-object="Cube_Red" style="width: 18px; height: 18px; cursor: pointer; accent-color: #ef4444;">
+                            <span style="display: inline-block; width: 14px; height: 14px; border-radius: 3px; background: #ef4444;"></span>
+                            <span style="font-weight: 500; font-size: 14px;">Red</span>
+                        </label>
+                    </div>
+                    <div id="cube-selector-hint" style="margin-top: 8px; font-size: 12px; color: #166534;">
+                        Select exactly 2 cubes that are visible in the scene
+                    </div>
+                </div>
             </div>
             <div class="approval-modal-footer">
                 <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
@@ -1766,6 +1791,42 @@
                 // Continue showing modal even if bank fails to load
             }
             
+            // --- Object selector (sorting task only) ---
+            const objSelector = document.getElementById('approval-object-selector');
+            const cubeCheckboxes = document.querySelectorAll('.cube-checkbox');
+            const hint = document.getElementById('cube-selector-hint');
+            
+            if (data.task_name === 'sorting') {
+                objSelector.style.display = 'block';
+                
+                // Reset all checkboxes
+                cubeCheckboxes.forEach(cb => {
+                    cb.checked = false;
+                    cb.disabled = false;
+                    cb.closest('label').style.opacity = '1';
+                });
+                
+                // Pre-check inherited values (from previous critical state in this episode)
+                if (data.inherited_active_objects && data.inherited_active_objects.length > 0) {
+                    cubeCheckboxes.forEach(cb => {
+                        const objKey = cb.getAttribute('data-object');
+                        if (data.inherited_active_objects.includes(objKey)) {
+                            cb.checked = true;
+                        }
+                        // Lock checkboxes since selection is inherited
+                        cb.disabled = true;
+                        cb.closest('label').style.opacity = cb.checked ? '1' : '0.4';
+                    });
+                    hint.textContent = '✅ Inherited from previous critical state (locked)';
+                    hint.style.color = '#15803d';
+                } else {
+                    hint.textContent = 'Select exactly 2 cubes that are visible in the scene';
+                    hint.style.color = '#166534';
+                }
+            } else {
+                objSelector.style.display = 'none';
+            }
+            
             approvalModal.classList.add('show');
         }
 
@@ -1816,6 +1877,18 @@
                     return;
                 }
                 
+                // Gather active_objects for sorting task
+                let activeObjects = null;
+                const objSelector = document.getElementById('approval-object-selector');
+                if (objSelector && objSelector.style.display !== 'none') {
+                    const checked = [...document.querySelectorAll('.cube-checkbox:checked')].map(cb => cb.getAttribute('data-object'));
+                    if (checked.length !== 2) {
+                        showToast('❌ Please select exactly 2 cubes', 2000);
+                        return;
+                    }
+                    activeObjects = checked;
+                }
+                
                 // Then approve the state
                 const skipPoseEstimation = document.getElementById('approval-skip-pose-estimation').checked;
                 const approvalResponse = await fetch(`${API_BASE_URL}/api/control/approve-critical`, {
@@ -1824,7 +1897,8 @@
                     body: JSON.stringify({
                         episode_id: currentApprovalState.episode_id,
                         state_id: currentApprovalState.state_id,
-                        skip_pose_estimation: skipPoseEstimation
+                        skip_pose_estimation: skipPoseEstimation,
+                        active_objects: activeObjects
                     })
                 });
                 
