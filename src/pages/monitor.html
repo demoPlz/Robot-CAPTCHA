@@ -1812,16 +1812,22 @@
                         const objKey = cb.getAttribute('data-object');
                         if (data.inherited_active_objects.includes(objKey)) {
                             cb.checked = true;
+                            cb.disabled = false;  // Unlocked — admin can deselect
+                            cb.closest('label').style.opacity = '1';
+                        } else {
+                            cb.checked = false;
+                            cb.disabled = true;   // Not in inherited set — can't add new ones
+                            cb.closest('label').style.opacity = '0.3';
                         }
-                        // Lock checkboxes since selection is inherited
-                        cb.disabled = true;
-                        cb.closest('label').style.opacity = cb.checked ? '1' : '0.4';
                     });
-                    hint.textContent = '✅ Inherited from previous critical state (locked)';
-                    hint.style.color = '#15803d';
+                    hint.textContent = '⬇️ Uncheck a cube if it\'s been placed (at least 1 must remain)';
+                    hint.style.color = '#0369a1';
+                    // Store inherited count for validation
+                    objSelector.setAttribute('data-inherited', 'true');
                 } else {
                     hint.textContent = 'Select exactly 2 cubes that are visible in the scene';
                     hint.style.color = '#166534';
+                    objSelector.setAttribute('data-inherited', 'false');
                 }
             } else {
                 objSelector.style.display = 'none';
@@ -1882,9 +1888,19 @@
                 const objSelector = document.getElementById('approval-object-selector');
                 if (objSelector && objSelector.style.display !== 'none') {
                     const checked = [...document.querySelectorAll('.cube-checkbox:checked')].map(cb => cb.getAttribute('data-object'));
-                    if (checked.length !== 2) {
-                        showToast('❌ Please select exactly 2 cubes', 2000);
-                        return;
+                    const isInherited = objSelector.getAttribute('data-inherited') === 'true';
+                    if (isInherited) {
+                        // Subsequent state: at least 1
+                        if (checked.length < 1) {
+                            showToast('❌ At least 1 cube must remain selected', 2000);
+                            return;
+                        }
+                    } else {
+                        // First state: exactly 2
+                        if (checked.length !== 2) {
+                            showToast('❌ Please select exactly 2 cubes', 2000);
+                            return;
+                        }
                     }
                     activeObjects = checked;
                 }
