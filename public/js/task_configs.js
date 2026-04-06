@@ -8,9 +8,9 @@ const TASK_CONFIGS = {
     absLimits: {
       x:     { min: 0.10,  max: 0.63  },
       y:     { min: -0.30, max: 0.30  },
-      z:     { min: 0.025, max: 0.40  },
+      z:     { min: 0.025, max: 0.2798  },
       roll:  { min: -1.9,  max: 1.9   },
-      pitch: { min: -1,    max: 1     },
+      pitch: { min: -1,    max: 0.79  },
       yaw:   { min: -0.81, max: 0.81  },
     },
     sliderSpans: {

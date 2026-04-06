@@ -7793,12 +7793,12 @@ loader.load(
         setUrdfFromIK(robot, ikRoot);
       }
 
-      // --- TEMP DEBUG: show joint positions (localhost only) ---
+      // --- TEMP DEBUG: show joint positions + EEF pose (localhost only) ---
       if (!window.isFromNetlify) {
         if (!window._jointDebugEl) {
           const el = document.createElement('div');
           el.id = 'joint-debug-overlay';
-          el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,.75);color:#0f0;font:11px/1.4 monospace;padding:6px 10px;border-radius:4px;z-index:99999;pointer-events:none;';
+          el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,.75);color:#0f0;font:11px/1.4 monospace;padding:6px 10px;border-radius:4px;z-index:99999;pointer-events:none;white-space:pre;';
           document.body.appendChild(el);
           window._jointDebugEl = el;
         }
@@ -7809,7 +7809,14 @@ loader.load(
           const v = Array.isArray(j.jointValue) ? j.jointValue[0] : (j.jointValue || 0);
           return (v * 180 / Math.PI).toFixed(1);
         });
-        window._jointDebugEl.textContent = 'Joints(°): [' + _jVals.join(', ') + ']';
+        // EEF position (from FK) and orientation (from control params)
+        const _eefPos = new THREE.Vector3();
+        eeVis.getWorldPosition(_eefPos);
+        const _r2d = 180 / Math.PI;
+        window._jointDebugEl.textContent =
+          'Joints(°): [' + _jVals.join(', ') + ']\n' +
+          `EEF pos:   [${_eefPos.x.toFixed(4)}, ${_eefPos.y.toFixed(4)}, ${_eefPos.z.toFixed(4)}] m\n` +
+          `EEF rpy:   [${params.roll.toFixed(3)}, ${params.pitch.toFixed(3)}, ${params.yaw.toFixed(3)}] rad`;
       }
 
       // ----- yellow drop lines from finger tips -----
