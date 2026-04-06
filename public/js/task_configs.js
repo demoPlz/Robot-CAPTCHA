@@ -89,6 +89,29 @@ const TASK_CONFIGS = {
     homeGripper: -1,
     hideRobotInTopView: true,
   },
+  sorting: {
+    absLimits: {
+      x:     { min: 0.10,  max: 0.63  },
+      y:     { min: -0.30, max: 0.30  },
+      z:     { min: 0.025, max: 0.2798 },
+      roll:  { min: -1.9,  max: 1.9   },
+      pitch: { min: -1,    max: 0.79  },
+      yaw:   { min: -0.81, max: 0.81  },
+    },
+    sliderSpans: {
+      x: 0.20, y: 0.40, z: 0.20,
+      roll: 1.0, pitch: 0.81, yaw: 0.81,
+    },
+    homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
+    homeGripper: 1,
+    hideRobotInTopView: false,
+    // Preset joint angles (degrees) for positioning above each container
+    containerPresets: [
+      { key: 'red',    color: '#ef4444', label: '', deg: [-62.6, 69.7, 83.3, -79.0, -38.9, -53.9, 2] },
+      { key: 'yellow', color: '#eab308', label: '', deg: [-41.5, 79.3, 88.1, -62.1, -27.9, -32.1, 2] },
+      { key: 'green',  color: '#22c55e', label: '', deg: [-30, 95.6, 102.9, -56.5, -20.7, -22.3, 2] },
+    ],
+  },
 };
 
 /** Get config for the current task (falls back to _default). */

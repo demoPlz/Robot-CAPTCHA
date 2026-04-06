@@ -7569,120 +7569,188 @@ loader.load(
     // Set initial autofill button state
     updateAutofillButtonState();
 
-    // ========== Fine-grain XY Joystick ==========
-    const JOYSTICK_RANGE = 0.03; // ±3cm in meters
-    
-    const joystickCanvas = document.createElement('canvas');
-    joystickCanvas.className = 'joystick-pad';
-    joystickCanvas.width = 88; // 2x for retina
-    joystickCanvas.height = 88;
-    joystickCanvas.title = 'Drag to fine-tune XY position (±3cm)';
-    
-    const jctx = joystickCanvas.getContext('2d');
-    const jR = joystickCanvas.width / 2; // canvas radius
-    const knobR = 12; // knob radius in canvas px
-    let jKnobX = 0, jKnobY = 0; // -1..1 normalized position
-    let jDragging = false;
-    let jPointerId = null;
-    let jStartParamsX = 0, jStartParamsY = 0;
-    
-    function drawJoystick() {
-      const ctx = jctx;
-      const r = jR;
-      ctx.clearRect(0, 0, r * 2, r * 2);
-      
-      // Flat gray socket
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(r, r, r - 1, 0, Math.PI * 2);
-      ctx.fillStyle = '#e5e7eb';
-      ctx.fill();
-      ctx.restore();
-      
-      // White dot (knob)
-      const kx = r + jKnobX * (r - knobR - 2);
-      const ky = r - jKnobY * (r - knobR - 2);
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(kx, ky, knobR, 0, Math.PI * 2);
-      ctx.fillStyle = jDragging ? '#f0f0f0' : '#ffffff';
-      ctx.fill();
-      ctx.shadowColor = 'rgba(0,0,0,0.08)';
-      ctx.shadowBlur = 2;
-      ctx.restore();
-    }
-    
-    function getJoystickNorm(e) {
-      const rect = joystickCanvas.getBoundingClientRect();
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      const dx = (e.clientX - rect.left - cx) / (cx - 4);
-      const dy = -(e.clientY - rect.top - cy) / (cy - 4);
-      const len = Math.sqrt(dx * dx + dy * dy);
-      if (len > 1) return { x: dx / len, y: dy / len };
-      return { x: dx, y: dy };
-    }
-    
-    joystickCanvas.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      joystickCanvas.setPointerCapture(e.pointerId);
-      jDragging = true;
-      jPointerId = e.pointerId;
-      jStartParamsX = params.x;
-      jStartParamsY = params.y;
-      const n = getJoystickNorm(e);
-      jKnobX = n.x;
-      jKnobY = n.y;
-      applyJoystickDelta();
-      drawJoystick();
-    });
-    
-    joystickCanvas.addEventListener('pointermove', (e) => {
-      if (!jDragging || e.pointerId !== jPointerId) return;
-      e.preventDefault();
-      const n = getJoystickNorm(e);
-      jKnobX = n.x;
-      jKnobY = n.y;
-      applyJoystickDelta();
-      drawJoystick();
-    });
-    
-    function joystickRelease(e) {
-      if (e && e.pointerId !== jPointerId) return;
-      jDragging = false;
-      jPointerId = null;
-      jKnobX = 0;
-      jKnobY = 0;
-      drawJoystick();
-    }
-    
-    joystickCanvas.addEventListener('pointerup', joystickRelease);
-    joystickCanvas.addEventListener('pointercancel', joystickRelease);
-    
-    function applyJoystickDelta() {
-      // Flipped: drag up = -X, drag right = +Y
-      const deltaX = -jKnobY * JOYSTICK_RANGE;
-      const deltaY = jKnobX * JOYSTICK_RANGE;
-      
-      params.x = clampToSlider('x', jStartParamsX + deltaX);
-      params.y = clampToSlider('y', jStartParamsY + deltaY);
-      updateGoal();
-      updateSlidersDisplay(['x', 'y']);
-      recordLastGood(['x', 'y']);
-    }
-    
-    drawJoystick();
+    // ========== Fine-grain XY Joystick OR Container Preset Buttons ==========
+    const _taskCfg = getTaskConfig();
+    const containerPresets = _taskCfg.containerPresets;
+    let joystickCanvas = null; // may be null for sorting
 
-    // Add confirm button at the bottom (wrapped for tooltip support)
-    confirmBar.appendChild(confirmBtnWrapper);
-    
-    // Add autofill button next to confirm (for localhost only)
-    confirmBar.appendChild(autofillBtnWrapper);
+    if (containerPresets && containerPresets.length > 0) {
+      // --- SORTING: colored container preset buttons ---
+      const presetContainer = document.createElement('div');
+      presetContainer.style.cssText = 'display:flex;gap:6px;align-items:center;';
 
-    // Place joystick to the LEFT of everything, then Animate, then Confirm
-    // Joystick + Animate to the left of Confirm
-    confirmBar.insertBefore(joystickCanvas, confirmBtnWrapper);
-    confirmBar.insertBefore(animateBtnWrapper, confirmBtnWrapper);
+      function applyContainerPreset(degArray) {
+        cancelAnimationIfRunning('Container Preset');
+        const D2R = Math.PI / 180;
+        const RAD = degArray.map(d => d * D2R);
+        const jointNames = Object.keys(originalBackendJointPositions || {});
+        const count = Math.min(jointNames.length, RAD.length);
+        for (let i = 0; i < count; i++) {
+          robot.setJointValue(jointNames[i], RAD[i]);
+        }
+        robot.updateMatrixWorld(true);
+
+        // Sync IK goal/marker to the new EE pose
+        const p = new THREE.Vector3();
+        const q = new THREE.Quaternion();
+        eeVis.getWorldPosition(p);
+        eeVis.getWorldQuaternion(q);
+        targetPose.pos.copy(p);
+        targetPose.quat.copy(q);
+        marker.position.copy(p);
+        marker.quaternion.copy(q);
+        goal.setPosition(p.x, p.y, p.z - ROBOT_Z_OFFSET);
+        goal.setQuaternion(q.x, q.y, q.z, q.w);
+        params.x = p.x; params.y = p.y; params.z = p.z;
+        params.roll = 0; params.pitch = 0; params.yaw = 0;
+        prevAngles.roll = 0; prevAngles.pitch = 0; prevAngles.yaw = 0;
+
+        // Close gripper (holding a cube)
+        gripDir = -1;
+        drawGripArrows(gripDir);
+        updateGripArrowVisibility();
+        updateGripperButtonStates();
+
+        userHasAdjustedPose = true;
+        revealMinimalRobotFromPose();
+        updateTaskCompletedAvailability();
+        recomputeLocks();
+        updateGripHUDInteractivity();
+        if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
+        if (typeof updateVerifyButtonState === 'function') updateVerifyButtonState();
+      }
+
+      containerPresets.forEach(preset => {
+        const btn = document.createElement('button');
+        btn.style.cssText = `width:36px;height:36px;border:2px solid ${preset.color};background:${preset.color};border-radius:6px;cursor:pointer;transition:transform .1s,box-shadow .1s;`;
+        btn.title = `Move on top of ${preset.key} container`;
+        btn.onmouseenter = () => { btn.style.transform = 'scale(1.15)'; btn.style.boxShadow = `0 0 8px ${preset.color}`; };
+        btn.onmouseleave = () => { btn.style.transform = 'scale(1)'; btn.style.boxShadow = 'none'; };
+        btn.onclick = () => applyContainerPreset(preset.deg);
+        presetContainer.appendChild(btn);
+      });
+
+      // Add confirm button at the bottom (wrapped for tooltip support)
+      confirmBar.appendChild(confirmBtnWrapper);
+      // Add autofill button next to confirm (for localhost only)
+      confirmBar.appendChild(autofillBtnWrapper);
+      // Place preset buttons to the LEFT, then Animate, then Confirm
+      confirmBar.insertBefore(presetContainer, confirmBtnWrapper);
+      confirmBar.insertBefore(animateBtnWrapper, confirmBtnWrapper);
+
+    } else {
+      // --- DEFAULT: XY Joystick ---
+      const JOYSTICK_RANGE = 0.03; // ±3cm in meters
+      
+      joystickCanvas = document.createElement('canvas');
+      joystickCanvas.className = 'joystick-pad';
+      joystickCanvas.width = 88; // 2x for retina
+      joystickCanvas.height = 88;
+      joystickCanvas.title = 'Drag to fine-tune XY position (±3cm)';
+      
+      const jctx = joystickCanvas.getContext('2d');
+      const jR = joystickCanvas.width / 2; // canvas radius
+      const knobR = 12; // knob radius in canvas px
+      let jKnobX = 0, jKnobY = 0; // -1..1 normalized position
+      let jDragging = false;
+      let jPointerId = null;
+      let jStartParamsX = 0, jStartParamsY = 0;
+      
+      function drawJoystick() {
+        const ctx = jctx;
+        const r = jR;
+        ctx.clearRect(0, 0, r * 2, r * 2);
+        
+        // Flat gray socket
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(r, r, r - 1, 0, Math.PI * 2);
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fill();
+        ctx.restore();
+        
+        // White dot (knob)
+        const kx = r + jKnobX * (r - knobR - 2);
+        const ky = r - jKnobY * (r - knobR - 2);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(kx, ky, knobR, 0, Math.PI * 2);
+        ctx.fillStyle = jDragging ? '#f0f0f0' : '#ffffff';
+        ctx.fill();
+        ctx.shadowColor = 'rgba(0,0,0,0.08)';
+        ctx.shadowBlur = 2;
+        ctx.restore();
+      }
+      
+      function getJoystickNorm(e) {
+        const rect = joystickCanvas.getBoundingClientRect();
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const dx = (e.clientX - rect.left - cx) / (cx - 4);
+        const dy = -(e.clientY - rect.top - cy) / (cy - 4);
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 1) return { x: dx / len, y: dy / len };
+        return { x: dx, y: dy };
+      }
+      
+      joystickCanvas.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        joystickCanvas.setPointerCapture(e.pointerId);
+        jDragging = true;
+        jPointerId = e.pointerId;
+        jStartParamsX = params.x;
+        jStartParamsY = params.y;
+        const n = getJoystickNorm(e);
+        jKnobX = n.x;
+        jKnobY = n.y;
+        applyJoystickDelta();
+        drawJoystick();
+      });
+      
+      joystickCanvas.addEventListener('pointermove', (e) => {
+        if (!jDragging || e.pointerId !== jPointerId) return;
+        e.preventDefault();
+        const n = getJoystickNorm(e);
+        jKnobX = n.x;
+        jKnobY = n.y;
+        applyJoystickDelta();
+        drawJoystick();
+      });
+      
+      function joystickRelease(e) {
+        if (e && e.pointerId !== jPointerId) return;
+        jDragging = false;
+        jPointerId = null;
+        jKnobX = 0;
+        jKnobY = 0;
+        drawJoystick();
+      }
+      
+      joystickCanvas.addEventListener('pointerup', joystickRelease);
+      joystickCanvas.addEventListener('pointercancel', joystickRelease);
+      
+      function applyJoystickDelta() {
+        // Flipped: drag up = -X, drag right = +Y
+        const deltaX = -jKnobY * JOYSTICK_RANGE;
+        const deltaY = jKnobX * JOYSTICK_RANGE;
+        
+        params.x = clampToSlider('x', jStartParamsX + deltaX);
+        params.y = clampToSlider('y', jStartParamsY + deltaY);
+        updateGoal();
+        updateSlidersDisplay(['x', 'y']);
+        recordLastGood(['x', 'y']);
+      }
+      
+      drawJoystick();
+
+      // Add confirm button at the bottom (wrapped for tooltip support)
+      confirmBar.appendChild(confirmBtnWrapper);
+      // Add autofill button next to confirm (for localhost only)
+      confirmBar.appendChild(autofillBtnWrapper);
+      // Place joystick to the LEFT of everything, then Animate, then Confirm
+      confirmBar.insertBefore(joystickCanvas, confirmBtnWrapper);
+      confirmBar.insertBefore(animateBtnWrapper, confirmBtnWrapper);
+    }
 
     /* === NEW: keep buttons in sync with TAC / locks === */
     function reflectButtonInteractivity(){
