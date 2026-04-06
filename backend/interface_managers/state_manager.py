@@ -1536,7 +1536,7 @@ class StateManager:
 
             return True
 
-    def redo_pose_estimation(self, episode_id: int, state_id: int) -> bool:
+    def redo_pose_estimation(self, episode_id: int, state_id: int, active_objects=None) -> bool:
         """Re-run pose estimation for an existing state.
 
         Clears existing object_poses, re-enqueues pose jobs, waits for results,
@@ -1546,6 +1546,7 @@ class StateManager:
         Args:
             episode_id: Episode ID
             state_id: State ID
+            active_objects: Optional list of active object keys (e.g. ['Cube_Green', 'Cube_Red'])
 
         Returns:
             bool: True if redo was successful
@@ -1564,6 +1565,11 @@ class StateManager:
             if not state_info.get("critical", False):
                 print(f"⚠️  redo_pose_estimation: state {state_id} is not a critical state")
                 return False
+
+            # Update active_objects if provided
+            if active_objects is not None:
+                state_info["active_objects"] = active_objects
+                print(f"🎯 Updated active_objects for state {state_id}: {active_objects}")
 
             # Clear existing object_poses so pose estimation runs fresh
             if "object_poses" in state_info:

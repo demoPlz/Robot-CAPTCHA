@@ -821,7 +821,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
 
-            success = crowd_interface.state_manager.redo_pose_estimation(episode_id, state_id)
+            active_objects = data.get("active_objects")  # optional, for sorting task
+            success = crowd_interface.state_manager.redo_pose_estimation(episode_id, state_id, active_objects=active_objects)
 
             if not success:
                 return jsonify({"status": "error", "message": "Failed to redo pose estimation"}), 400

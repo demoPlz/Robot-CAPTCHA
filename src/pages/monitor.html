@@ -1692,6 +1692,7 @@
                         
                         console.log('[Pending Approval] Setting currentApprovalState to:', data);
                         currentApprovalState = data;
+                        if (data.task_name) window.__monitorTaskName = data.task_name;
                         await showApprovalModal(data);
                     }
                 } else {
@@ -1915,6 +1916,7 @@
                 
                 if (approvalResponse.ok) {
                     showToast('✅ State approved with prompt');
+                    if (activeObjects) window.__lastApprovedActiveObjects = activeObjects;
                     hideApprovalModal();
                     // Let polling clear currentApprovalState after backend confirms
                 } else {
@@ -3008,17 +3010,29 @@
                 return;
             }
 
+            // For sorting task, show a cube selector popup first
+            const isSorting = window.__monitorTaskName === 'sorting';
+            if (isSorting) {
+                showRedoPoseCubeSelector(currentServedState.episode_id, currentServedState.state_id);
+                return;
+            }
+
+            // Non-sorting: fire immediately
+            await executeRedoPose(currentServedState.episode_id, currentServedState.state_id, null);
+        });
+
+        async function executeRedoPose(episodeId, stateId, activeObjects) {
             try {
                 globalRedoPoseBtn.disabled = true;
                 globalRedoPoseBtn.innerHTML = '⏳ Redoing...';
                 
+                const body = { episode_id: episodeId, state_id: stateId };
+                if (activeObjects) body.active_objects = activeObjects;
+
                 const response = await fetch(`${API_BASE_URL}/api/control/redo-pose-estimation`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        episode_id: currentServedState.episode_id,
-                        state_id: currentServedState.state_id
-                    })
+                    body: JSON.stringify(body)
                 });
 
                 if (response.ok) {
@@ -3034,7 +3048,56 @@
                 globalRedoPoseBtn.disabled = false;
                 globalRedoPoseBtn.innerHTML = '<span class="control-icon">🔄</span>Redo Pose for State';
             }
-        });
+        }
+
+        function showRedoPoseCubeSelector(episodeId, stateId) {
+            // Remove existing popup if any
+            const existing = document.getElementById('redo-pose-cube-popup');
+            if (existing) existing.remove();
+
+            const popup = document.createElement('div');
+            popup.id = 'redo-pose-cube-popup';
+            popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e293b;border:2px solid #0284c7;border-radius:12px;padding:20px 28px;z-index:100001;box-shadow:0 8px 32px rgba(0,0,0,.5);min-width:280px;';
+
+            // Use inherited active_objects from last approval, or fall back to all cubes
+            let currentActive = window.__lastApprovedActiveObjects || ['Cube_Yellow', 'Cube_Green', 'Cube_Red'];
+
+            const cubes = [
+                { key: 'Cube_Yellow', color: '#eab308', label: '🟡 Yellow' },
+                { key: 'Cube_Green', color: '#22c55e', label: '🟢 Green' },
+                { key: 'Cube_Red', color: '#ef4444', label: '🔴 Red' },
+            ];
+
+            popup.innerHTML = `
+                <div style="color:#e2e8f0;font-weight:600;margin-bottom:12px;font-size:14px;">🔄 Redo Pose — Select Active Cubes</div>
+                <div style="color:#94a3b8;font-size:12px;margin-bottom:12px;">Check the cubes present in the scene (at least 1):</div>
+                <div id="redo-cube-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+                    ${cubes.map(c => `
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:${c.color};font-size:13px;font-weight:500;">
+                            <input type="checkbox" class="redo-cube-cb" data-object="${c.key}" ${currentActive.includes(c.key) ? 'checked' : ''} style="width:16px;height:16px;">
+                            ${c.label}
+                        </label>
+                    `).join('')}
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="redo-cube-cancel" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:transparent;color:#94a3b8;cursor:pointer;font-size:12px;">Cancel</button>
+                    <button id="redo-cube-confirm" style="padding:6px 14px;border-radius:6px;border:none;background:#0284c7;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">Redo Pose</button>
+                </div>
+            `;
+
+            document.body.appendChild(popup);
+
+            document.getElementById('redo-cube-cancel').onclick = () => popup.remove();
+            document.getElementById('redo-cube-confirm').onclick = async () => {
+                const checked = [...popup.querySelectorAll('.redo-cube-cb:checked')].map(cb => cb.getAttribute('data-object'));
+                if (checked.length < 1) {
+                    showToast('❌ At least 1 cube must be selected', 2000);
+                    return;
+                }
+                popup.remove();
+                await executeRedoPose(episodeId, stateId, checked);
+            };
+        }
 
         // Restart pose workers button
         const restartPoseBtn = document.getElementById('restart-pose-btn');
