@@ -735,8 +735,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 if img is not None:
                     previous_image_url = crowd_interface.encode_jpeg_base64(img)
 
-            # Look up inherited active_objects from previous critical state
+            # Look up inherited active_objects and previous video_prompt from previous critical state
             inherited_active_objects = None
+            previous_video_prompt = None
             with crowd_interface.state_manager.state_lock:
                 all_pools = [
                     crowd_interface.state_manager.pending_states_by_episode.get(pending["episode_id"], {}),
@@ -744,13 +745,19 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     crowd_interface.state_manager.completed_states_by_episode.get(pending["episode_id"], {}),
                 ]
                 prev_active = None
+                prev_critical = None  # (sid, sinfo) of most recent critical state
                 for pool in all_pools:
                     for sid, sinfo in pool.items():
-                        if sid < pending["state_id"] and sinfo.get("critical") and "active_objects" in sinfo:
-                            if prev_active is None or sid > prev_active[0]:
-                                prev_active = (sid, sinfo["active_objects"])
+                        if sid < pending["state_id"] and sinfo.get("critical"):
+                            if "active_objects" in sinfo:
+                                if prev_active is None or sid > prev_active[0]:
+                                    prev_active = (sid, sinfo["active_objects"])
+                            if prev_critical is None or sid > prev_critical[0]:
+                                prev_critical = (sid, sinfo)
                 if prev_active:
                     inherited_active_objects = prev_active[1]
+                if prev_critical:
+                    previous_video_prompt = prev_critical[1].get("video_prompt")
 
             return jsonify(
                 {
@@ -763,6 +770,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "task_name": crowd_interface.task_name or "default",
                     "all_objects": list((crowd_interface.objects or {}).keys()),
                     "inherited_active_objects": inherited_active_objects,
+                    "previous_video_prompt": previous_video_prompt,
                 }
             )
         except Exception as e:

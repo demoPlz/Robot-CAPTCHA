@@ -1499,7 +1499,15 @@ class StateManager:
                                 
                                 # Copy object poses from last critical state
                                 if "object_poses" in last_critical_info:
-                                    state_info["object_poses"] = last_critical_info["object_poses"].copy()
+                                    copied_poses = last_critical_info["object_poses"].copy()
+                                    # Filter by active_objects: null out deselected objects
+                                    current_active = state_info.get("active_objects")
+                                    if current_active:
+                                        for obj_key in list(copied_poses.keys()):
+                                            if obj_key not in current_active:
+                                                copied_poses[obj_key] = None
+                                                print(f"⏭️  [{obj_key}] Deselected — hiding in sim (pose set to None)")
+                                    state_info["object_poses"] = copied_poses
                                     state_info["skip_pose_estimation"] = True
                                     print(f"✅ Reusing object poses from state {last_critical_state_id} (skipped pose estimation)")
                                 else:

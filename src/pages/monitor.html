@@ -1759,22 +1759,17 @@
                     approvalDescriptionSelect.appendChild(opt);
                 }
                 
-                // Default to the prompt matching this critical state's index in the episode
+                // Default to the prompt AFTER the one selected for the previous critical state
                 if (approvalPromptContext.bank.length > 0) {
-                    // Count critical states in this episode with stateId <= current state_id
-                    let criticalIndex = 0;
-                    const episode = episodes.find(ep => ep.id === String(data.episode_id));
-                    if (episode && episode.states) {
-                        const currentSid = parseInt(data.state_id, 10);
-                        const criticalSids = Object.entries(episode.states)
-                            .filter(([, s]) => s.isCritical)
-                            .map(([sid]) => parseInt(sid, 10))
-                            .sort((a, b) => a - b);
-                        criticalIndex = criticalSids.indexOf(currentSid);
-                        if (criticalIndex === -1) criticalIndex = criticalSids.length; // not yet tracked, append
+                    let defaultIdx = 0;
+                    if (data.previous_video_prompt != null) {
+                        // Find the index of the previous state's video_prompt in the bank
+                        const prevIdx = approvalPromptContext.bank.findIndex(item => item.id === data.previous_video_prompt);
+                        if (prevIdx !== -1) {
+                            defaultIdx = Math.min(prevIdx + 1, approvalPromptContext.bank.length - 1);
+                        }
                     }
-                    const defaultIdx = Math.min(criticalIndex, approvalPromptContext.bank.length - 1);
-                    const defaultItem = approvalPromptContext.bank[Math.max(0, defaultIdx)];
+                    const defaultItem = approvalPromptContext.bank[defaultIdx];
                     approvalPromptContext.selectedVideoId = defaultItem.id;
                     approvalPromptContext.selectedText = defaultItem.thus_text;
                     approvalPromptText.textContent = defaultItem.thus_text;
