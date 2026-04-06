@@ -126,6 +126,8 @@ class CrowdInterface:
         mturk_require_location: list[str] | None = None,
         # --- home position ---
         home_position_deg: list[float] | None = None,
+        # --- container presets (sorting task) ---
+        container_presets_deg: list[list[float]] | None = None,
     ):
 
         # --- Shutdown tracking ---
@@ -225,6 +227,7 @@ class CrowdInterface:
         self.initial_gripper_open = (task_name not in ("insertion", "switches"))
         # Home position (degrees): defaults to standard if not provided
         self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
+        self.container_presets_deg = container_presets_deg if container_presets_deg is not None else []
         # Frontend URL for serving uncompressed videos from CDN
         self.frontend_url = frontend_url
 
@@ -399,6 +402,7 @@ class CrowdInterface:
             snapshot_views_callback=self.snapshot_latest_views,
             save_episode_callback=self.dataset_manager.save_episode,
             home_position_deg=self.home_position_deg,
+            container_presets_deg=self.container_presets_deg,
         )
 
     # =========================

@@ -714,11 +714,15 @@ class IsaacSimWorker:
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                     obj_prim.set_world_pose(position=pos, orientation=rot)
                 else:
-                    # Object absent (None pose) — hide it in sim
+                    # Object absent (None pose) — hide and banish far away to prevent phantom collisions
                     obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
                     if obj_usd_prim and obj_usd_prim.IsValid():
                         set_prim_visibility(obj_usd_prim, False)
-                        print(f"[Worker]    👻 Hidden {obj_name} (not detected in scene)")
+                    obj_prim.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
+                    if hasattr(obj_prim, 'set_linear_velocity'):
+                        obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                        obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                    print(f"[Worker]    👻 Hidden + banished {obj_name} (not detected in scene)")
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -1099,10 +1103,13 @@ class IsaacSimWorker:
                                 obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                                 obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                             else:
-                                # Object absent — hide it
+                                # Object absent — hide and banish far away
                                 obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
                                 if obj_usd_prim and obj_usd_prim.IsValid():
                                     set_prim_visibility(obj_usd_prim, False)
+                                obj_prim_ref.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
+                                obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
@@ -1124,11 +1131,18 @@ class IsaacSimWorker:
                         scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
                         if state is None:
-                            # Object absent — hide it in cloned environment
+                            # Object absent — hide and banish in cloned environment
                             obj_path = f"{world_path}/{obj_name}"
                             obj_usd_prim = get_prim_at_path(obj_path)
                             if obj_usd_prim and obj_usd_prim.IsValid():
                                 set_prim_visibility(obj_usd_prim, False)
+                            # Move far away to prevent phantom collisions
+                            if self.world.scene.object_exists(scene_name):
+                                scene_obj = self.world.scene.get_object(scene_name)
+                                banish_pos = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, -100.0])
+                                scene_obj.set_world_pose(position=banish_pos)
+                                scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                             continue
 
                         # Object present — show and position with offset
@@ -1769,11 +1783,14 @@ class IsaacSimWorker:
                                 obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                                 obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                         else:
-                            # Object absent — hide it
+                            # Object absent — hide and banish far away
                             if obj_prim_ref.is_valid():
                                 obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
                                 if obj_usd_prim and obj_usd_prim.IsValid():
                                     set_prim_visibility(obj_usd_prim, False)
+                                obj_prim_ref.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
+                                obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                                obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
@@ -1792,11 +1809,18 @@ class IsaacSimWorker:
                     scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
 
                     if state is None:
-                        # Object absent — hide it
+                        # Object absent — hide and banish far away
                         obj_path = f"{world_path}/{obj_name}"
                         obj_usd_prim = get_prim_at_path(obj_path)
                         if obj_usd_prim and obj_usd_prim.IsValid():
                             set_prim_visibility(obj_usd_prim, False)
+                        # Move far away to prevent phantom collisions
+                        if self.world.scene.object_exists(scene_name):
+                            scene_obj = self.world.scene.get_object(scene_name)
+                            banish_pos = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, -100.0])
+                            scene_obj.set_world_pose(position=banish_pos)
+                            scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                         continue
 
                     # Object present — show and position with offset

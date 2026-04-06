@@ -76,6 +76,7 @@ class StateManager:
         save_episode_callback,
         state_ready_callback=None,  # NEW: Called when critical state becomes ready for labeling
         home_position_deg: list[float] | None = None,
+        container_presets_deg: list[list[float]] | None = None,
     ):
         """Initialize state manager.
 
@@ -121,6 +122,7 @@ class StateManager:
         self.use_sim = use_sim
         self.task_text = task_text
         self.home_position_deg = home_position_deg if home_position_deg is not None else [0, 60, 75, -60, 0, 0, 2]
+        self.container_presets_deg = container_presets_deg if container_presets_deg is not None else []
         self._obs_cache_root = obs_cache_root
 
         # Shared state data structures (references)
@@ -888,10 +890,26 @@ class StateManager:
                 is_home_position = home_match
                 if is_home_position:
                     print(f"🏠 Home position action detected for state {state_id} - auto-filling all slots")
+                
+                # Check if submitted action matches any container preset
+                is_container_preset = False
+                if not is_home_position and self.container_presets_deg:
+                    for preset_deg in self.container_presets_deg:
+                        PRESET_RAD = [deg * math.pi / 180.0 for deg in preset_deg]
+                        preset_match = True
+                        for i, joint_name in enumerate(JOINT_NAMES[:-1]):  # Exclude gripper
+                            submitted_val = joint_positions.get(joint_name, [0.0])[0] if isinstance(joint_positions.get(joint_name), list) else joint_positions.get(joint_name, 0.0)
+                            if abs(float(submitted_val) - PRESET_RAD[i]) > 0.001:  # 0.001 radian threshold
+                                preset_match = False
+                                break
+                        if preset_match:
+                            is_container_preset = True
+                            print(f"📦 Container preset action detected for state {state_id} - auto-filling all slots")
+                            break
             
             if self.asynchronous_mode and state_info["critical"] and is_admin_submission:
-                if is_gripper_only or is_home_position or is_manual_autofill:
-                    # Gripper-only, home position, or manual autofill: instantly fill all slots
+                if is_gripper_only or is_home_position or is_manual_autofill or is_container_preset:
+                    # Gripper-only, home position, container preset, or manual autofill: instantly fill all slots
                     required_responses = self.required_responses_per_critical_state
                 else:
                     # Normal async mode admin: only need async_admin_responses_per_state responses before executing
@@ -1003,8 +1021,8 @@ class StateManager:
                     })
                 state_info["responses_received"] += clones_to_add
             
-            # Additional autofill for gripper-only or home position actions in async mode
-            if (is_gripper_only or is_home_position or is_manual_autofill) and self.asynchronous_mode and is_admin_submission:
+            # Additional autofill for gripper-only, home position, or container preset actions in async mode
+            if (is_gripper_only or is_home_position or is_manual_autofill or is_container_preset) and self.asynchronous_mode and is_admin_submission:
                 # Fill remaining slots with the same action
                 clones_needed = required_responses - state_info["responses_received"]
                 for _ in range(clones_needed):
@@ -1024,6 +1042,8 @@ class StateManager:
                     action_type = "manual autofill"
                 elif is_gripper_only:
                     action_type = "gripper-only"
+                elif is_container_preset:
+                    action_type = "container preset"
                 else:
                     action_type = "home position"
                 print(f"   Auto-filled {clones_needed} more slots for {action_type} action")
@@ -1035,6 +1055,8 @@ class StateManager:
                     state_info["home_position_autofilled"] = True
                 if is_manual_autofill:
                     state_info["manual_autofilled"] = True
+                if is_container_preset:
+                    state_info["container_preset_autofilled"] = True
 
             # Handle completion
             should_check_finalization = False
@@ -3238,12 +3260,13 @@ class StateManager:
             for episode_id, states in self.pending_states_by_episode.items():
                 for state_id, state_info in states.items():
                     if state_info.get("critical", False) and state_info.get("admin_complete", False):
-                        # Check if this was a gripper-only, home position, or manually autofilled state (already fully labeled)
+                        # Check if this was a gripper-only, home position, container preset, or manually autofilled state (already fully labeled)
                         is_gripper_only = state_info.get("gripper_only_autofilled", False)
                         is_home_position = state_info.get("home_position_autofilled", False)
                         is_manual_autofill = state_info.get("manual_autofilled", False)
+                        is_container_preset = state_info.get("container_preset_autofilled", False)
                         
-                        if is_gripper_only or is_home_position or is_manual_autofill:
+                        if is_gripper_only or is_home_position or is_manual_autofill or is_container_preset:
                             # These are already fully complete and will be in completed_states
                             states_skipped += 1
                         else:
@@ -3260,7 +3283,7 @@ class StateManager:
             print(f"{'='*80}")
             print(f"🔄 Async pool ready: {states_ready} states available for user labeling")
             if states_skipped > 0:
-                print(f"   Skipped {states_skipped} auto-filled states (gripper-only, home position, or manual autofill)")
+                print(f"   Skipped {states_skipped} auto-filled states (gripper-only, home position, container preset, or manual autofill)")
             print(f"{'='*80}")
             
             return {

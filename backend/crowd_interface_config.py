@@ -88,6 +88,18 @@ class CrowdInterfaceConfig:
         else:
             self.home_position_deg: list[float] = [0, 60, 75, -60, 0, 0, 2]
 
+        # ========== Container Presets (Sorting Task) ==========
+        # Preset joint angles (degrees) for positioning above each container
+        # These are auto-detected on submission and autofilled like home/gripper-only actions
+        if self.task_name == "sorting":
+            self.container_presets_deg: list[list[float]] = [
+                [-62.6, 69.7, 83.3, -79.0, -38.9, -53.9, -1],  # red
+                [-41.5, 79.3, 88.1, -62.1, -27.9, -32.1, -1],  # yellow
+                [-30, 95.6, 102.9, -56.5, -20.7, -22.3, -1],    # green
+            ]
+        else:
+            self.container_presets_deg: list[list[float]] = []
+
         # Gripper starts closed for insertion, open for everything else
         self.initial_gripper_open: bool = (self.task_name not in ("insertion", "switches"))
 
@@ -565,6 +577,8 @@ class CrowdInterfaceConfig:
             "mturk_require_location": self.mturk_require_location,
             # Home position
             "home_position_deg": self.home_position_deg,
+            # Container presets
+            "container_presets_deg": self.container_presets_deg,
         }
 
         # Optional: demo video recording (only include if enabled)
