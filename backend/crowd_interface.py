@@ -686,14 +686,14 @@ class CrowdInterface:
     # Dataset Management (Delegated to DatasetManager)
     # =========================
 
-    def init_dataset(self, cfg, robot):
+    def init_dataset(self, cfg, robot, phase1_resumed: bool = False):
         """Initialize dataset for data collection policy training.
 
         Delegates to DatasetManager.
 
         """
         # Initialize dataset (may set single_task from cfg, but we use config task_text for UI)
-        dataset_task = self.dataset_manager.init_dataset(cfg, robot)
+        dataset_task = self.dataset_manager.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
         
         # Use task_text from config if provided, otherwise fall back to dataset's single_task
         if not self.task_text:

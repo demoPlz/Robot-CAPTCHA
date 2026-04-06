@@ -81,6 +81,20 @@ _CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConfig) -> LeRobotDataset:
     from pathlib import Path
     
+    # --- Phase 1 crash recovery: auto-detect checkpoint and resume ---
+    phase1_resumed = False
+    if not cfg.resume and _CROWD_CONFIG.asynchronous_mode:
+        dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
+        checkpoint_path = dataset_root / cfg.repo_id / "phase1_checkpoint.json"
+        if checkpoint_path.exists():
+            print(f"\n{'='*60}")
+            print(f"🔄 PHASE 1 CRASH RECOVERY")
+            print(f"   Found checkpoint: {checkpoint_path}")
+            print(f"   Auto-resuming from last saved episode...")
+            print(f"{'='*60}\n")
+            cfg.resume = True
+            phase1_resumed = True
+    
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.repo_id,
@@ -125,7 +139,18 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
             image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
         )
 
-    crowd_interface.init_dataset(cfg, robot)
+    crowd_interface.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
+    
+    # --- Phase 1 crash recovery: restore crowd interface state ---
+    if phase1_resumed:
+        checkpoint_path = Path(dataset.root) / "phase1_checkpoint.json"
+        result = crowd_interface.load_phase1_checkpoint(checkpoint_path)
+        if result["status"] == "success":
+            print(f"✅ Crowd interface state restored from checkpoint")
+            print(f"   Resuming from episode {dataset.meta.total_episodes}")
+        else:
+            print(f"⚠️  Failed to load crowd checkpoint: {result.get('message')}")
+            print(f"   Crowd interface state will be empty (already-saved episodes are safe)")
 
     # If continuing from a previous dataset, drive robot to positions
     if _CROWD_CONFIG.continue_from_dataset:
@@ -203,7 +228,9 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     if has_method(robot, "teleop_safety_stop") and not _CROWD_CONFIG.continue_from_dataset:
         robot.teleop_safety_stop()
 
-    recorded_episodes = 0
+    # When resuming from crash, start counter at already-saved episodes
+    # so we only record enough new episodes to reach the original target
+    recorded_episodes = dataset.meta.total_episodes if phase1_resumed else 0
     while True:
         if recorded_episodes >= cfg.num_episodes:
             break
@@ -251,6 +278,15 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
         
         # Clear the "end" marker for this episode now that it's been saved
         crowd_interface.state_manager.episodes_marked_as_end.discard(current_episode_index)
+        
+        # Auto-checkpoint: persist crowd interface state after each episode
+        # so a crash loses at most the current in-progress episode
+        if _CROWD_CONFIG.asynchronous_mode:
+            try:
+                crowd_interface.save_phase1_checkpoint()
+                print(f"💾 Auto-checkpoint saved after episode {current_episode_index}")
+            except Exception as e:
+                print(f"⚠️  Failed to auto-checkpoint after episode {current_episode_index}: {e}")
 
         if events["stop_recording"]:
             break
