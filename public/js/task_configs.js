@@ -107,9 +107,9 @@ const TASK_CONFIGS = {
     hideRobotInTopView: false,
     // Preset joint angles (degrees) for positioning above each container
     containerPresets: [
-      { key: 'red',    color: '#ef4444', label: '', deg: [-62.6, 69.7, 83.3, -79.0, -38.9, -53.9, 2] },
-      { key: 'yellow', color: '#eab308', label: '', deg: [-41.5, 79.3, 88.1, -62.1, -27.9, -32.1, 2] },
-      { key: 'green',  color: '#22c55e', label: '', deg: [-30, 95.6, 102.9, -56.5, -20.7, -22.3, 2] },
+      { key: 'red',    color: '#ef4444', label: '', deg: [-62.6, 69.7, 83.3, -79.0, -38.9, -53.9, -1] },
+      { key: 'yellow', color: '#eab308', label: '', deg: [-41.5, 79.3, 88.1, -62.1, -27.9, -32.1, -1] },
+      { key: 'green',  color: '#22c55e', label: '', deg: [-30, 95.6, 102.9, -56.5, -20.7, -22.3, -1] },
     ],
   },
 };
