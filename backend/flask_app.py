@@ -1305,11 +1305,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "episode_id and state_id are required"}), 400
 
-            # Convert state_id to int
+            # Convert both IDs to int (JSON may send them as strings)
             try:
+                episode_id = int(episode_id)
                 state_id = int(state_id)
             except (ValueError, TypeError):
-                return jsonify({"status": "error", "message": "state_id must be an integer"}), 400
+                return jsonify({"status": "error", "message": "episode_id and state_id must be integers"}), 400
 
             # Find the state
             state_info = None

@@ -1413,46 +1413,51 @@ class StateManager:
             return True
 
     def get_pending_approval_state(self) -> dict | None:
-        """Get the state awaiting approval from administrator."""
+        """Get the state awaiting approval from administrator.
+        
+        IMPORTANT: We must NOT nest state_lock inside approval_lock here,
+        because _auto_fill_end_state_locked holds state_lock and then acquires
+        approval_lock. Nesting in the opposite order causes an ABBA deadlock.
+        """
+        # Step 1: Read approval state under approval_lock only
         with self.approval_lock:
             if self.pending_approval_state is None or self.pending_approval_state["approved"] is not None:
                 return None
-
             episode_id = self.pending_approval_state["episode_id"]
             state_id = self.pending_approval_state["state_id"]
 
-            # Get state info
-            with self.state_lock:
-                if episode_id not in self.pending_states_by_episode:
-                    return None
-                if state_id not in self.pending_states_by_episode[episode_id]:
-                    return None
+        # Step 2: Read state info under state_lock only (approval_lock released)
+        with self.state_lock:
+            if episode_id not in self.pending_states_by_episode:
+                return None
+            if state_id not in self.pending_states_by_episode[episode_id]:
+                return None
 
-                current_state = self.pending_states_by_episode[episode_id][state_id]
+            current_state = self.pending_states_by_episode[episode_id][state_id]
 
-                # Find previous critical state for comparison
-                previous_critical_obs_path = None
-                all_states = {
-                    **self.pending_states_by_episode.get(episode_id, {}),
-                    **self.completed_states_by_episode.get(episode_id, {}),
-                }
+            # Find previous critical state for comparison
+            previous_critical_obs_path = None
+            all_states = {
+                **self.pending_states_by_episode.get(episode_id, {}),
+                **self.completed_states_by_episode.get(episode_id, {}),
+            }
 
-                previous_critical_states = [
-                    (sid, sinfo)
-                    for sid, sinfo in sorted(all_states.items())
-                    if sid < state_id and sinfo.get("critical", False)
-                ]
+            previous_critical_states = [
+                (sid, sinfo)
+                for sid, sinfo in sorted(all_states.items())
+                if sid < state_id and sinfo.get("critical", False)
+            ]
 
-                if previous_critical_states:
-                    _, prev_state = previous_critical_states[-1]
-                    previous_critical_obs_path = prev_state.get("obs_path")
+            if previous_critical_states:
+                _, prev_state = previous_critical_states[-1]
+                previous_critical_obs_path = prev_state.get("obs_path")
 
-                return {
-                    "episode_id": episode_id,
-                    "state_id": state_id,
-                    "obs_path": current_state.get("obs_path"),
-                    "previous_critical_obs_path": previous_critical_obs_path,
-                }
+            return {
+                "episode_id": episode_id,
+                "state_id": state_id,
+                "obs_path": current_state.get("obs_path"),
+                "previous_critical_obs_path": previous_critical_obs_path,
+            }
 
     def approve_critical_state(self, episode_id: int, state_id: int, skip_pose_estimation: bool = False, active_objects: list | None = None) -> bool:
         """Approve a pending critical state (post-execution approval).
@@ -1467,6 +1472,7 @@ class StateManager:
         Returns:
             bool: True if approval was successful
         """
+        # Step 1: Set approval flag under approval_lock only
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
@@ -1478,85 +1484,85 @@ class StateManager:
 
             self.pending_approval_state["approved"] = True
 
-            # Mark the state as approved in pending_states_by_episode (where it actually is)
-            with self.state_lock:
-                if episode_id in self.pending_states_by_episode:
-                    if state_id in self.pending_states_by_episode[episode_id]:
-                        state_info = self.pending_states_by_episode[episode_id][state_id]
-                        state_info["approval_status"] = "approved"
-                        
-                        # Store active_objects selection for pose estimation filtering
-                        if active_objects:
-                            state_info["active_objects"] = active_objects
-                            print(f"🎯 Active objects for state {state_id}: {active_objects}")
-                        
-                        # Handle pose estimation skip
-                        if skip_pose_estimation:
-                            # Find last critical state and copy its object poses
-                            # Check pending, completed_buffer, and completed states (for async mode)
-                            critical_states = []
-                            
-                            # Check pending_states_by_episode (async mode - approved but not submitted yet)
-                            ep_pending = self.pending_states_by_episode.get(episode_id, {})
-                            for sid, sinfo in ep_pending.items():
-                                if sinfo.get("critical", False) and sid < state_id:
-                                    critical_states.append((sid, sinfo))
-                            
-                            # Check completed_states_buffer_by_episode (buffered states)
-                            ep_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
-                            for sid, sinfo in ep_buffer.items():
-                                if sinfo.get("critical", False):
-                                    critical_states.append((sid, sinfo))
-                            
-                            # Check completed_states_by_episode (fully completed states)
-                            ep_completed = self.completed_states_by_episode.get(episode_id, {})
-                            for sid, sinfo in ep_completed.items():
-                                if sinfo.get("critical", False):
-                                    critical_states.append((sid, sinfo))
-                            
-                            if critical_states:
-                                # Sort by state_id and get the most recent
-                                critical_states.sort(key=lambda x: x[0])
-                                last_critical_state_id, last_critical_info = critical_states[-1]
-                                
-                                # Copy object poses from last critical state
-                                if "object_poses" in last_critical_info:
-                                    copied_poses = last_critical_info["object_poses"].copy()
-                                    # Filter by active_objects: null out deselected objects
-                                    current_active = state_info.get("active_objects")
-                                    if current_active:
-                                        for obj_key in list(copied_poses.keys()):
-                                            if obj_key not in current_active:
-                                                copied_poses[obj_key] = None
-                                                print(f"⏭️  [{obj_key}] Deselected — hiding in sim (pose set to None)")
-                                    state_info["object_poses"] = copied_poses
-                                    state_info["skip_pose_estimation"] = True
-                                    print(f"✅ Reusing object poses from state {last_critical_state_id} (skipped pose estimation)")
-                                else:
-                                    print(f"⚠️  Last critical state {last_critical_state_id} has no object_poses - will run pose estimation")
-                            else:
-                                print(f"⚠️  No previous critical state found - will run pose estimation")
-                        
-                # Also mark the executed action as post-execution approved in completed states
-                ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
-                if ep_completed:
-                    # Find previous critical state (the one that has the executed action)
-                    critical_states = [sid for sid, sinfo in ep_completed.items() if sinfo.get("critical", False)]
-                    critical_states.sort()
+        # Step 2: Update state info under state_lock only (approval_lock released)
+        with self.state_lock:
+            if episode_id in self.pending_states_by_episode:
+                if state_id in self.pending_states_by_episode[episode_id]:
+                    state_info = self.pending_states_by_episode[episode_id][state_id]
+                    state_info["approval_status"] = "approved"
                     
-                    if len(critical_states) > 0:
-                        prev_critical_state_id = critical_states[-1]
-                        prev_state_info = ep_completed[prev_critical_state_id]
+                    # Store active_objects selection for pose estimation filtering
+                    if active_objects:
+                        state_info["active_objects"] = active_objects
+                        print(f"🎯 Active objects for state {state_id}: {active_objects}")
+                    
+                    # Handle pose estimation skip
+                    if skip_pose_estimation:
+                        # Find last critical state and copy its object poses
+                        # Check pending, completed_buffer, and completed states (for async mode)
+                        critical_states = []
                         
-                        # Mark the executed action as post-execution approved
-                        exec_history = prev_state_info.get("execution_history", [])
-                        for entry in exec_history:
-                            if entry.get("executed", False):
-                                entry["post_execution_approved"] = True
-                                print(f"✅ Marked executed action as post-execution approved for state {prev_critical_state_id}")
-                                break
+                        # Check pending_states_by_episode (async mode - approved but not submitted yet)
+                        ep_pending = self.pending_states_by_episode.get(episode_id, {})
+                        for sid, sinfo in ep_pending.items():
+                            if sinfo.get("critical", False) and sid < state_id:
+                                critical_states.append((sid, sinfo))
+                        
+                        # Check completed_states_buffer_by_episode (buffered states)
+                        ep_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
+                        for sid, sinfo in ep_buffer.items():
+                            if sinfo.get("critical", False):
+                                critical_states.append((sid, sinfo))
+                        
+                        # Check completed_states_by_episode (fully completed states)
+                        ep_completed = self.completed_states_by_episode.get(episode_id, {})
+                        for sid, sinfo in ep_completed.items():
+                            if sinfo.get("critical", False):
+                                critical_states.append((sid, sinfo))
+                        
+                        if critical_states:
+                            # Sort by state_id and get the most recent
+                            critical_states.sort(key=lambda x: x[0])
+                            last_critical_state_id, last_critical_info = critical_states[-1]
+                            
+                            # Copy object poses from last critical state
+                            if "object_poses" in last_critical_info:
+                                copied_poses = last_critical_info["object_poses"].copy()
+                                # Filter by active_objects: null out deselected objects
+                                current_active = state_info.get("active_objects")
+                                if current_active:
+                                    for obj_key in list(copied_poses.keys()):
+                                        if obj_key not in current_active:
+                                            copied_poses[obj_key] = None
+                                            print(f"⏭️  [{obj_key}] Deselected — hiding in sim (pose set to None)")
+                                state_info["object_poses"] = copied_poses
+                                state_info["skip_pose_estimation"] = True
+                                print(f"✅ Reusing object poses from state {last_critical_state_id} (skipped pose estimation)")
+                            else:
+                                print(f"⚠️  Last critical state {last_critical_state_id} has no object_poses - will run pose estimation")
+                        else:
+                            print(f"⚠️  No previous critical state found - will run pose estimation")
+                    
+            # Also mark the executed action as post-execution approved in completed states
+            ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
+            if ep_completed:
+                # Find previous critical state (the one that has the executed action)
+                critical_states = [sid for sid, sinfo in ep_completed.items() if sinfo.get("critical", False)]
+                critical_states.sort()
+                
+                if len(critical_states) > 0:
+                    prev_critical_state_id = critical_states[-1]
+                    prev_state_info = ep_completed[prev_critical_state_id]
+                    
+                    # Mark the executed action as post-execution approved
+                    exec_history = prev_state_info.get("execution_history", [])
+                    for entry in exec_history:
+                        if entry.get("executed", False):
+                            entry["post_execution_approved"] = True
+                            print(f"✅ Marked executed action as post-execution approved for state {prev_critical_state_id}")
+                            break
 
-            return True
+        return True
 
     def redo_pose_estimation(self, episode_id: int, state_id: int, active_objects=None) -> bool:
         """Re-run pose estimation for an existing state.
@@ -1704,7 +1710,10 @@ class StateManager:
             return True
 
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
-        """Reject a pending critical state."""
+        """Reject a pending critical state.
+        
+        IMPORTANT: Must not nest state_lock inside approval_lock (ABBA deadlock).
+        """
         with self.approval_lock:
             if self.pending_approval_state is None:
                 return False
@@ -1716,14 +1725,14 @@ class StateManager:
 
             self.pending_approval_state["approved"] = False
 
-            # Mark the state as rejected in pending_states_by_episode (where it actually is)
-            with self.state_lock:
-                if episode_id in self.pending_states_by_episode:
-                    if state_id in self.pending_states_by_episode[episode_id]:
-                        state_info = self.pending_states_by_episode[episode_id][state_id]
-                        state_info["approval_status"] = "rejected"
+        # Mark the state as rejected in pending_states_by_episode (outside approval_lock)
+        with self.state_lock:
+            if episode_id in self.pending_states_by_episode:
+                if state_id in self.pending_states_by_episode[episode_id]:
+                    state_info = self.pending_states_by_episode[episode_id][state_id]
+                    state_info["approval_status"] = "rejected"
 
-            return True
+        return True
 
     def discard_jitter_states(self, episode_id: int) -> bool:
         """Find last approved critical state and discard all states after it.
@@ -3161,12 +3170,15 @@ class StateManager:
         with self.approval_lock:
             if (
                 self.pending_approval_state
-                and self.pending_approval_state["episode_id"] == episode_id
-                and self.pending_approval_state["state_id"] == state_id
+                and self.pending_approval_state["episode_id"] == int(episode_id)
+                and self.pending_approval_state["state_id"] == int(state_id)
             ):
                 print(f"✅ Auto-approved state {state_id} (marked as end)")
                 # Set approved to True so the waiting thread sees it as approval, not demotion
                 self.pending_approval_state["approved"] = True
+            elif self.pending_approval_state:
+                print(f"⚠️  END auto-approval MISMATCH: pending=({self.pending_approval_state['episode_id']!r}, {self.pending_approval_state['state_id']!r}) vs end=({episode_id!r}, {state_id!r})")
+
 
         if not self.pending_states_by_episode[episode_id]:
             self._schedule_episode_finalize_after_grace(episode_id)
@@ -3720,10 +3732,14 @@ class StateManager:
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
         
-        # Count total states that should have obs files
-        total_states = sum(len(s) for s in self.pending_states_by_episode.values())
-        total_states += sum(len(s) for s in self.completed_states_by_episode.values())
-        total_states += sum(len(s) for s in self.completed_states_buffer_by_episode.values())
+        # Count unique (episode, state) pairs across all dicts to avoid double-counting
+        # (states often appear in multiple dicts: pending + completed + buffer)
+        unique_state_keys = set()
+        for states_dict in [self.pending_states_by_episode, self.completed_states_by_episode, self.completed_states_buffer_by_episode]:
+            for ep, states in states_dict.items():
+                for sid in states:
+                    unique_state_keys.add((ep, sid))
+        total_states = len(unique_state_keys)
         
         # Verify obs files were copied
         obs_cache_dir = checkpoint_dir / "obs_cache"
