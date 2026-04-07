@@ -3709,8 +3709,13 @@ class StateManager:
             }
         
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        with open(checkpoint_path, "w") as f:
+        
+        # Atomic write: write to temp file, then rename (os.replace is atomic on Linux)
+        import os
+        tmp_path = checkpoint_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as f:
             json.dump(checkpoint, f, indent=2)
+        os.replace(tmp_path, checkpoint_path)
         
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
