@@ -718,7 +718,7 @@ class IsaacSimWorker:
                     obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
                     if obj_usd_prim and obj_usd_prim.IsValid():
                         set_prim_visibility(obj_usd_prim, False)
-                    obj_prim.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
+                    obj_prim.set_world_pose(position=np.array([100.0, 100.0, 0.0]))
                     if hasattr(obj_prim, 'set_linear_velocity'):
                         obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
