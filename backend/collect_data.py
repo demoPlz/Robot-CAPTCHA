@@ -85,7 +85,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     phase1_resumed = False
     if not cfg.resume and _CROWD_CONFIG.asynchronous_mode:
         dataset_root = Path(cfg.root) if cfg.root else (Path.home() / ".cache" / "huggingface" / "lerobot")
-        checkpoint_path = dataset_root / cfg.repo_id / "phase1_checkpoint.json"
+        # Checkpoint is saved in the DCP dataset root (by save_phase1_checkpoint)
+        checkpoint_path = dataset_root / cfg.data_collection_policy_repo_id / "phase1_checkpoint.json"
         if checkpoint_path.exists():
             print(f"\n{'='*60}")
             print(f"🔄 PHASE 1 CRASH RECOVERY")
