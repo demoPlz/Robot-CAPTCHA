@@ -144,7 +144,9 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     
     # --- Phase 1 crash recovery: restore crowd interface state ---
     if phase1_resumed:
-        checkpoint_path = Path(dataset.root) / "phase1_checkpoint.json"
+        # Checkpoint lives in DCP dataset root (where save_phase1_checkpoint writes)
+        dcp_root = crowd_interface.dataset_manager.dataset.root
+        checkpoint_path = Path(dcp_root) / "phase1_checkpoint.json"
         result = crowd_interface.load_phase1_checkpoint(checkpoint_path)
         if result["status"] == "success":
             print(f"✅ Crowd interface state restored from checkpoint")

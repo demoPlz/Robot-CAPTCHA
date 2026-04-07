@@ -92,7 +92,9 @@ class DatasetManager:
         dcp_path = dataset_root / cfg.data_collection_policy_repo_id
 
         if cfg.resume or phase1_resumed:
-            if dcp_path.exists() and (dcp_path / "meta" / "info.json").exists():
+            # LeRobotDataset() resume requires tasks.jsonl which only exists after first episode save
+            dcp_has_episodes = (dcp_path / "meta" / "info.json").exists() and (dcp_path / "meta" / "tasks.jsonl").exists()
+            if dcp_path.exists() and dcp_has_episodes:
                 print(f"🔄 DCP dataset auto-resume: {dcp_path}")
                 self.dataset = LeRobotDataset(cfg.data_collection_policy_repo_id, root=cfg.root)
                 self.dataset.start_image_writer(
@@ -101,9 +103,21 @@ class DatasetManager:
                 )
                 sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
             else:
-                # DCP dataset doesn't exist yet (e.g. no episodes finalized before crash)
-                # Create it fresh
-                print(f"📦 Creating DCP dataset (not yet saved): {cfg.data_collection_policy_repo_id}")
+                # DCP dataset doesn't exist or has no completed episodes (e.g. crash before first save)
+                # SAFETY: Only remove the incomplete meta/ subdirectory — never touch
+                # the checkpoint or obs_cache. This way, even if the OS crashes right now,
+                # the checkpoint file is always safe on disk.
+                import shutil
+                meta_path = dcp_path / "meta"
+                if meta_path.exists():
+                    print(f"🗑️  Removing incomplete DCP meta/: {meta_path}")
+                    shutil.rmtree(meta_path)
+                # Also remove data/ and videos/ if they exist (incomplete episode data)
+                for subdir in ["data", "videos"]:
+                    subdir_path = dcp_path / subdir
+                    if subdir_path.exists():
+                        shutil.rmtree(subdir_path)
+                print(f"📦 Creating DCP dataset fresh: {cfg.data_collection_policy_repo_id}")
                 sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)
                 self.dataset = LeRobotDataset.create(
                     cfg.data_collection_policy_repo_id,
