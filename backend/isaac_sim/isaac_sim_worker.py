@@ -233,45 +233,29 @@ class IsaacSimWorker:
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
         
-        # Discover ALL object prims in /World and hide+banish any that aren't configured.
-        # This prevents phantom collisions from unconfigured objects (e.g., Cube_Blue/Tennis
-        # left in sorting.usd from the drawer task template).
+        # Move unconfigured dynamic objects far away so they don't interfere.
+        # e.g. sorting.usd has Cube_Blue/Tennis from the drawer task template.
         import omni.usd as _omni_usd
         from pxr import UsdPhysics as _UsdPhysics
+        from omni.isaac.core.prims import RigidPrim as _RigidPrim
         _stage = _omni_usd.get_context().get_stage()
         _world_prim = _stage.GetPrimAtPath("/World")
-        # Prims to never touch (robot, cameras, lights, drawers, trays, materials, ground)
-        _infrastructure_prims = {
-            "wxai", "Camera_Front", "Camera_Left", "Camera_Right", "Camera_Top",
-            "Drawer", "drawer_shell", "tray_01", "tray_02", "tray_03",
-            "Looks", "Ground", "ground_plane", "GroundPlane", "Environment",
-            "physicsScene", "PhysicsScene",
-        }
         _configured_set = set(configured_objects)
         for child_prim in _world_prim.GetChildren():
             child_name = child_prim.GetName()
-            if child_name in _infrastructure_prims or child_name in _configured_set:
+            if child_name in _configured_set:
                 continue
-            # Check if this prim has physics (RigidBody or Collision)
-            has_physics = (
-                child_prim.HasAPI(_UsdPhysics.RigidBodyAPI) or
-                child_prim.HasAPI(_UsdPhysics.CollisionAPI)
-            )
-            if has_physics:
+            if child_prim.HasAPI(_UsdPhysics.RigidBodyAPI):
+                # It's a dynamic object not in our config — just move it far away
                 child_path = str(child_prim.GetPath())
-                # Hide visually
-                set_prim_visibility(child_prim, False)
-                # Remove physics APIs so it can NEVER collide
-                if child_prim.HasAPI(_UsdPhysics.RigidBodyAPI):
-                    child_prim.RemoveAPI(_UsdPhysics.RigidBodyAPI)
-                if child_prim.HasAPI(_UsdPhysics.CollisionAPI):
-                    child_prim.RemoveAPI(_UsdPhysics.CollisionAPI)
-                # Also remove from any child meshes (collision shapes)
-                from pxr import Usd as _Usd
-                for desc in _Usd.PrimRange(child_prim):
-                    if desc.HasAPI(_UsdPhysics.CollisionAPI):
-                        desc.RemoveAPI(_UsdPhysics.CollisionAPI)
-                print(f"✓ Hidden + physics disabled for unconfigured object {child_name} at {child_path}")
+                try:
+                    tmp = _RigidPrim(prim_path=child_path, name=f"_banished_{child_name}")
+                    tmp.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
+                    tmp.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                    tmp.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                    print(f"✓ Banished unconfigured object {child_name} to [0,0,-100]")
+                except Exception as e:
+                    print(f"⚠️ Could not banish {child_name}: {e}")
         
         # Dynamically load and show only configured objects
         for obj_name in configured_objects:
@@ -747,18 +731,12 @@ class IsaacSimWorker:
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                     obj_prim.set_world_pose(position=pos, orientation=rot)
                 else:
-                    # Object absent (None pose) — hide and banish far away to prevent phantom collisions
-                    obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
-                    if obj_usd_prim and obj_usd_prim.IsValid():
-                        set_prim_visibility(obj_usd_prim, False)
-                        print(f"[Worker]    👻 set_prim_visibility(False) for {obj_name} at {obj_prim.prim_path}")
-                    else:
-                        print(f"[Worker]    ⚠️  Could not get USD prim for {obj_name} at {obj_prim.prim_path}")
+                    # Object absent (None pose) — just move far away
                     obj_prim.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
                     if hasattr(obj_prim, 'set_linear_velocity'):
                         obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                    print(f"[Worker]    👻 Hidden + banished {obj_name} to [0,0,-100] (state={state}, type={type(state)})")
+                    print(f"[Worker]    👻 Banished {obj_name} to [0,0,-100] (state={state})")
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -1002,17 +980,7 @@ class IsaacSimWorker:
                             
                             print(f"📦 Registering objects for user {user_id}: {configured_objects}")
                             
-                            # First, hide all non-configured objects in cloned environment
-                            # (physics already stripped from /World before cloning, so clones inherit that)
-                            _configured_set_clone = set(configured_objects)
-                            _clone_world_prim = get_prim_at_path(target_path)
-                            if _clone_world_prim and _clone_world_prim.IsValid():
-                                for _child in _clone_world_prim.GetChildren():
-                                    _child_name = _child.GetName()
-                                    if _child_name not in _configured_set_clone:
-                                        # Only hide if it looks like an object (not infrastructure)
-                                        if _child_name not in {"wxai", "Drawer", "drawer_shell", "tray_01", "tray_02", "tray_03", "Looks", "Ground", "ground_plane", "GroundPlane", "Environment", "physicsScene", "PhysicsScene"}:
-                                            set_prim_visibility(_child, False)
+                            # Unconfigured objects already banished to z=-100 in /World before cloning
                             
                             # Then register and show only configured objects
                             for obj_name in configured_objects:
