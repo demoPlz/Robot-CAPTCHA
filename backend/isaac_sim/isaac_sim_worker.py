@@ -233,14 +233,45 @@ class IsaacSimWorker:
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
         
-        # Hide all potential objects first (they exist in USD but we only want configured ones visible)
-        all_possible_objects = ["Cube_Blue", "Cube_Red", "Tennis"]  # Known objects in USD
-        for obj_name in all_possible_objects:
-            obj_path = f"/World/{obj_name}"
-            obj_prim = get_prim_at_path(obj_path)
-            if obj_prim and obj_prim.IsValid():
-                set_prim_visibility(obj_prim, False)
-                print(f"✓ Hidden object {obj_name} (not in config)")
+        # Discover ALL object prims in /World and hide+banish any that aren't configured.
+        # This prevents phantom collisions from unconfigured objects (e.g., Cube_Blue/Tennis
+        # left in sorting.usd from the drawer task template).
+        import omni.usd as _omni_usd
+        from pxr import UsdPhysics as _UsdPhysics
+        _stage = _omni_usd.get_context().get_stage()
+        _world_prim = _stage.GetPrimAtPath("/World")
+        # Prims to never touch (robot, cameras, lights, drawers, trays, materials, ground)
+        _infrastructure_prims = {
+            "wxai", "Camera_Front", "Camera_Left", "Camera_Right", "Camera_Top",
+            "Drawer", "drawer_shell", "tray_01", "tray_02", "tray_03",
+            "Looks", "Ground", "ground_plane", "GroundPlane", "Environment",
+            "physicsScene", "PhysicsScene",
+        }
+        _configured_set = set(configured_objects)
+        for child_prim in _world_prim.GetChildren():
+            child_name = child_prim.GetName()
+            if child_name in _infrastructure_prims or child_name in _configured_set:
+                continue
+            # Check if this prim has physics (RigidBody or Collision)
+            has_physics = (
+                child_prim.HasAPI(_UsdPhysics.RigidBodyAPI) or
+                child_prim.HasAPI(_UsdPhysics.CollisionAPI)
+            )
+            if has_physics:
+                child_path = str(child_prim.GetPath())
+                # Hide visually
+                set_prim_visibility(child_prim, False)
+                # Remove physics APIs so it can NEVER collide
+                if child_prim.HasAPI(_UsdPhysics.RigidBodyAPI):
+                    child_prim.RemoveAPI(_UsdPhysics.RigidBodyAPI)
+                if child_prim.HasAPI(_UsdPhysics.CollisionAPI):
+                    child_prim.RemoveAPI(_UsdPhysics.CollisionAPI)
+                # Also remove from any child meshes (collision shapes)
+                from pxr import Usd as _Usd
+                for desc in _Usd.PrimRange(child_prim):
+                    if desc.HasAPI(_UsdPhysics.CollisionAPI):
+                        desc.RemoveAPI(_UsdPhysics.CollisionAPI)
+                print(f"✓ Hidden + physics disabled for unconfigured object {child_name} at {child_path}")
         
         # Dynamically load and show only configured objects
         for obj_name in configured_objects:
@@ -690,11 +721,13 @@ class IsaacSimWorker:
         object_states = config.get("object_poses", {})
 
         print(f"[Worker] 📦 Positioning objects (gravity OFF, won't fall):")
+        print(f"[Worker]    object_states keys: {list(object_states.keys())}")
+        print(f"[Worker]    self.objects keys:   {list(self.objects.keys())}")
         for obj_name, pose in object_states.items():
             if pose:
                 print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
             else:
-                print(f"[Worker]    {obj_name}: ABSENT (will be hidden)")
+                print(f"[Worker]    {obj_name}: ABSENT/None (will be hidden)")
 
         # Dynamically set poses for all configured objects
         from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
@@ -718,11 +751,14 @@ class IsaacSimWorker:
                     obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
                     if obj_usd_prim and obj_usd_prim.IsValid():
                         set_prim_visibility(obj_usd_prim, False)
-                    obj_prim.set_world_pose(position=np.array([100.0, 100.0, 0.0]))
+                        print(f"[Worker]    👻 set_prim_visibility(False) for {obj_name} at {obj_prim.prim_path}")
+                    else:
+                        print(f"[Worker]    ⚠️  Could not get USD prim for {obj_name} at {obj_prim.prim_path}")
+                    obj_prim.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
                     if hasattr(obj_prim, 'set_linear_velocity'):
                         obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                    print(f"[Worker]    👻 Hidden + banished {obj_name} (not detected in scene)")
+                    print(f"[Worker]    👻 Hidden + banished {obj_name} to [0,0,-100] (state={state}, type={type(state)})")
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -960,19 +996,23 @@ class IsaacSimWorker:
                                     configured_objects = list(self.last_sync_config.get("object_poses", {}).keys())
                             
                             if not configured_objects:
-                                # Last resort: register all known objects
-                                configured_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
-                                print(f"⚠️ No config available, registering all objects for user {user_id}")
+                                # Last resort: use configured_object_names (should always be set from init)
+                                configured_objects = list(getattr(self, 'configured_object_names', []))
+                                print(f"⚠️ Using configured_object_names fallback for user {user_id}: {configured_objects}")
                             
                             print(f"📦 Registering objects for user {user_id}: {configured_objects}")
                             
-                            # First, hide all possible objects in cloned environment
-                            all_possible_objects = ["Cube_Blue", "Cube_Red", "Tennis"]
-                            for obj_name in all_possible_objects:
-                                obj_path = f"{target_path}/{obj_name}"
-                                obj_prim = get_prim_at_path(obj_path)
-                                if obj_prim and obj_prim.IsValid():
-                                    set_prim_visibility(obj_prim, False)
+                            # First, hide all non-configured objects in cloned environment
+                            # (physics already stripped from /World before cloning, so clones inherit that)
+                            _configured_set_clone = set(configured_objects)
+                            _clone_world_prim = get_prim_at_path(target_path)
+                            if _clone_world_prim and _clone_world_prim.IsValid():
+                                for _child in _clone_world_prim.GetChildren():
+                                    _child_name = _child.GetName()
+                                    if _child_name not in _configured_set_clone:
+                                        # Only hide if it looks like an object (not infrastructure)
+                                        if _child_name not in {"wxai", "Drawer", "drawer_shell", "tray_01", "tray_02", "tray_03", "Looks", "Ground", "ground_plane", "GroundPlane", "Environment", "physicsScene", "PhysicsScene"}:
+                                            set_prim_visibility(_child, False)
                             
                             # Then register and show only configured objects
                             for obj_name in configured_objects:
@@ -1751,14 +1791,7 @@ class IsaacSimWorker:
             robot.set_joint_positions(robot_joints_8dof)
 
             # STEP 3: Reset objects
-            object_states = config_to_use.get(
-                "object_poses",
-                {
-                    "Cube_Blue": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_Red": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]},
-                },
-            )
+            object_states = config_to_use.get("object_poses", {})
 
             from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
 

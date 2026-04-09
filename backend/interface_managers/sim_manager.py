@@ -226,6 +226,11 @@ class SimManager:
                 "drawer_joint_positions": drawer_joint_positions if drawer_joint_positions else {},
             }
 
+            # Diagnostic: log which objects are None (deselected) vs present
+            obj_poses = config["object_poses"]
+            absent = [k for k, v in obj_poses.items() if v is None]
+            present = [k for k, v in obj_poses.items() if v is not None]
+            print(f"📦 [SimManager] object_poses: present={present}, absent/None={absent}")
             print(f"🗄️  [SimManager] Config drawer_joint_positions: {config['drawer_joint_positions']}")
 
             # Use persistent worker for fast capture with animation sync
