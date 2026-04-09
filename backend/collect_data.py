@@ -234,6 +234,8 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     # When resuming from crash, start counter at already-saved episodes
     # so we only record enough new episodes to reach the original target
     recorded_episodes = dataset.meta.total_episodes if phase1_resumed else 0
+    import threading
+    _checkpoint_lock = threading.Lock()  # Prevents overlapping background checkpoint saves
     while True:
         if recorded_episodes >= cfg.num_episodes:
             break
@@ -283,13 +285,23 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
         crowd_interface.state_manager.episodes_marked_as_end.discard(current_episode_index)
         
         # Auto-checkpoint: persist crowd interface state after each episode
-        # so a crash loses at most the current in-progress episode
+        # so a crash loses at most the current in-progress episode.
+        # Run in background thread so recording can continue immediately.
         if _CROWD_CONFIG.asynchronous_mode:
-            try:
-                crowd_interface.save_phase1_checkpoint()
-                print(f"💾 Auto-checkpoint saved after episode {current_episode_index}")
-            except Exception as e:
-                print(f"⚠️  Failed to auto-checkpoint after episode {current_episode_index}: {e}")
+            def _bg_checkpoint(ep_idx):
+                try:
+                    # Wait for any previous checkpoint to finish before starting
+                    _checkpoint_lock.acquire()
+                    try:
+                        crowd_interface.save_phase1_checkpoint()
+                        print(f"💾 Auto-checkpoint saved after episode {ep_idx}")
+                    finally:
+                        _checkpoint_lock.release()
+                except Exception as e:
+                    print(f"⚠️  Failed to auto-checkpoint after episode {ep_idx}: {e}")
+            
+            t = Thread(target=_bg_checkpoint, args=(current_episode_index,), daemon=True, name=f"checkpoint-{current_episode_index}")
+            t.start()
 
         if events["stop_recording"]:
             break
@@ -299,12 +311,13 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
     
     # Auto-finalize async pool if in async mode
     if _CROWD_CONFIG.asynchronous_mode:
-        # Save checkpoint before finalizing (allows restart of Phase 2 later)
-        try:
-            checkpoint_path = crowd_interface.save_phase1_checkpoint()
-            log_say(f"Phase 1 checkpoint saved: {checkpoint_path}", cfg.play_sounds)
-        except Exception as e:
-            print(f"⚠️  Failed to save Phase 1 checkpoint: {e}")
+        # Wait for any in-flight background checkpoint to finish, then save final
+        with _checkpoint_lock:
+            try:
+                checkpoint_path = crowd_interface.save_phase1_checkpoint()
+                log_say(f"Phase 1 checkpoint saved: {checkpoint_path}", cfg.play_sounds)
+            except Exception as e:
+                print(f"⚠️  Failed to save Phase 1 checkpoint: {e}")
         
         log_say("Finalizing admin phase and preparing async pool", cfg.play_sounds)
         result = crowd_interface.state_manager.finalize_admin_phase(robot=robot)
