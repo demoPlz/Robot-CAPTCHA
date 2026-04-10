@@ -2014,11 +2014,16 @@ async function refreshViews() {
   }
 }
 
-// Helper function to build get-state URL with user email for timing tracking
+// Helper function to build get-state URL with user email and name for timing tracking
 function buildGetStateUrl() {
   const userIdentity = JSON.parse(localStorage.getItem('userIdentity') || '{}');
   const userEmail = userIdentity.email || '';
-  return userEmail ? `/api/get-state?user_email=${encodeURIComponent(userEmail)}` : `/api/get-state`;
+  const userName = userIdentity.name || '';
+  const params = new URLSearchParams();
+  if (userEmail) params.set('user_email', userEmail);
+  if (userName) params.set('user_name', userName);
+  const qs = params.toString();
+  return qs ? `/api/get-state?${qs}` : `/api/get-state`;
 }
 
 async function getInitialState() {

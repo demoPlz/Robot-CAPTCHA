@@ -648,7 +648,7 @@ class StateManager:
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
 
-    def get_latest_state(self, user_email: str = None) -> dict:
+    def get_latest_state(self, user_email: str = None, user_name: str = None) -> dict:
         """Get a pending state from current serving episode. 
         
         Only serves states that have been approved by the monitor admin.
@@ -658,7 +658,13 @@ class StateManager:
         
         Args:
             user_email: Email of user requesting state (for timing tracking)
+            user_name: User name for test user detection (e.g. test_approved)
         """
+        # Store user name mapping early so we can detect test users at assignment time
+        if user_email and user_name:
+            with self.state_lock:
+                self.async_user_names[user_email] = user_name.lower()
+        
         
         # ASYNC MODE: Check if pool is finalized and if user is admin
         if self.asynchronous_mode:
@@ -3314,6 +3320,9 @@ class StateManager:
         Weight formula: weight = (max_need - need + 1)²
         where need = required_responses - approved_count
         
+        For test_approved users, states are served in deterministic order
+        (sorted by episode_id then state_id) to enable sequential processing.
+        
         Args:
             user_email: Email of user requesting state
             
@@ -3333,17 +3342,16 @@ class StateManager:
                 pass  # New user starting async labeling
             
             user_submitted = self.async_user_submissions[user_email]
+            user_name = self.async_user_names.get(user_email, "").lower()
+            is_test_approved = (user_name == "test_approved")
             
             # Build list of available states (unsubmitted by user, not full)
             available_states = []
             needs = []
             
             for state_key, state_info in self.async_state_pool.items():
-                # Get user's name from stored mapping (for test user detection)
-                user_name = self.async_user_names.get(user_email, "").lower()
-                
                 # Skip if user already submitted to this state (except test_approved)
-                if state_key in user_submitted and user_name != "test_approved":
+                if state_key in user_submitted and not is_test_approved:
                     continue
                 
                 # Special handling for test_rejected: check if they've reached rejection limit
@@ -3369,19 +3377,22 @@ class StateManager:
             if not available_states:
                 return None
             
-            # Calculate weights: states closer to completion get higher weight
-            # weight = (max_need - need + 1)²
-            max_need = max(needs)
-            weights = [(max_need - need + 1) ** 2 for need in needs]
-            
-            # Weighted random selection
-            import random
-            selected_idx = random.choices(range(len(available_states)), weights=weights, k=1)[0]
-            state_key, state_info = available_states[selected_idx]
+            # test_approved: serve in deterministic order (episode_id, state_id)
+            if is_test_approved:
+                available_states.sort(key=lambda x: x[0])  # sort by (episode_id, state_id)
+                state_key, state_info = available_states[0]
+            else:
+                # Calculate weights: states closer to completion get higher weight
+                # weight = (max_need - need + 1)²
+                max_need = max(needs)
+                weights = [(max_need - need + 1) ** 2 for need in needs]
+                
+                # Weighted random selection
+                import random
+                selected_idx = random.choices(range(len(available_states)), weights=weights, k=1)[0]
+                state_key, state_info = available_states[selected_idx]
             
             episode_id, state_id = state_key
-            selected_need = needs[selected_idx]
-            selected_weight = weights[selected_idx]
             
             # Assign this state to the user (prevents refresh shopping)
             self.async_user_current_state[user_email] = state_key

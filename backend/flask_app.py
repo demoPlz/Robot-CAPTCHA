@@ -140,10 +140,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 response.headers["Expires"] = "0"
                 return response
             
-            # Extract user email from request to track timing
+            # Extract user email and name from request to track timing and user identity
             user_email = request.args.get('user_email', None) or None  # Convert empty string to None
+            user_name = request.args.get('user_name', None) or None
             
-            state = crowd_interface.get_latest_state(user_email=user_email)
+            state = crowd_interface.get_latest_state(user_email=user_email, user_name=user_name)
 
             # Check if this is a status response (no real state)
             if isinstance(state, dict) and state.get("status"):
