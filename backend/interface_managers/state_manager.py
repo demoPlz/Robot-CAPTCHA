@@ -863,6 +863,7 @@ class StateManager:
             is_gripper_only = False
             is_home_position = False
             is_manual_autofill = False
+            is_container_preset = False
             
             if self.asynchronous_mode and is_admin_submission and state_info["critical"]:
                 # Check if admin manually requested autofill
