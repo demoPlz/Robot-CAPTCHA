@@ -966,6 +966,13 @@ class StateManager:
                 if "user_timings" not in state_info:
                     state_info["user_timings"] = {}
                 
+                # Compute first-interaction → submit duration from frontend timestamps (ms)
+                first_interaction_at_ms = response_data.get("first_interaction_at")
+                submit_at_ms = response_data.get("submit_at")
+                interaction_to_submit_seconds = None
+                if first_interaction_at_ms and submit_at_ms:
+                    interaction_to_submit_seconds = (submit_at_ms - first_interaction_at_ms) / 1000.0
+                
                 # If user wasn't tracked before (missed get_latest_state call), initialize now
                 if user_email not in state_info["user_timings"]:
                     state_info["user_timings"][user_email] = {
@@ -974,6 +981,7 @@ class StateManager:
                         "submitted_at": now,
                         "submitted_at_iso": now_iso,
                         "duration_seconds": None,  # Can't calculate without start time
+                        "interaction_to_submit_seconds": interaction_to_submit_seconds,
                     }
                     print(f"⚠️  User {user_name} ({user_email}) timing started at submission (no get_latest_state call)")
                 else:
@@ -983,6 +991,7 @@ class StateManager:
                     timing["submitted_at_iso"] = now_iso
                     if timing["served_at"]:
                         timing["duration_seconds"] = now - timing["served_at"]
+                    timing["interaction_to_submit_seconds"] = interaction_to_submit_seconds
                 
                 # Track submission in async mode (mark as submitted so they can't submit again)
                 if self.asynchronous_mode and self.async_pool_finalized:
@@ -2676,6 +2685,9 @@ class StateManager:
                     if user_email in state_info.get("user_timings", {}):
                         timing = state_info["user_timings"][user_email]
                         duration_seconds = timing.get("duration_seconds", 0.0)
+                        interaction_to_submit_seconds = timing.get("interaction_to_submit_seconds")
+                    else:
+                        interaction_to_submit_seconds = None
                     
                     # Calculate user's current approval rate
                     user_approved = 0
@@ -2718,6 +2730,7 @@ class StateManager:
                         current_total_count=user_total,
                         ip_address=ip_address,
                         queue_length=queue_length,
+                        interaction_to_submit_seconds=interaction_to_submit_seconds,
                     )
             
             # After recording decision, clear current and activate next from queue (only for normal flow)

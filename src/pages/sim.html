@@ -4272,6 +4272,15 @@ loader.load(
     // Track whether animation was used for this state (for async mode logging)
     let animationUsedForCurrentState = false;
     
+    // Track first user interaction timestamp (drag, slider, gripper, animation click)
+    let firstInteractionAt = null;
+    function markFirstInteraction() {
+      if (!firstInteractionAt) {
+        firstInteractionAt = Date.now();
+        console.log('[timing] First interaction recorded at', new Date(firstInteractionAt).toISOString());
+      }
+    }
+    
     // After: const state = await getInitialState();
     RECORDING_ALLOWED =
       !!(state?.demo_video?.enabled ?? state?.record_demo_videos ?? state?.flags?.record_demo_videos ?? false);
@@ -4915,6 +4924,7 @@ loader.load(
     
     function onGripperChange(newDir) {
       cancelAnimationIfRunning('gripper changed');
+      markFirstInteraction();
       gripDir = newDir;                         // Update the current gripper direction
       drawGripArrows(newDir);
       updateGripArrowVisibility();
@@ -5547,6 +5557,7 @@ loader.load(
           if (success) {
             // Track that animation was used for this state
             animationUsedForCurrentState = true;
+            markFirstInteraction();
             
             // Update UI for animation mode
             animateBtn.textContent = '■ Stop'; // Change to Stop
@@ -6195,6 +6206,9 @@ loader.load(
 
       // Clear home position flag when user manually changes pose
       homePositionClicked = false;
+
+      // Track first interaction timing
+      markFirstInteraction();
 
       // Update button states when goal changes
       if (typeof updateAnimateButtonState === 'function') updateAnimateButtonState();
@@ -6987,6 +7001,7 @@ loader.load(
       const isAutofillSubmission = confirmBtn.dataset.autofillMode === 'true';
 
       try {
+        const submitAt = Date.now();
         const payload = {
           joint_positions: jointMap,
           gripper: gripperValue,
@@ -7000,6 +7015,9 @@ loader.load(
           user_email: window.userIdentity?.email,
           // Track animation usage for async mode logging
           used_animation: animationUsedForCurrentState,
+          // Timing: first interaction → submit (ms epoch timestamps)
+          first_interaction_at: firstInteractionAt,
+          submit_at: submitAt,
           // NEW: Autofill flag for admin-initiated autofill
           autofill_requested: isAutofillSubmission
         };

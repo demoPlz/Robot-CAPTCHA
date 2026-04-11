@@ -97,6 +97,7 @@ class AsyncUserLogger:
         current_total_count: Optional[int] = None,
         ip_address: Optional[str] = None,
         queue_length: int = 0,
+        interaction_to_submit_seconds: Optional[float] = None,
     ):
         """Log a single submission immediately after approval/rejection.
         
@@ -105,13 +106,14 @@ class AsyncUserLogger:
             user_name: User's name
             episode_id: Episode ID
             state_id: State ID
-            duration_seconds: Time spent on this submission
+            duration_seconds: Time spent on this submission (served -> submit)
             used_animation: Whether user clicked animation for this submission
             approval_status: 1 (approved), -1 (rejected), None (pending)
             current_approval_rate: User's approval rate so far (0.0-1.0)
             current_approval_count: Number of approved submissions so far
             current_total_count: Total number of reviewed submissions so far
             ip_address: IP address of the user (optional)
+            interaction_to_submit_seconds: Time from first interaction to submit
         """
         timestamp = time.time()
         timestamp_iso = datetime.now().isoformat()
@@ -165,6 +167,7 @@ class AsyncUserLogger:
             "episode_id": episode_id,
             "state_id": state_id,
             "duration_seconds": round(duration_seconds, 2),
+            "interaction_to_submit_seconds": round(interaction_to_submit_seconds, 2) if interaction_to_submit_seconds is not None else None,
             "used_animation": used_animation,
             "approval_status": approval_status,  # 1=approved, -1=rejected, None=pending
             "approval_status_str": (
