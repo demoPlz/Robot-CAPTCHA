@@ -4147,6 +4147,25 @@ class StateManager:
             self.async_user_logger.user_last_activity.update(
                 logger_state.get("user_last_activity", {})
             )
+            
+            # Write resume marker to JSONL so audit trail shows restart boundary
+            import datetime
+            resume_marker = {
+                "type": "checkpoint_resume",
+                "timestamp": time.time(),
+                "timestamp_iso": datetime.datetime.now().isoformat(),
+                "checkpoint_saved_at": checkpoint.get("saved_at"),
+                "checkpoint_saved_at_iso": checkpoint.get("saved_at_iso"),
+                "restored_states": restored_states,
+                "restored_approved": restored_approved,
+                "restored_rejected": checkpoint.get("total_rejected", 0),
+                "users_restored": list(logger_state.get("user_stats", {}).keys()),
+            }
+            try:
+                with open(self.async_user_logger.submission_log_path, "a") as f:
+                    f.write(json.dumps(resume_marker) + "\n")
+            except Exception as e:
+                print(f"⚠️  Could not write resume marker to JSONL: {e}")
         
         total_rejected = checkpoint.get("total_rejected", 0)
         print(f"✅ Phase 2 checkpoint loaded: {restored_states} states, {restored_approved} approved, {total_rejected} rejected")
