@@ -90,7 +90,7 @@ const TASK_CONFIGS = {
     hideRobotInTopView: true,
     // Dynamic preset to push straight down
     containerPresets: [
-      { key: 'down', color: '#64748b', label: '⬇️', action: 'push_down' },
+      { key: 'down', color: '#475569', label: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="16"></line><polyline points="7 11 12 16 17 11"></polyline><line x1="5" y1="20" x2="19" y2="20"></line></svg>', action: 'push_down', title: 'Push straight down to the bottom' },
     ],
   },
   sorting: {

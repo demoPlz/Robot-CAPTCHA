@@ -2453,10 +2453,14 @@ class StateManager:
         state_info["video_prompt"] = video_id  # Updated field name
         state_info["prompt_ready"] = True
 
-        # Check if this is a critical state with "end." text - auto-fill with current position
-        if text and text.strip().lower() == "end.":
-            with self.state_lock:
-                self._auto_fill_end_state_locked(state_info, episode_id, state_id)
+        if text:
+            clean_text = text.strip().lower()
+            if clean_text == "end.":
+                with self.state_lock:
+                    self._auto_fill_end_state_locked(state_info, episode_id, state_id)
+            elif clean_text == "return to home position.":
+                with self.state_lock:
+                    self._auto_fill_home_state_locked(state_info, episode_id, state_id)
 
     def _run_pre_approval_loop(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Phase 1: Sample actions one-by-one for pre-approval until stopping condition met.
@@ -3139,6 +3143,63 @@ class StateManager:
             "overall_avg_submission_time": sum(all_submission_times) / len(all_submission_times) if all_submission_times else 0,
             "overall_avg_state_duration": sum(all_state_durations) / len(all_state_durations) if all_state_durations else 0,
         }
+
+    def _auto_fill_home_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
+        """Auto-fill a critical state labeled as 'Return to Home position.' with the home position.
+
+        MUST be called with self.state_lock already held.
+        """
+        import math
+        HOME_POSITION_DEG = self.home_position_deg if self.home_position_deg else [0, 60, 75, -60, 0, 0, 2]
+        
+        goal_positions = []
+        for i in range(len(JOINT_NAMES) - 1):
+            v = HOME_POSITION_DEG[i] * math.pi / 180.0
+            goal_positions.append(v)
+            
+        # Gripper handling identical to _auto_fill_end_state_locked logic
+        home_gripper_val = HOME_POSITION_DEG[-1]
+        goal_positions.append(0.044 if home_gripper_val > 0 else 0.0)
+
+        position_action = torch.tensor(goal_positions, dtype=torch.float32)
+        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
+        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
+
+        state_info["action_to_save"] = all_actions
+        
+        # Create execution_history with all actions auto-approved
+        state_info["execution_history"] = [
+            {
+                "action": position_action.clone(),
+                "propensity": 1.0,
+                "approval": 1,  # Auto-approved
+                "submitted_by": [],  # Auto-filled, no user
+            }
+            for _ in range(self.required_responses_per_critical_state)
+        ]
+        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
+        state_info["pre_approval_loop_complete"] = True
+
+        # Mark as approved since we're auto-filling with "Return to Home position."
+        state_info["approval_status"] = "approved"
+        
+        # Don't mark episode as end here, just autofill and complete the state
+
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        del self.pending_states_by_episode[episode_id][state_id]
+
+        # Clear pending approval if this state was awaiting approval
+        with self.approval_lock:
+            if (
+                self.pending_approval_state
+                and self.pending_approval_state["episode_id"] == int(episode_id)
+                and self.pending_approval_state["state_id"] == int(state_id)
+            ):
+                self.pending_approval_state = None
+        
+        print(f"🏠 State {state_id} automatically fast-forwarded to Home Position!")
 
     def _auto_fill_end_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Auto-fill an critical state labeled as "end." with multiple copies of its current position.
