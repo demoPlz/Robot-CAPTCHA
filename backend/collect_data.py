@@ -675,6 +675,11 @@ def control_robot(cfg: ControlPipelineConfig):
             # Don't start image_writer - use synchronous image writing for Phase 2
             print(f"✅ Dataset created: {crowd_interface.dataset_manager.dataset.root}")
         
+        # Relocate async user logger to dataset directory (it was initialized with
+        # /tmp/ fallback because dataset didn't exist at CrowdInterface init time)
+        if crowd_interface.state_manager.async_user_logger:
+            crowd_interface.state_manager.async_user_logger.relocate(output_dataset_root)
+        
         # Finalize admin phase and serve async pool (no robot needed)
         print(f"\n🚀 Finalizing admin phase and serving async pool...")
         finalize_result = crowd_interface.state_manager.finalize_admin_phase(robot=None)
