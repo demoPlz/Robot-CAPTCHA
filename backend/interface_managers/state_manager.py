@@ -3898,19 +3898,23 @@ class StateManager:
             "saved_at_iso": checkpoint.get("saved_at_iso"),
         }
 
-    def save_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
+    def save_phase2_checkpoint(self, checkpoint_path: Path, banned_ips: list = None) -> dict:
         """Save Phase 2 async labeling progress — ALL state for crash recovery.
         
         Captures:
         - Per-state execution_history (approved/rejected labels, actions)
+        - Per-state actions list (raw torch tensor submissions)
+        - Per-state user_submissions (who submitted what)
+        - Per-state responses_received count
         - User submission tracking (who labeled what)
         - User name mapping (email → name)
         - test_rejected per-state rejection counts
         - AsyncUserLogger in-memory stats (user_stats, activity timestamps)
-        - Completed states buffer execution history (for finalization)
+        - Banned IPs
         
         Args:
             checkpoint_path: Path to save checkpoint JSON file
+            banned_ips: List of banned IP addresses
             
         Returns:
             dict with status and checkpoint path
@@ -3936,6 +3940,16 @@ class StateManager:
                 total_approved += num_approved
                 total_rejected += num_rejected
                 
+                # Serialize actions list (torch tensors -> lists)
+                serialized_actions = []
+                for action in state_info.get("actions", []):
+                    if isinstance(action, torch.Tensor):
+                        serialized_actions.append(action.tolist())
+                    elif isinstance(action, list):
+                        serialized_actions.append(action)
+                    else:
+                        serialized_actions.append(list(action))
+                
                 pool_states[f"{ep_id}_{state_id}"] = {
                     "episode_id": ep_id,
                     "state_id": state_id,
@@ -3947,6 +3961,9 @@ class StateManager:
                     "approval_status": state_info.get("approval_status"),
                     "user_timings": state_info.get("user_timings", {}),
                     "actual_num_submissions": state_info.get("actual_num_submissions", 0),
+                    "responses_received": state_info.get("responses_received", 0),
+                    "actions": serialized_actions,
+                    "user_submissions_list": state_info.get("user_submissions", []),
                 }
             
             # Save user submission tracking
@@ -3980,7 +3997,7 @@ class StateManager:
                 }
             
             checkpoint = {
-                "version": 2,
+                "version": 3,
                 "type": "phase2",
                 "saved_at": time.time(),
                 "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
@@ -3989,6 +4006,7 @@ class StateManager:
                 "async_user_names": dict(self.async_user_names),
                 "test_rejected_rejections": test_rejected_rejections,
                 "logger_state": logger_state,
+                "banned_ips": banned_ips or [],
                 "total_pool_size": len(self.async_state_pool),
                 "total_approved": total_approved,
                 "total_rejected": total_rejected,
@@ -4070,6 +4088,23 @@ class StateManager:
                     num_approved = sum(1 for e in restored_history if e.get("approval") == 1)
                     restored_approved += num_approved
                     restored_states += 1
+                
+                # Restore responses_received
+                if "responses_received" in saved_state:
+                    state_info["responses_received"] = saved_state["responses_received"]
+                
+                # Restore actions (deserialize tensors)
+                saved_actions = saved_state.get("actions", [])
+                if saved_actions:
+                    state_info["actions"] = [
+                        torch.tensor(a, dtype=torch.float32) if isinstance(a, list) else a
+                        for a in saved_actions
+                    ]
+                
+                # Restore per-state user_submissions list
+                saved_user_subs = saved_state.get("user_submissions_list", [])
+                if saved_user_subs:
+                    state_info["user_submissions"] = saved_user_subs
             
             # Restore user submission tracking
             user_submissions = checkpoint.get("user_submissions", {})
@@ -4119,5 +4154,6 @@ class StateManager:
             "status": "success",
             "restored_states": restored_states,
             "restored_approved": restored_approved,
+            "banned_ips": checkpoint.get("banned_ips", []),
         }
 

@@ -1647,7 +1647,9 @@ class CrowdInterface:
                 raise RuntimeError("Dataset not initialized - cannot save checkpoint")
             checkpoint_path = Path(self.dataset_manager.dataset.root) / "phase2_checkpoint.json"
         
-        return self.state_manager.save_phase2_checkpoint(checkpoint_path)
+        # Pass banned IPs so they're persisted in the checkpoint
+        banned_ips = self.get_banned_ips()
+        return self.state_manager.save_phase2_checkpoint(checkpoint_path, banned_ips=banned_ips)
 
     def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
         """Load Phase 2 checkpoint and restore async labeling progress.
@@ -1660,4 +1662,13 @@ class CrowdInterface:
         Returns:
             dict with status, restored_states, restored_approved
         """
-        return self.state_manager.load_phase2_checkpoint(checkpoint_path)
+        result = self.state_manager.load_phase2_checkpoint(checkpoint_path)
+        
+        # Restore banned IPs from checkpoint
+        if result.get("status") == "success" and result.get("banned_ips"):
+            with self.banned_ips_lock:
+                self.banned_ips.update(result["banned_ips"])
+            if result["banned_ips"]:
+                print(f"   🚫 Restored {len(result['banned_ips'])} banned IPs")
+        
+        return result
