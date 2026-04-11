@@ -3898,3 +3898,152 @@ class StateManager:
             "saved_at_iso": checkpoint.get("saved_at_iso"),
         }
 
+    def save_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
+        """Save Phase 2 async labeling progress (execution_history, approvals).
+        
+        Captures the current state of async user labeling so it can be
+        resumed after a crash or restart. Saves:
+        - Per-state execution_history (approved/rejected labels)
+        - User submission tracking (who labeled what)
+        - Async pool completion status
+        
+        Args:
+            checkpoint_path: Path to save checkpoint JSON file
+            
+        Returns:
+            dict with status and checkpoint path
+        """
+        checkpoint_path = Path(checkpoint_path)
+        
+        with self.state_lock:
+            # Snapshot execution_history for each state in the async pool
+            pool_states = {}
+            total_approved = 0
+            for (ep_id, state_id), state_info in self.async_state_pool.items():
+                exec_history = state_info.get("execution_history", [])
+                serialized_history = []
+                for entry in exec_history:
+                    new_entry = dict(entry)
+                    if "action" in new_entry and isinstance(new_entry["action"], torch.Tensor):
+                        new_entry["action"] = new_entry["action"].tolist()
+                    serialized_history.append(new_entry)
+                
+                num_approved = sum(1 for e in exec_history if e.get("approval") == 1)
+                total_approved += num_approved
+                
+                pool_states[f"{ep_id}_{state_id}"] = {
+                    "episode_id": ep_id,
+                    "state_id": state_id,
+                    "execution_history": serialized_history,
+                    "num_approved": num_approved,
+                    "num_pre_approvals_completed": state_info.get("num_pre_approvals_completed", 0),
+                    "pre_approval_loop_complete": state_info.get("pre_approval_loop_complete", False),
+                    "approval_status": state_info.get("approval_status"),
+                    "user_timings": state_info.get("user_timings", {}),
+                    "actual_num_submissions": state_info.get("actual_num_submissions", 0),
+                }
+            
+            # Save user submission tracking
+            user_submissions = {
+                email: [list(key) for key in submitted_set]
+                for email, submitted_set in self.async_user_submissions.items()
+            }
+            
+            checkpoint = {
+                "version": 1,
+                "type": "phase2",
+                "saved_at": time.time(),
+                "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
+                "pool_states": pool_states,
+                "user_submissions": user_submissions,
+                "async_user_names": dict(self.async_user_names),
+                "total_pool_size": len(self.async_state_pool),
+                "total_approved": total_approved,
+            }
+        
+        # Atomic write
+        import os
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = checkpoint_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(checkpoint, f, indent=2)
+        os.replace(tmp_path, checkpoint_path)
+        
+        print(f"✅ Phase 2 checkpoint saved: {total_approved} approved labels across {len(pool_states)} states → {checkpoint_path}")
+        return {"status": "success", "path": str(checkpoint_path), "total_approved": total_approved}
+
+    def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
+        """Load Phase 2 checkpoint and restore async labeling progress.
+        
+        Restores execution_history (approved/rejected labels) into the
+        already-finalized async pool. Must be called AFTER finalize_admin_phase().
+        
+        Args:
+            checkpoint_path: Path to checkpoint JSON file
+            
+        Returns:
+            dict with status, restored_states, restored_approved
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            return {"status": "error", "message": f"Checkpoint not found: {checkpoint_path}"}
+        
+        with open(checkpoint_path, "r") as f:
+            checkpoint = json.load(f)
+        
+        if checkpoint.get("type") != "phase2":
+            return {"status": "error", "message": f"Not a Phase 2 checkpoint (type={checkpoint.get('type')})"}
+        
+        pool_states = checkpoint.get("pool_states", {})
+        restored_states = 0
+        restored_approved = 0
+        
+        with self.state_lock:
+            if not self.async_pool_finalized:
+                return {"status": "error", "message": "Async pool not finalized - call finalize_admin_phase() first"}
+            
+            for key, saved_state in pool_states.items():
+                ep_id = saved_state["episode_id"]
+                state_id = saved_state["state_id"]
+                pool_key = (ep_id, state_id)
+                
+                if pool_key not in self.async_state_pool:
+                    continue
+                
+                state_info = self.async_state_pool[pool_key]
+                
+                # Restore execution_history (deserialize tensors)
+                restored_history = []
+                for entry in saved_state.get("execution_history", []):
+                    new_entry = dict(entry)
+                    if "action" in new_entry and isinstance(new_entry["action"], list):
+                        new_entry["action"] = torch.tensor(new_entry["action"], dtype=torch.float32)
+                    restored_history.append(new_entry)
+                
+                if restored_history:
+                    state_info["execution_history"] = restored_history
+                    state_info["num_pre_approvals_completed"] = saved_state.get("num_pre_approvals_completed", 0)
+                    state_info["pre_approval_loop_complete"] = saved_state.get("pre_approval_loop_complete", False)
+                    state_info["approval_status"] = saved_state.get("approval_status")
+                    state_info["user_timings"] = saved_state.get("user_timings", {})
+                    state_info["actual_num_submissions"] = saved_state.get("actual_num_submissions", 0)
+                    
+                    num_approved = sum(1 for e in restored_history if e.get("approval") == 1)
+                    restored_approved += num_approved
+                    restored_states += 1
+            
+            # Restore user submission tracking
+            user_submissions = checkpoint.get("user_submissions", {})
+            for email, submitted_keys in user_submissions.items():
+                self.async_user_submissions[email] = {tuple(k) for k in submitted_keys}
+            
+            # Restore user name mapping
+            saved_names = checkpoint.get("async_user_names", {})
+            self.async_user_names.update(saved_names)
+        
+        print(f"✅ Phase 2 checkpoint loaded: {restored_states} states, {restored_approved} approved labels")
+        return {
+            "status": "success",
+            "restored_states": restored_states,
+            "restored_approved": restored_approved,
+        }

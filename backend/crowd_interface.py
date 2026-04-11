@@ -1618,3 +1618,31 @@ class CrowdInterface:
         """
         return self.state_manager.load_phase1_checkpoint(checkpoint_path)
 
+    def save_phase2_checkpoint(self, checkpoint_path: Path = None) -> dict:
+        """Save Phase 2 async labeling progress checkpoint.
+        
+        Args:
+            checkpoint_path: Path to save checkpoint. If None, saves to dataset root.
+            
+        Returns:
+            dict with status and checkpoint path
+        """
+        if checkpoint_path is None:
+            if self.dataset_manager.dataset is None:
+                raise RuntimeError("Dataset not initialized - cannot save checkpoint")
+            checkpoint_path = Path(self.dataset_manager.dataset.root) / "phase2_checkpoint.json"
+        
+        return self.state_manager.save_phase2_checkpoint(checkpoint_path)
+
+    def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
+        """Load Phase 2 checkpoint and restore async labeling progress.
+        
+        Must be called after finalize_admin_phase().
+        
+        Args:
+            checkpoint_path: Path to checkpoint JSON file
+            
+        Returns:
+            dict with status, restored_states, restored_approved
+        """
+        return self.state_manager.load_phase2_checkpoint(checkpoint_path)
