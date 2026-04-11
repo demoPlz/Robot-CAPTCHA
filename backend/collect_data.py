@@ -624,13 +624,21 @@ def control_robot(cfg: ControlPipelineConfig):
         if dataset_path.exists() and (dataset_path / "meta" / "info.json").exists():
             # Dataset exists - check if it has a Phase 2 checkpoint to resume from
             if (dataset_path / "phase2_checkpoint.json").exists():
-                # Resume mode: clean up dataset artifacts but keep checkpoint
+                # Resume mode: clean up dataset artifacts but keep checkpoint + logs
                 # (dataset is empty since no episodes were saved yet — only checkpoint matters)
                 import shutil
+                KEEP_FILES = {
+                    "phase2_checkpoint.json",
+                    "phase1_checkpoint.json",
+                    "async_user_submissions.jsonl",
+                    "async_user_summary.json",
+                }
                 print(f"📂 Found Phase 2 checkpoint in {dataset_path} — cleaning dataset for re-creation")
                 for item in dataset_path.iterdir():
-                    if item.name == "phase2_checkpoint.json":
-                        continue  # keep checkpoint
+                    if item.name in KEEP_FILES:
+                        continue  # keep checkpoint + logs
+                    if item.name == "obs_cache":
+                        continue  # keep obs cache (needed for state serving)
                     if item.is_dir():
                         shutil.rmtree(item)
                     else:
@@ -695,8 +703,12 @@ def control_robot(cfg: ControlPipelineConfig):
         
         check_interval = 5
         last_status = None
-        last_checkpoint_approved = 0
         CHECKPOINT_INTERVAL = 10  # Auto-checkpoint every 10 individual accepted submissions
+        
+        # If we just resumed, start the counter from the restored count
+        # so we don't immediately trigger a redundant checkpoint
+        initial_status = crowd_interface.state_manager.get_async_pool_status()
+        last_checkpoint_approved = initial_status.get("total_approved", 0)
         
         # Background checkpoint: run saves in a thread to avoid stalling user-facing requests
         import threading

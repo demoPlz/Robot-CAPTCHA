@@ -43,6 +43,46 @@ class AsyncUserLogger:
         
         print(f"📊 Async user logger initialized: {self.submission_log_path}")
 
+    def relocate(self, new_output_dir: Path):
+        """Move logger output to a new directory, migrating existing log files.
+        
+        Used when the dataset directory becomes available after logger creation
+        (e.g. Phase 2 only mode where dataset is created after CrowdInterface init).
+        
+        Args:
+            new_output_dir: New directory for log files
+        """
+        import shutil
+        new_output_dir = Path(new_output_dir)
+        
+        if new_output_dir == self.output_dir:
+            return  # Already there
+        
+        new_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        old_submission_log = self.submission_log_path
+        old_summary_log = self.summary_log_path
+        
+        # Update paths
+        self.output_dir = new_output_dir
+        self.submission_log_path = new_output_dir / "async_user_submissions.jsonl"
+        self.summary_log_path = new_output_dir / "async_user_summary.json"
+        
+        # Migrate existing files (append if destination already exists from a previous run)
+        if old_submission_log.exists():
+            if self.submission_log_path.exists():
+                # Append old entries to existing file
+                with open(old_submission_log, "r") as src, open(self.submission_log_path, "a") as dst:
+                    dst.write(src.read())
+                old_submission_log.unlink()
+            else:
+                shutil.move(str(old_submission_log), str(self.submission_log_path))
+        
+        if old_summary_log.exists():
+            shutil.move(str(old_summary_log), str(self.summary_log_path))
+        
+        print(f"📊 Async user logger relocated to: {self.submission_log_path}")
+
     def log_submission(
         self,
         user_email: str,
