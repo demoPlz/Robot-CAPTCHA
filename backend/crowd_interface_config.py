@@ -135,7 +135,7 @@ class CrowdInterfaceConfig:
                 "switch_green": "Green Bowl"
             }
             self.object_mesh_paths: dict[str, str] = {
-                "switch_teal": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
+                "switch_red": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
                 "switch_yellow": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
                 "switch_dark_blue": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()),
                 "switch_green": str((repo_root / "public" / "assets" / "sleeve.stl").resolve())
