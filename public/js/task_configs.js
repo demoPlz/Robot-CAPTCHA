@@ -88,6 +88,10 @@ const TASK_CONFIGS = {
     homePositionDeg: [0, 100, 90, -78, 0, 0, -1],
     homeGripper: -1,
     hideRobotInTopView: true,
+    // Dynamic preset to push straight down
+    containerPresets: [
+      { key: 'down', color: '#64748b', label: '⬇️', action: 'push_down' },
+    ],
   },
   sorting: {
     absLimits: {

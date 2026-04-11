@@ -913,6 +913,11 @@ class StateManager:
                             is_container_preset = True
                             print(f"📦 Container preset action detected for state {state_id} - auto-filling all slots")
                             break
+                            
+                # Fallback: Frontend can explicitly declare a dynamic preset (e.g. push down for switches)
+                if not is_container_preset and response_data.get("is_dynamic_preset"):
+                    is_container_preset = True
+                    print(f"📦 Dynamic preset action detected for state {state_id} - auto-filling all slots")
             
             if self.asynchronous_mode and state_info["critical"] and is_admin_submission:
                 if is_gripper_only or is_home_position or is_manual_autofill or is_container_preset:
