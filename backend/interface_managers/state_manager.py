@@ -3899,13 +3899,15 @@ class StateManager:
         }
 
     def save_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
-        """Save Phase 2 async labeling progress (execution_history, approvals).
+        """Save Phase 2 async labeling progress — ALL state for crash recovery.
         
-        Captures the current state of async user labeling so it can be
-        resumed after a crash or restart. Saves:
-        - Per-state execution_history (approved/rejected labels)
+        Captures:
+        - Per-state execution_history (approved/rejected labels, actions)
         - User submission tracking (who labeled what)
-        - Async pool completion status
+        - User name mapping (email → name)
+        - test_rejected per-state rejection counts
+        - AsyncUserLogger in-memory stats (user_stats, activity timestamps)
+        - Completed states buffer execution history (for finalization)
         
         Args:
             checkpoint_path: Path to save checkpoint JSON file
@@ -3919,6 +3921,7 @@ class StateManager:
             # Snapshot execution_history for each state in the async pool
             pool_states = {}
             total_approved = 0
+            total_rejected = 0
             for (ep_id, state_id), state_info in self.async_state_pool.items():
                 exec_history = state_info.get("execution_history", [])
                 serialized_history = []
@@ -3929,13 +3932,16 @@ class StateManager:
                     serialized_history.append(new_entry)
                 
                 num_approved = sum(1 for e in exec_history if e.get("approval") == 1)
+                num_rejected = sum(1 for e in exec_history if e.get("approval") == -1)
                 total_approved += num_approved
+                total_rejected += num_rejected
                 
                 pool_states[f"{ep_id}_{state_id}"] = {
                     "episode_id": ep_id,
                     "state_id": state_id,
                     "execution_history": serialized_history,
                     "num_approved": num_approved,
+                    "num_rejected": num_rejected,
                     "num_pre_approvals_completed": state_info.get("num_pre_approvals_completed", 0),
                     "pre_approval_loop_complete": state_info.get("pre_approval_loop_complete", False),
                     "approval_status": state_info.get("approval_status"),
@@ -3949,16 +3955,43 @@ class StateManager:
                 for email, submitted_set in self.async_user_submissions.items()
             }
             
+            # Save test_rejected per-state rejection counts
+            test_rejected_rejections = {
+                f"{ep}_{sid}": count
+                for (ep, sid), count in self.test_rejected_state_rejections.items()
+            }
+            
+            # Save AsyncUserLogger in-memory state
+            logger_state = None
+            if self.async_user_logger:
+                # Serialize user_stats (convert sets to lists for JSON)
+                serialized_user_stats = {}
+                for email, stats in self.async_user_logger.user_stats.items():
+                    s = dict(stats)
+                    s["ip_addresses"] = sorted(list(s.get("ip_addresses", set())))
+                    # Don't save per-submission details — those are in the JSONL
+                    s.pop("submissions", None)
+                    serialized_user_stats[email] = s
+                
+                logger_state = {
+                    "user_stats": serialized_user_stats,
+                    "user_first_activity": dict(self.async_user_logger.user_first_activity),
+                    "user_last_activity": dict(self.async_user_logger.user_last_activity),
+                }
+            
             checkpoint = {
-                "version": 1,
+                "version": 2,
                 "type": "phase2",
                 "saved_at": time.time(),
                 "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
                 "pool_states": pool_states,
                 "user_submissions": user_submissions,
                 "async_user_names": dict(self.async_user_names),
+                "test_rejected_rejections": test_rejected_rejections,
+                "logger_state": logger_state,
                 "total_pool_size": len(self.async_state_pool),
                 "total_approved": total_approved,
+                "total_rejected": total_rejected,
             }
         
         # Atomic write
@@ -3969,14 +4002,20 @@ class StateManager:
             json.dump(checkpoint, f, indent=2)
         os.replace(tmp_path, checkpoint_path)
         
-        print(f"✅ Phase 2 checkpoint saved: {total_approved} approved labels across {len(pool_states)} states → {checkpoint_path}")
+        print(f"✅ Phase 2 checkpoint saved: {total_approved} approved, {total_rejected} rejected across {len(pool_states)} states → {checkpoint_path}")
         return {"status": "success", "path": str(checkpoint_path), "total_approved": total_approved}
 
     def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
-        """Load Phase 2 checkpoint and restore async labeling progress.
+        """Load Phase 2 checkpoint and restore ALL async labeling progress.
         
-        Restores execution_history (approved/rejected labels) into the
-        already-finalized async pool. Must be called AFTER finalize_admin_phase().
+        Restores:
+        - execution_history into the async pool
+        - User submission tracking
+        - User name mapping
+        - test_rejected per-state rejection counts
+        - AsyncUserLogger in-memory stats (for generate_final_summary)
+        
+        Must be called AFTER finalize_admin_phase().
         
         Args:
             checkpoint_path: Path to checkpoint JSON file
@@ -4040,10 +4079,45 @@ class StateManager:
             # Restore user name mapping
             saved_names = checkpoint.get("async_user_names", {})
             self.async_user_names.update(saved_names)
+            
+            # Restore test_rejected per-state rejection counts
+            test_rejected_rejections = checkpoint.get("test_rejected_rejections", {})
+            for key_str, count in test_rejected_rejections.items():
+                parts = key_str.rsplit("_", 1)
+                if len(parts) == 2:
+                    try:
+                        ep = int(parts[0])
+                        sid = int(parts[1])
+                        self.test_rejected_state_rejections[(ep, sid)] = count
+                    except ValueError:
+                        pass
         
-        print(f"✅ Phase 2 checkpoint loaded: {restored_states} states, {restored_approved} approved labels")
+        # Restore AsyncUserLogger in-memory state
+        logger_state = checkpoint.get("logger_state")
+        if logger_state and self.async_user_logger:
+            # Restore user_stats
+            for email, stats in logger_state.get("user_stats", {}).items():
+                s = dict(stats)
+                # Convert ip_addresses list back to set
+                s["ip_addresses"] = set(s.get("ip_addresses", []))
+                # Ensure submissions list exists (won't have per-submission details, but that's fine)
+                if "submissions" not in s:
+                    s["submissions"] = []
+                self.async_user_logger.user_stats[email] = s
+            
+            # Restore activity timestamps
+            self.async_user_logger.user_first_activity.update(
+                logger_state.get("user_first_activity", {})
+            )
+            self.async_user_logger.user_last_activity.update(
+                logger_state.get("user_last_activity", {})
+            )
+        
+        total_rejected = checkpoint.get("total_rejected", 0)
+        print(f"✅ Phase 2 checkpoint loaded: {restored_states} states, {restored_approved} approved, {total_rejected} rejected")
         return {
             "status": "success",
             "restored_states": restored_states,
             "restored_approved": restored_approved,
         }
+

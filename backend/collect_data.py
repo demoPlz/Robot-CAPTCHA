@@ -695,8 +695,23 @@ def control_robot(cfg: ControlPipelineConfig):
         
         check_interval = 5
         last_status = None
-        last_checkpoint_count = 0
-        CHECKPOINT_INTERVAL = 50  # Auto-checkpoint every 50 completed labels
+        last_checkpoint_approved = 0
+        CHECKPOINT_INTERVAL = 10  # Auto-checkpoint every 10 individual accepted submissions
+        
+        # Background checkpoint: run saves in a thread to avoid stalling user-facing requests
+        import threading
+        _checkpoint_lock = threading.Lock()
+        _checkpoint_running = False
+        
+        def _background_checkpoint(path, label):
+            nonlocal _checkpoint_running
+            try:
+                crowd_interface.save_phase2_checkpoint(path)
+            except Exception as e:
+                print(f"⚠️  Background checkpoint failed ({label}): {e}")
+            finally:
+                with _checkpoint_lock:
+                    _checkpoint_running = False
         
         try:
             while True:
@@ -710,11 +725,21 @@ def control_robot(cfg: ControlPipelineConfig):
                     print(f"   📊 Progress: {completed}/{total} states completed, {in_progress} in progress")
                     last_status = current_status
                 
-                # Auto-checkpoint every CHECKPOINT_INTERVAL labels
-                if completed >= last_checkpoint_count + CHECKPOINT_INTERVAL:
-                    print(f"\n🔄 Auto-checkpoint triggered at {completed} completed states...")
-                    crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
-                    last_checkpoint_count = completed
+                total_approved = status.get("total_approved", 0)
+                
+                # Auto-checkpoint every CHECKPOINT_INTERVAL accepted submissions (background)
+                if total_approved >= last_checkpoint_approved + CHECKPOINT_INTERVAL:
+                    with _checkpoint_lock:
+                        if not _checkpoint_running:
+                            _checkpoint_running = True
+                            last_checkpoint_approved = total_approved
+                            print(f"\n🔄 Auto-checkpoint triggered at {total_approved} accepted submissions (background)...")
+                            t = threading.Thread(
+                                target=_background_checkpoint,
+                                args=(phase2_ckpt_path, f"{total_approved} approved"),
+                                daemon=True,
+                            )
+                            t.start()
                 
                 if completed >= total and total > 0:
                     pending_queue = status.get("pending_approvals_queue", 0)
@@ -728,7 +753,7 @@ def control_robot(cfg: ControlPipelineConfig):
                         print(f"\n✅ All {total} states have been labeled by users!")
                         print(f"✅ All pre-approvals completed!")
                         
-                        # Final checkpoint before saving
+                        # Final checkpoint — synchronous (we're about to save dataset)
                         crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
                         
                         print(f"\n🔄 Batch saving data collection policy dataset with consistent schema...")
@@ -739,6 +764,7 @@ def control_robot(cfg: ControlPipelineConfig):
                 time.sleep(check_interval)
         except KeyboardInterrupt:
             print(f"\n⚠️  User interrupted - saving Phase 2 checkpoint before exit...")
+            # Synchronous — must complete before process exits
             crowd_interface.save_phase2_checkpoint(phase2_ckpt_path)
             print(f"   {completed}/{total} states completed")
             print(f"   ✅ Checkpoint saved - restart to resume")

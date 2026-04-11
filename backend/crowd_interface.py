@@ -1416,6 +1416,21 @@ class CrowdInterface:
                 # Manually trigger finalization now (caller already holds state_lock)
                 self.state_manager._finalize_episode_logic(episode_id)
         
+            # In async Phase 2 mode, states stay in pending_states_by_episode and no
+            # finalization timers are set. Directly finalize all episodes from buffer.
+            if self.asynchronous_mode and self.state_manager.async_pool_finalized:
+                if not hasattr(self.state_manager, '_finalized_episodes'):
+                    self.state_manager._finalized_episodes = {}
+                
+                for episode_id, buffer in self.state_manager.completed_states_buffer_by_episode.items():
+                    if episode_id not in self.state_manager._finalized_episodes:
+                        episode_timing = self.state_manager._calculate_episode_timing(episode_id, buffer)
+                        self.state_manager._finalized_episodes[episode_id] = {
+                            'buffer': buffer,
+                            'timing': episode_timing,
+                        }
+                        print(f"💾 Episode {episode_id} finalized for batch save ({len(buffer)} states)")
+        
         if not hasattr(self.state_manager, '_finalized_episodes'):
             print(f"⚠️  No finalized episodes to save")
             return
