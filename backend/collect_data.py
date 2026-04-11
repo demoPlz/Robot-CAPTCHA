@@ -730,6 +730,8 @@ def control_robot(cfg: ControlPipelineConfig):
                 with _checkpoint_lock:
                     _checkpoint_running = False
         
+        completed = 0
+        total = 0
         try:
             while True:
                 status = crowd_interface.state_manager.get_async_pool_status()
