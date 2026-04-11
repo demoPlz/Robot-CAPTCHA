@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "sorting"  # Single-word identifier for the task
+        self.task_name: str = "switches"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # Never change this. Policy language conditioning is irrelevant for this project
 
         # ========== Labeling Requirements ==========
@@ -129,10 +129,10 @@ class CrowdInterfaceConfig:
             }
         elif self.task_name == "switches":
             self.objects: dict[str, str] = {
-                "switch_teal": "Teal Cylinder", 
-                "switch_yellow": "Yellow Cylinder", 
-                "switch_dark_blue": "Navy Blue Cylinder",
-                "switch_green": "Green Cylinder"
+                "switch_red": "Red Bowl", 
+                "switch_yellow": "Yellow Bowl", 
+                "switch_dark_blue": "Navy Blue Bowl",
+                "switch_green": "Green Bowl"
             }
             self.object_mesh_paths: dict[str, str] = {
                 "switch_teal": str((repo_root / "public" / "assets" / "sleeve.stl").resolve()), 
