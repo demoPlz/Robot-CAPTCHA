@@ -3200,6 +3200,65 @@ class StateManager:
                 self.pending_approval_state = None
         
         print(f"🏠 State {state_id} automatically fast-forwarded to Home Position!")
+        
+    def _auto_fill_gripper_state_locked(self, state_info: dict, episode_id: int, state_id: int, open_gripper: bool) -> None:
+        """Auto-fill a critical state labeled as 'Open/Close gripper.' with the current position but forced gripper state.
+
+        MUST be called with self.state_lock already held.
+        """
+        # Direct access to joint positions in flattened structure
+        joint_positions = state_info.get("joint_positions", {})
+
+        # Convert joint positions to action tensor (same as autolabel logic)
+        goal_positions = []
+        for joint_name in JOINT_NAMES:
+            v = joint_positions.get(joint_name, 0.0)
+            v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
+            goal_positions.append(v)
+            
+        # Set gripper position explicitly based on requested state
+        goal_positions[-1] = 0.044 if open_gripper else 0.0
+
+        position_action = torch.tensor(goal_positions, dtype=torch.float32)
+        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
+        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
+
+        state_info["action_to_save"] = all_actions
+        
+        # Create execution_history with all actions auto-approved
+        state_info["execution_history"] = [
+            {
+                "action": position_action.clone(),
+                "propensity": 1.0,
+                "approval": 1,  # Auto-approved
+                "submitted_by": [],  # Auto-filled, no user
+            }
+            for _ in range(self.required_responses_per_critical_state)
+        ]
+        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
+        state_info["pre_approval_loop_complete"] = True
+
+        # Mark as approved since we're auto-filling with "Open/Close Gripper"
+        state_info["approval_status"] = "approved"
+        
+        # Don't mark episode as end here, just autofill and complete the state
+
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        del self.pending_states_by_episode[episode_id][state_id]
+
+        # Clear pending approval if this state was awaiting approval
+        with self.approval_lock:
+            if (
+                self.pending_approval_state
+                and self.pending_approval_state["episode_id"] == int(episode_id)
+                and self.pending_approval_state["state_id"] == int(state_id)
+            ):
+                self.pending_approval_state = None
+        
+        state_str = "Open" if open_gripper else "Close"
+        print(f"🗜️ State {state_id} automatically fast-forwarded to {state_str} Gripper!")
 
     def _auto_fill_end_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Auto-fill an critical state labeled as "end." with multiple copies of its current position.

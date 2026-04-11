@@ -88,10 +88,6 @@ const TASK_CONFIGS = {
     homePositionDeg: [0, 100, 90, -78, 0, 0, -1],
     homeGripper: -1,
     hideRobotInTopView: true,
-    // Dynamic preset to push straight down
-    containerPresets: [
-      { key: 'down', color: '#475569', label: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="16"></line><polyline points="7 11 12 16 17 11"></polyline><line x1="5" y1="20" x2="19" y2="20"></line></svg>', action: 'push_down', title: 'Push straight down to the bottom' },
-    ],
   },
   sorting: {
     absLimits: {
@@ -121,5 +117,23 @@ const TASK_CONFIGS = {
 /** Get config for the current task (falls back to _default). */
 function getTaskConfig() {
   const name = window.__INIT_STATE?.task_name;
-  return TASK_CONFIGS[name] || TASK_CONFIGS._default;
+  const cfg = TASK_CONFIGS[name] || TASK_CONFIGS._default;
+  
+  const pushDownPreset = { 
+    key: 'down', 
+    color: '#475569', 
+    label: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="16"></line><polyline points="7 11 12 16 17 11"></polyline><line x1="5" y1="20" x2="19" y2="20"></line></svg>', 
+    action: 'push_down', 
+    title: 'Push straight down to the bottom' 
+  };
+  
+  // Shallow clone and conditionally inject the push_down preset
+  const clone = Object.assign({}, cfg);
+  clone.containerPresets = clone.containerPresets ? [...clone.containerPresets] : [];
+  
+  if (!clone.containerPresets.find(p => p.action === 'push_down')) {
+    clone.containerPresets.push(pushDownPreset);
+  }
+  
+  return clone;
 }
