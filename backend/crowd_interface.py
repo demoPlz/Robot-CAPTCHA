@@ -163,15 +163,11 @@ class CrowdInterface:
             "z_min": 0.0, "z_max": 0.3
         }
 
-        # -------- Observation disk cache (spills heavy per-state obs to disk) --------
-        # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
-        self._obs_cache_root = Path(
-            os.getenv("CROWD_OBS_CACHE", os.path.join(tempfile.gettempdir(), "crowd_obs_cache"))
-        )
-        try:
-            self._obs_cache_root.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        # -------- Observation workspace (persisted state for reuse across crashes) --------
+        # Deferred: obs cache root will be set in init_dataset() to scope it to the _dcp directory.
+        # This is critical: when Phase 1 crashes and resumes from checkpoint, the workspace must be
+        # colocated with phase1_checkpoint.json in the _dcp directory.
+        self._obs_cache_root = None  # Will be set in init_dataset() or load_phase1_checkpoint()
 
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
@@ -265,12 +261,13 @@ class CrowdInterface:
         self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64)
 
         # Sim manager
+        # Note: obs_cache_root will be set in init_dataset(), not here
         self.sim_manager = SimManager(
             use_sim=self.use_sim,
             use_gpu_physics=self.use_gpu_physics,
             task_name=task_name,
             usd_path=self.usd_path,
-            obs_cache_root=self._obs_cache_root,
+            obs_cache_root=Path(tempfile.gettempdir()) / "crowd_obs_placeholder",  # Placeholder, will be updated
             state_lock=self.state_lock,
             pending_states_by_episode=self.pending_states_by_episode,
             completed_states_by_episode=self.completed_states_by_episode,
@@ -289,8 +286,9 @@ class CrowdInterface:
         self._exec_gate_by_session: dict[str, dict] = {}
 
         # Pose estimation manager
+        # Note: obs_cache_root will be set in init_dataset(), not here
         self.pose_estimator = PoseEstimationManager(
-            obs_cache_root=self._obs_cache_root,
+            obs_cache_root=Path(tempfile.gettempdir()) / "crowd_obs_placeholder",  # Placeholder, will be updated
             object_mesh_paths=object_mesh_paths,
             objects=objects,
             calibration_manager=self.calibration,
@@ -317,9 +315,10 @@ class CrowdInterface:
         self._episodes_pending_save: set[str] = set()
 
         # Dataset manager
+        # Note: obs_cache_root will be set in init_dataset(), not here
         self.dataset_manager = DatasetManager(
             required_responses_per_critical_state=self.required_responses_per_critical_state,
-            obs_cache_root=self._obs_cache_root,
+            obs_cache_root=Path(tempfile.gettempdir()) / "crowd_obs_placeholder",  # Placeholder, will be updated
             asynchronous_mode=asynchronous_mode,
         )
 
@@ -683,6 +682,35 @@ class CrowdInterface:
         """Check if currently in reset state."""
         return self.is_resetting and self.get_reset_countdown() > 0
 
+    def _set_obs_cache_root(self, obs_cache_root: Path | str):
+        """Update the observation workspace root for all managers.
+        
+        This synchronizes the obs cache across SimManager, StateManager, PoseEstimator, and DatasetManager.
+        The workspace contains all persisted observations and MUST be in the _dcp directory
+        colocated with the phase1_checkpoint.json so that Phase 1 checkpoint/resume works correctly.
+        
+        Args:
+            obs_cache_root: Path to observation workspace directory (should be {dcp_root}/phase1_dataset_workspace/)
+        """
+        obs_cache_root = Path(obs_cache_root)
+        
+        # Create workspace directory
+        try:
+            obs_cache_root.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"⚠️  Failed to create obs workspace directory: {e}")
+        
+        # Update self
+        self._obs_cache_root = obs_cache_root
+        
+        # Synchronize all managers
+        self.sim_manager._obs_cache_root = obs_cache_root
+        self.state_manager._obs_cache_root = obs_cache_root
+        self.pose_estimator._obs_cache_root = obs_cache_root
+        self.dataset_manager._obs_cache_root = obs_cache_root
+        
+        print(f"🗂️  Observation workspace: {obs_cache_root}")
+
     # =========================
     # Dataset Management (Delegated to DatasetManager)
     # =========================
@@ -691,10 +719,20 @@ class CrowdInterface:
         """Initialize dataset for data collection policy training.
 
         Delegates to DatasetManager.
+        
+        Sets observation workspace to {dataset.root}/phase1_dataset_workspace/ to ensure
+        Phase 1 checkpoint/resume works correctly (persisted observations survive crashes).
 
         """
         # Initialize dataset (may set single_task from cfg, but we use config task_text for UI)
         dataset_task = self.dataset_manager.init_dataset(cfg, robot, phase1_resumed=phase1_resumed)
+        
+        # Set observation workspace to dataset directory (Phase 1 scoping)
+        # Critical: when resuming from checkpoint, this must be the same location as the checkpoint
+        if self.dataset_manager.dataset is not None:
+            dataset_root = self.dataset_manager.dataset.root
+            obs_workspace = Path(dataset_root) / "phase1_dataset_workspace"
+            self._set_obs_cache_root(obs_workspace)
         
         # Use task_text from config if provided, otherwise fall back to dataset's single_task
         if not self.task_text:
@@ -1625,12 +1663,20 @@ class CrowdInterface:
     def load_phase1_checkpoint(self, checkpoint_path: Path) -> dict:
         """Load Phase 1 checkpoint and prepare for Phase 2.
         
+        Sets observation workspace to the checkpoint directory's phase1_dataset_workspace/
+        to ensure resumed Phase 1 uses the same persistent observations as the prior run.
+        
         Args:
             checkpoint_path: Path to checkpoint JSON file
             
         Returns:
             dict with loaded config and dataset_config
         """
+        # Set obs cache root to checkpoint's directory (ensures resume uses same workspace)
+        checkpoint_dir = Path(checkpoint_path).parent
+        obs_workspace = checkpoint_dir / "phase1_dataset_workspace"
+        self._set_obs_cache_root(obs_workspace)
+        
         return self.state_manager.load_phase1_checkpoint(checkpoint_path)
 
     def save_phase2_checkpoint(self, checkpoint_path: Path = None) -> dict:

@@ -2458,9 +2458,15 @@ class StateManager:
             if clean_text == "end.":
                 with self.state_lock:
                     self._auto_fill_end_state_locked(state_info, episode_id, state_id)
-            elif clean_text == "return to home position.":
+            elif clean_text in ["return to home position.", "return to home."]:
                 with self.state_lock:
                     self._auto_fill_home_state_locked(state_info, episode_id, state_id)
+            elif clean_text == "open gripper.":
+                with self.state_lock:
+                    self._auto_fill_gripper_state_locked(state_info, episode_id, state_id, open_gripper=True)
+            elif clean_text == "close gripper.":
+                with self.state_lock:
+                    self._auto_fill_gripper_state_locked(state_info, episode_id, state_id, open_gripper=False)
 
     def _run_pre_approval_loop(self, state_info: dict, episode_id: int, state_id: int) -> None:
         """Phase 1: Sample actions one-by-one for pre-approval until stopping condition met.

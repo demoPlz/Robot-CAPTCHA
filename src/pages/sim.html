@@ -1893,6 +1893,31 @@ const SID_STORAGE_KEY = 'crowd_sid';
 // Cache static view images from backend (set once at initialization)
 // These are the original /api/get-state views, NOT animation frames
 const staticViewCache = new Map(); // viewName -> base64 data URL from backend
+let currentRenderedStateKey = null;
+
+function applyStateHeader(state) {
+  window.__INIT_STATE = state;
+  const episodeId = state?.episode_id ?? null;
+  const stateId = state?.state_id ?? null;
+  currentRenderedStateKey = (episodeId !== null && stateId !== null) ? `${episodeId}:${stateId}` : null;
+
+  const promptFromServer = state?.prompt ?? '';
+  const currentInstructionId = state?.video_prompt || null;
+
+  // Keep the prompt in sync with the fetched state, even when the page is reusing an existing tab.
+  promptText.innerHTML = `<b>Task:</b> ${promptFromServer} <button class="acceptance-info-btn" id="acceptance-info-btn" title="View acceptance criteria">i</button>`;
+
+  // Wire up the info button for the freshly rendered prompt header.
+  const infoBtn = document.getElementById('acceptance-info-btn');
+  if (infoBtn) {
+    infoBtn.onclick = (e) => {
+      e.stopPropagation();
+      showAcceptanceCriteria();
+    };
+  }
+
+  return currentInstructionId;
+}
 
 function getStableSID() {
   try {
@@ -1982,6 +2007,14 @@ async function refreshViews() {
   try {
     const state = await getInitialState();
     if (state && state.views) {
+      const nextStateKey = (state?.episode_id !== undefined && state?.state_id !== undefined)
+        ? `${state.episode_id}:${state.state_id}`
+        : null;
+      if (nextStateKey && nextStateKey !== currentRenderedStateKey) {
+        staticViewCache.clear();
+        applyStateHeader(state);
+      }
+
       // Update each view with the static image
       for (let [viewName, base64Data] of Object.entries(state.views)) {
         // For the insertion task, the 'right' view should be updated with 'obs_wrist' images
@@ -2007,6 +2040,8 @@ async function refreshViews() {
           view.container.style.background = `center / cover no-repeat url("${base64Data}")`;
           console.log(`✓ Refreshed ${viewName} webcam view with static image`);
         }
+
+        staticViewCache.set(viewName, base64Data);
       }
     }
   } catch (error) {
@@ -4343,14 +4378,8 @@ loader.load(
     }
 
     
-    // Update prompt text from server state
-    const promptFromServer = state.prompt;
-    
-    // Get the instruction ID (video_prompt corresponds to description line number)
-    const currentInstructionId = state.video_prompt || null;
-    
-    // Use <br> for simple line breaks with original styling, add info button after task text
-    promptText.innerHTML = `<b>Task:</b> ${promptFromServer} <button class="acceptance-info-btn" id="acceptance-info-btn" title="View acceptance criteria">i</button>`;
+    // Update prompt text from server state and capture the instruction id for acceptance criteria.
+    const currentInstructionId = applyStateHeader(state);
     
     // Fetch and show acceptance criteria modal
     async function showAcceptanceCriteria() {
@@ -6836,6 +6865,34 @@ loader.load(
     const confirmBtnWrapper = document.createElement('span');
     confirmBtnWrapper.style.display = 'inline-block';
     confirmBtnWrapper.appendChild(confirmBtn);
+
+    function isEditableHotkeyTarget(target) {
+      if (!target) return false;
+      const tag = (target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      if (typeof target.isContentEditable === 'boolean' && target.isContentEditable) return true;
+      if (typeof target.closest === 'function' && target.closest('[contenteditable="true"]')) return true;
+      return false;
+    }
+
+    function triggerSubmitHotkey(e) {
+      if (!confirmBtn || confirmBtn.disabled) return;
+      e.preventDefault();
+      confirmBtn.click();
+    }
+
+    // Keyboard submit: Enter always submits; 's' submits only when recording-save hotkey is inactive.
+    document.addEventListener('keydown', (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.defaultPrevented) return;
+      if (isEditableHotkeyTarget(e.target)) return;
+
+      const key = (e.key || '').toLowerCase();
+      if (key === 'enter') {
+        triggerSubmitHotkey(e);
+      } else if (key === 's' && !RECORDING_ALLOWED) {
+        triggerSubmitHotkey(e);
+      }
+    });
 
     // Function to update Verify button state based on animation status and user action
     function updateVerifyButtonState() {
