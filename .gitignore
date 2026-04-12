@@ -56,3 +56,4 @@ outputs*/
 
 # special
 scripts/submit_train_job.sh
+scripts/sync_msi_outputs.sh
