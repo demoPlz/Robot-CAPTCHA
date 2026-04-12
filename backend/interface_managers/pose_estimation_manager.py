@@ -137,8 +137,7 @@ class PoseEstimationManager:
         
         for obj in objects_to_track:
             # Generate random position within bounds
-            x = np.random.uniform(self.random_pose_bounds["x_min"], 
-                                 self.random_pose_bounds["x_max"])
+            x = np.random.uniform(self.random_pose_bounds["x_min"], self.random_pose_bounds["x_max"])
             y = np.random.uniform(self.random_pose_bounds["y_min"], 
                                  self.random_pose_bounds["y_max"])
             z = np.random.uniform(self.random_pose_bounds["z_min"], 
@@ -157,6 +156,34 @@ class PoseEstimationManager:
                   f"rot=[{quat[0]:.3f}, {quat[1]:.3f}, {quat[2]:.3f}, {quat[3]:.3f}]")
         
         print("✅ Random fixed poses generated")
+
+    def set_obs_cache_root(self, obs_cache_root: Path):
+        """Update observation workspace root used for pose job queues.
+
+        Rebuilds pose_jobs paths under the new root and restarts workers so new jobs
+        are produced/consumed from the correct location.
+        """
+        if self.use_random_poses:
+            return
+
+        obs_cache_root = Path(obs_cache_root).resolve()
+        self.pose_jobs_root = obs_cache_root / "pose_jobs"
+        self.pose_inbox = self.pose_jobs_root / "inbox"
+        self.pose_outbox = self.pose_jobs_root / "outbox"
+        self.pose_tmp = self.pose_jobs_root / "tmp"
+
+        for d in (self.pose_inbox, self.pose_outbox, self.pose_tmp):
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+        # Move any orphaned jobs from old tmp to new inbox if possible.
+        self._recover_orphaned_jobs()
+
+        # Restart workers so they watch the new queue location.
+        self.stop()
+        self._start_pose_workers()
     
     def _apply_random_poses_to_state(self, episode_id: int, state_id: int):
         """Apply the pre-generated random poses to a state.

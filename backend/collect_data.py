@@ -632,6 +632,7 @@ def control_robot(cfg: ControlPipelineConfig):
                     "phase1_checkpoint.json",
                     "async_user_submissions.jsonl",
                     "async_user_summary.json",
+                    "phase1_dataset_workspace",
                 }
                 print(f"📂 Found Phase 2 checkpoint in {dataset_path} — cleaning dataset for re-creation")
                 for item in dataset_path.iterdir():

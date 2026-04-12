@@ -167,7 +167,11 @@ class CrowdInterface:
         # Deferred: obs cache root will be set in init_dataset() to scope it to the _dcp directory.
         # This is critical: when Phase 1 crashes and resumes from checkpoint, the workspace must be
         # colocated with phase1_checkpoint.json in the _dcp directory.
-        self._obs_cache_root = None  # Will be set in init_dataset() or load_phase1_checkpoint()
+        self._obs_cache_root = Path(tempfile.gettempdir()) / "crowd_obs_placeholder"
+        try:
+            self._obs_cache_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
@@ -704,9 +708,9 @@ class CrowdInterface:
         self._obs_cache_root = obs_cache_root
         
         # Synchronize all managers
-        self.sim_manager._obs_cache_root = obs_cache_root
+        self.sim_manager.set_obs_cache_root(obs_cache_root)
         self.state_manager._obs_cache_root = obs_cache_root
-        self.pose_estimator._obs_cache_root = obs_cache_root
+        self.pose_estimator.set_obs_cache_root(obs_cache_root)
         self.dataset_manager._obs_cache_root = obs_cache_root
         
         print(f"🗂️  Observation workspace: {obs_cache_root}")

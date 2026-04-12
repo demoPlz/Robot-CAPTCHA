@@ -88,6 +88,26 @@ class SimManager:
         self.sim_worker_thread = Thread(target=self._sim_worker, daemon=True)
         self.sim_worker_thread.start()
 
+    def set_obs_cache_root(self, obs_cache_root: Path):
+        """Update observation workspace root used by sim artifacts.
+
+        This updates where webcam snapshots and persistent Isaac outputs are stored.
+        If a persistent worker is already running, restart it so output_base_dir matches
+        the new workspace root.
+        """
+        obs_cache_root = Path(obs_cache_root)
+        self.obs_cache_root = obs_cache_root
+
+        # Keep persistent worker outputs in sync with the configured workspace.
+        if self.use_sim and self.isaac_manager is not None:
+            try:
+                self.isaac_manager.stop_worker()
+            except Exception as e:
+                print(f"⚠️ Failed to stop Isaac worker during cache root update: {e}")
+            self.isaac_manager = None
+            self.isaac_worker_pid = None
+            self._start_persistent_isaac_worker()
+
     def _start_persistent_isaac_worker(self):
         """Start persistent Isaac Sim worker using the new manager."""
         try:

@@ -3789,12 +3789,29 @@ class StateManager:
         view_paths = state_data.get("view_paths", {})
         if views_data and view_paths:
             new_view_paths = {}
+            safe_view_root = None
+            if checkpoint_dir is not None:
+                safe_view_root = checkpoint_dir / "phase1_dataset_workspace" / "persistent_isaac"
             for cam, b64_data in views_data.items():
                 original_path = view_paths.get(cam)
                 if original_path:
                     try:
+                        original = Path(original_path)
+                        path = original
+
+                        # Always restore into checkpoint-local workspace when possible.
+                        if safe_view_root is not None:
+                            parts = list(original.parts)
+                            if "persistent_isaac" in parts:
+                                idx = parts.index("persistent_isaac")
+                                rel = Path(*parts[idx + 1 :])
+                                path = safe_view_root / rel
+                            else:
+                                ep = state_data.get("episode_id", "unknown")
+                                sid = state_data.get("state_id", "unknown")
+                                path = safe_view_root / f"ep_{ep}_state_{sid}" / original.name
+
                         # Ensure directory exists
-                        path = Path(original_path)
                         path.parent.mkdir(parents=True, exist_ok=True)
                         # Write file
                         with open(path, "wb") as f:
