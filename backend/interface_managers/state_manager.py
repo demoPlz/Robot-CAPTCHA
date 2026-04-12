@@ -8,6 +8,7 @@ episode finalization.
 import json
 import queue
 import random
+import tempfile
 import time
 from pathlib import Path
 from threading import Lock, Thread, Timer
@@ -172,6 +173,10 @@ class StateManager:
         # Flush manager (handles incremental dataset saves)
         self.flush_manager = None  # Initialized after callbacks are set
 
+        # Checkpoint save locks prevent concurrent background + final writes from colliding
+        self._phase1_checkpoint_lock = Lock()
+        self._phase2_checkpoint_lock = Lock()
+
         # Manager dependencies
         self.obs_stream = obs_stream_manager
         self.pose_estimator = pose_estimation_manager
@@ -191,6 +196,9 @@ class StateManager:
                 # In async mode, dataset_manager may be None - use obs_cache_root instead
                 log_dir = self._obs_cache_root
                 print(f"✅ Async user logger using obs_cache_root: {log_dir}")
+            if log_dir is None:
+                log_dir = Path(tempfile.gettempdir()) / "crowd_obs_placeholder"
+                print(f"⚠️  Async logger fallback path used: {log_dir}")
             self.async_user_logger = AsyncUserLogger(log_dir)
             print(f"📊 Async logs will be written to: {log_dir}/async_user_submissions.jsonl")
 
@@ -3857,50 +3865,52 @@ class StateManager:
                     obs_copy_stats["skipped"] += 1
             return result
         
-        with self.state_lock:
-            checkpoint = {
-                "version": 1,
-                "saved_at": time.time(),
-                "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
-                # Dataset config for recreation in Phase 2
-                "dataset_config": dataset_config,
-                # State data (pass checkpoint_dir to copy obs files)
-                "pending_states_by_episode": {
-                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                    for ep, states in self.pending_states_by_episode.items()
-                },
-                "completed_states_by_episode": {
-                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                    for ep, states in self.completed_states_by_episode.items()
-                },
-                "completed_states_buffer_by_episode": {
-                    ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                    for ep, states in self.completed_states_buffer_by_episode.items()
-                },
-                # Episode metadata
-                "episode_start_times": dict(self.episode_start_times),
-                "episode_start_times_iso": dict(self.episode_start_times_iso),
-                "episodes_marked_as_end": list(self.episodes_marked_as_end),
-                "next_state_id": self.next_state_id,
-                # Config values needed for Phase 2
-                "config": {
-                    "required_responses_per_state": self.required_responses_per_state,
-                    "required_responses_per_critical_state": self.required_responses_per_critical_state,
-                    "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
-                    "asynchronous_mode": self.asynchronous_mode,
-                    "async_admin_responses_per_state": self.async_admin_responses_per_state,
-                    "task_text": self.task_text,
-                },
-            }
-        
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Atomic write: write to temp file, then rename (os.replace is atomic on Linux)
-        import os
-        tmp_path = checkpoint_path.with_suffix(".json.tmp")
-        with open(tmp_path, "w") as f:
-            json.dump(checkpoint, f, indent=2)
-        os.replace(tmp_path, checkpoint_path)
+        with self._phase1_checkpoint_lock:
+            with self.state_lock:
+                checkpoint = {
+                    "version": 1,
+                    "saved_at": time.time(),
+                    "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
+                    # Dataset config for recreation in Phase 2
+                    "dataset_config": dataset_config,
+                    # State data (pass checkpoint_dir to copy obs files)
+                    "pending_states_by_episode": {
+                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                        for ep, states in self.pending_states_by_episode.items()
+                    },
+                    "completed_states_by_episode": {
+                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                        for ep, states in self.completed_states_by_episode.items()
+                    },
+                    "completed_states_buffer_by_episode": {
+                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                        for ep, states in self.completed_states_buffer_by_episode.items()
+                    },
+                    # Episode metadata
+                    "episode_start_times": dict(self.episode_start_times),
+                    "episode_start_times_iso": dict(self.episode_start_times_iso),
+                    "episodes_marked_as_end": list(self.episodes_marked_as_end),
+                    "next_state_id": self.next_state_id,
+                    # Config values needed for Phase 2
+                    "config": {
+                        "required_responses_per_state": self.required_responses_per_state,
+                        "required_responses_per_critical_state": self.required_responses_per_critical_state,
+                        "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
+                        "asynchronous_mode": self.asynchronous_mode,
+                        "async_admin_responses_per_state": self.async_admin_responses_per_state,
+                        "task_text": self.task_text,
+                    },
+                }
+
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+                # Atomic write: write to a unique temp file, then rename (os.replace is atomic on Linux)
+                import os
+                import uuid
+                tmp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+                with open(tmp_path, "w") as f:
+                    json.dump(checkpoint, f, indent=2)
+                os.replace(tmp_path, checkpoint_path)
         
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")
@@ -4082,104 +4092,106 @@ class StateManager:
         """
         checkpoint_path = Path(checkpoint_path)
         
-        with self.state_lock:
-            # Snapshot execution_history for each state in the async pool
-            pool_states = {}
-            total_approved = 0
-            total_rejected = 0
-            for (ep_id, state_id), state_info in self.async_state_pool.items():
-                exec_history = state_info.get("execution_history", [])
-                serialized_history = []
-                for entry in exec_history:
-                    new_entry = dict(entry)
-                    if "action" in new_entry and isinstance(new_entry["action"], torch.Tensor):
-                        new_entry["action"] = new_entry["action"].tolist()
-                    serialized_history.append(new_entry)
-                
-                num_approved = sum(1 for e in exec_history if e.get("approval") == 1)
-                num_rejected = sum(1 for e in exec_history if e.get("approval") == -1)
-                total_approved += num_approved
-                total_rejected += num_rejected
-                
-                # Serialize actions list (torch tensors -> lists)
-                serialized_actions = []
-                for action in state_info.get("actions", []):
-                    if isinstance(action, torch.Tensor):
-                        serialized_actions.append(action.tolist())
-                    elif isinstance(action, list):
-                        serialized_actions.append(action)
-                    else:
-                        serialized_actions.append(list(action))
-                
-                pool_states[f"{ep_id}_{state_id}"] = {
-                    "episode_id": ep_id,
-                    "state_id": state_id,
-                    "execution_history": serialized_history,
-                    "num_approved": num_approved,
-                    "num_rejected": num_rejected,
-                    "num_pre_approvals_completed": state_info.get("num_pre_approvals_completed", 0),
-                    "pre_approval_loop_complete": state_info.get("pre_approval_loop_complete", False),
-                    "approval_status": state_info.get("approval_status"),
-                    "user_timings": state_info.get("user_timings", {}),
-                    "actual_num_submissions": state_info.get("actual_num_submissions", 0),
-                    "responses_received": state_info.get("responses_received", 0),
-                    "actions": serialized_actions,
-                    "user_submissions_list": state_info.get("user_submissions", []),
+        with self._phase2_checkpoint_lock:
+            with self.state_lock:
+                # Snapshot execution_history for each state in the async pool
+                pool_states = {}
+                total_approved = 0
+                total_rejected = 0
+                for (ep_id, state_id), state_info in self.async_state_pool.items():
+                    exec_history = state_info.get("execution_history", [])
+                    serialized_history = []
+                    for entry in exec_history:
+                        new_entry = dict(entry)
+                        if "action" in new_entry and isinstance(new_entry["action"], torch.Tensor):
+                            new_entry["action"] = new_entry["action"].tolist()
+                        serialized_history.append(new_entry)
+
+                    num_approved = sum(1 for e in exec_history if e.get("approval") == 1)
+                    num_rejected = sum(1 for e in exec_history if e.get("approval") == -1)
+                    total_approved += num_approved
+                    total_rejected += num_rejected
+
+                    # Serialize actions list (torch tensors -> lists)
+                    serialized_actions = []
+                    for action in state_info.get("actions", []):
+                        if isinstance(action, torch.Tensor):
+                            serialized_actions.append(action.tolist())
+                        elif isinstance(action, list):
+                            serialized_actions.append(action)
+                        else:
+                            serialized_actions.append(list(action))
+
+                    pool_states[f"{ep_id}_{state_id}"] = {
+                        "episode_id": ep_id,
+                        "state_id": state_id,
+                        "execution_history": serialized_history,
+                        "num_approved": num_approved,
+                        "num_rejected": num_rejected,
+                        "num_pre_approvals_completed": state_info.get("num_pre_approvals_completed", 0),
+                        "pre_approval_loop_complete": state_info.get("pre_approval_loop_complete", False),
+                        "approval_status": state_info.get("approval_status"),
+                        "user_timings": state_info.get("user_timings", {}),
+                        "actual_num_submissions": state_info.get("actual_num_submissions", 0),
+                        "responses_received": state_info.get("responses_received", 0),
+                        "actions": serialized_actions,
+                        "user_submissions_list": state_info.get("user_submissions", []),
+                    }
+
+                # Save user submission tracking
+                user_submissions = {
+                    email: [list(key) for key in submitted_set]
+                    for email, submitted_set in self.async_user_submissions.items()
                 }
-            
-            # Save user submission tracking
-            user_submissions = {
-                email: [list(key) for key in submitted_set]
-                for email, submitted_set in self.async_user_submissions.items()
-            }
-            
-            # Save test_rejected per-state rejection counts
-            test_rejected_rejections = {
-                f"{ep}_{sid}": count
-                for (ep, sid), count in self.test_rejected_state_rejections.items()
-            }
-            
-            # Save AsyncUserLogger in-memory state
-            logger_state = None
-            if self.async_user_logger:
-                # Serialize user_stats (convert sets to lists for JSON)
-                serialized_user_stats = {}
-                for email, stats in self.async_user_logger.user_stats.items():
-                    s = dict(stats)
-                    s["ip_addresses"] = sorted(list(s.get("ip_addresses", set())))
-                    # Don't save per-submission details — those are in the JSONL
-                    s.pop("submissions", None)
-                    serialized_user_stats[email] = s
-                
-                logger_state = {
-                    "user_stats": serialized_user_stats,
-                    "user_first_activity": dict(self.async_user_logger.user_first_activity),
-                    "user_last_activity": dict(self.async_user_logger.user_last_activity),
+
+                # Save test_rejected per-state rejection counts
+                test_rejected_rejections = {
+                    f"{ep}_{sid}": count
+                    for (ep, sid), count in self.test_rejected_state_rejections.items()
                 }
-            
-            checkpoint = {
-                "version": 3,
-                "type": "phase2",
-                "saved_at": time.time(),
-                "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
-                "pool_states": pool_states,
-                "user_submissions": user_submissions,
-                "async_user_names": dict(self.async_user_names),
-                "test_rejected_rejections": test_rejected_rejections,
-                "logger_state": logger_state,
-                "banned_ips": banned_ips or [],
-                "total_pool_size": len(self.async_state_pool),
-                "total_approved": total_approved,
-                "total_rejected": total_rejected,
-            }
-        
-        # Atomic write
-        import os
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = checkpoint_path.with_suffix(".json.tmp")
-        with open(tmp_path, "w") as f:
-            json.dump(checkpoint, f, indent=2)
-        os.replace(tmp_path, checkpoint_path)
+
+                # Save AsyncUserLogger in-memory state
+                logger_state = None
+                if self.async_user_logger:
+                    # Serialize user_stats (convert sets to lists for JSON)
+                    serialized_user_stats = {}
+                    for email, stats in self.async_user_logger.user_stats.items():
+                        s = dict(stats)
+                        s["ip_addresses"] = sorted(list(s.get("ip_addresses", set())))
+                        # Don't save per-submission details — those are in the JSONL
+                        s.pop("submissions", None)
+                        serialized_user_stats[email] = s
+
+                    logger_state = {
+                        "user_stats": serialized_user_stats,
+                        "user_first_activity": dict(self.async_user_logger.user_first_activity),
+                        "user_last_activity": dict(self.async_user_logger.user_last_activity),
+                    }
+
+                checkpoint = {
+                    "version": 3,
+                    "type": "phase2",
+                    "saved_at": time.time(),
+                    "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
+                    "pool_states": pool_states,
+                    "user_submissions": user_submissions,
+                    "async_user_names": dict(self.async_user_names),
+                    "test_rejected_rejections": test_rejected_rejections,
+                    "logger_state": logger_state,
+                    "banned_ips": banned_ips or [],
+                    "total_pool_size": len(self.async_state_pool),
+                    "total_approved": total_approved,
+                    "total_rejected": total_rejected,
+                }
+
+                # Atomic write
+                import os
+                import uuid
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+                with open(tmp_path, "w") as f:
+                    json.dump(checkpoint, f, indent=2)
+                os.replace(tmp_path, checkpoint_path)
         
         print(f"✅ Phase 2 checkpoint saved: {total_approved} approved, {total_rejected} rejected across {len(pool_states)} states → {checkpoint_path}")
         return {"status": "success", "path": str(checkpoint_path), "total_approved": total_approved}

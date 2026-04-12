@@ -42,7 +42,7 @@ shift
 if [[ $# -gt 0 ]]; then
     K_VALUES=("$@")
 else
-    K_VALUES=(1 2 5 10)
+    K_VALUES=(10 1 2 5)
 fi
 
 # Strip trailing _dcp to get the base path
