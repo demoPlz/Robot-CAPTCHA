@@ -50,6 +50,17 @@ def main():
     repo_path = Path(dataset_repo)
     if not repo_path.is_absolute():
         repo_path = Path.home() / ".cache" / "huggingface" / "lerobot" / dataset_repo
+    elif not repo_path.exists():
+        # Fallback if the path is an absolute path from the MSI cluster that doesn't exist locally
+        dataset_name = repo_path.name
+        task_name = repo_path.parent.name if not dataset_name.startswith("pour") and not dataset_name.startswith("sorting") else None
+        
+        # Usually datasets are in ~/.cache/huggingface/lerobot/<task>/<dataset_name>
+        # Check if we can find it by just searching the local cache for the dataset_name
+        cache_base = Path.home() / ".cache" / "huggingface" / "lerobot"
+        possible_paths = list(cache_base.rglob(f"{dataset_name}/meta/info.json"))
+        if possible_paths:
+            repo_path = possible_paths[0].parent.parent
         
     info_path = repo_path / "meta" / "info.json"
     
