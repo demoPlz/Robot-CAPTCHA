@@ -629,6 +629,7 @@ class StateManager:
                 if not _is_first_critical:
                     break
 
+            # MANUAL MASK PAINTING — disabled by default; uncomment to enable:
             if _is_first_critical and hasattr(self.pose_estimator, "request_mask_painting"):
                 self.pose_estimator.request_mask_painting(latest_episode_id, latest_state_id)
 
@@ -1677,6 +1678,10 @@ class StateManager:
         # Run pose estimation + sim capture in a background thread so we don't block the endpoint
         def _redo_worker():
             try:
+                # MANUAL MASK PAINTING — disabled by default; uncomment to enable:
+                print(f"🖌️  Requesting mask painting for redo: episode={episode_id}, state={state_id}")
+                self.pose_estimator.request_mask_painting(episode_id, state_id)
+
                 # Re-enqueue pose jobs and wait for results
                 poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
                     episode_id, state_id, info_snapshot, wait=True, timeout_s=None
@@ -3225,6 +3230,17 @@ class StateManager:
         # Skip unnecessary pose estimation for autofill movements
         state_info["skip_pose_estimation"] = True
 
+        if episode_id not in self.completed_states_buffer_by_episode:
+            self.completed_states_buffer_by_episode[episode_id] = {}
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+
+        if episode_id not in self.completed_states_by_episode:
+            self.completed_states_by_episode[episode_id] = {}
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        if state_id in self.pending_states_by_episode.get(episode_id, {}):
+            del self.pending_states_by_episode[episode_id][state_id]
+
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:
             if (
@@ -3275,6 +3291,17 @@ class StateManager:
 
         # Skip unnecessary pose estimation for autofill movements
         state_info["skip_pose_estimation"] = True
+
+        if episode_id not in self.completed_states_buffer_by_episode:
+            self.completed_states_buffer_by_episode[episode_id] = {}
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+
+        if episode_id not in self.completed_states_by_episode:
+            self.completed_states_by_episode[episode_id] = {}
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        if state_id in self.pending_states_by_episode.get(episode_id, {}):
+            del self.pending_states_by_episode[episode_id][state_id]
 
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:
@@ -3333,6 +3360,17 @@ class StateManager:
 
         # Skip unnecessary pose estimation for autofill movements
         state_info["skip_pose_estimation"] = True
+
+        if episode_id not in self.completed_states_buffer_by_episode:
+            self.completed_states_buffer_by_episode[episode_id] = {}
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+
+        if episode_id not in self.completed_states_by_episode:
+            self.completed_states_by_episode[episode_id] = {}
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        if state_id in self.pending_states_by_episode.get(episode_id, {}):
+            del self.pending_states_by_episode[episode_id][state_id]
 
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:

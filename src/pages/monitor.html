@@ -851,9 +851,9 @@
           <!-- Canvas area -->
           <div style="flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden;" id="mask-canvas-wrap">
             <!-- Background image -->
-            <img id="mask-bg-img" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none;" />
+            <img id="mask-bg-img" style="position:absolute; inset:0; width:100%; height:100%; object-fit:fill; pointer-events:none; user-select:none;" />
             <!-- Painted mask overlay -->
-            <canvas id="mask-painter-canvas" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; cursor:crosshair; touch-action:none;"></canvas>
+            <canvas id="mask-painter-canvas" style="position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none;"></canvas>
           </div>
 
           <!-- Toolbar -->
@@ -3305,6 +3305,230 @@
             }
         });
 
+        // === Mask Painter ===
+        const maskPainterModal = document.getElementById('mask-painter-modal');
+        const maskBgImg        = document.getElementById('mask-bg-img');
+        const maskCanvas       = document.getElementById('mask-painter-canvas');
+        const maskCtx          = maskCanvas.getContext('2d', { willReadFrequently: true });
+        const maskTabsEl       = document.getElementById('mask-painter-tabs');
+        const maskStatusEl     = document.getElementById('mask-painter-status');
+        const maskEpStateEl    = document.getElementById('mask-painter-epstate');
+
+        let maskPainterState = null;  // { episodeId, stateId, objects, currentObj, masks: {obj: ImageData|null}, skipped: Set }
+        let maskTool = 'brush';       // 'brush' or 'eraser'
+        let maskPainting = false;
+        let maskPaintInFlight = false;
+
+        function setMaskTool(tool) {
+            maskTool = tool;
+            document.getElementById('mask-tool-brush').style.borderColor  = tool === 'brush'  ? '#3b82f6' : '#475569';
+            document.getElementById('mask-tool-eraser').style.borderColor = tool === 'eraser' ? '#ef4444' : '#475569';
+            maskCanvas.style.cursor = tool === 'eraser' ? 'cell' : 'crosshair';
+        }
+
+        function updateMaskCanvasOpacity(val) {
+            maskCanvas.style.opacity = (val / 100).toFixed(2);
+        }
+
+        function openMaskPainter(data) {
+            const { episode_id, state_id, objects, image_b64 } = data;
+            maskPainterState = {
+                episodeId: episode_id,
+                stateId: state_id,
+                objects,
+                currentObj: objects[0] || null,
+                masks: Object.fromEntries(objects.map(o => [o, null])),
+                skipped: new Set(),
+            };
+
+            // Set background image (encode_jpeg_base64 already returns a full data URL)
+            maskBgImg.src = image_b64 || '';
+            maskEpStateEl.textContent = `ep=${episode_id} state=${state_id}`;
+
+            // Build tabs
+            maskTabsEl.innerHTML = '';
+            for (const obj of objects) {
+                const btn = document.createElement('button');
+                btn.id = `mask-tab-${obj}`;
+                btn.textContent = obj;
+                btn.style.cssText = 'padding:6px 14px; border-radius:8px; border:2px solid #334155; background:#1e293b; color:#94a3b8; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s;';
+                btn.onclick = () => switchMaskObject(obj);
+                maskTabsEl.appendChild(btn);
+            }
+
+            // Size canvas to match image natural size
+            maskBgImg.onload = () => {
+                const w = maskBgImg.naturalWidth  || 640;
+                const h = maskBgImg.naturalHeight || 480;
+                maskCanvas.width  = w;
+                maskCanvas.height = h;
+                maskCtx.clearRect(0, 0, w, h);
+                switchMaskObject(objects[0]);
+            };
+            if (!image_b64) {
+                maskCanvas.width = 640; maskCanvas.height = 480;
+                maskCtx.clearRect(0, 0, 640, 480);
+                switchMaskObject(objects[0]);
+            }
+
+            maskPainterModal.style.display = 'flex';
+        }
+
+        function switchMaskObject(obj) {
+            if (!maskPainterState) return;
+            // Save current canvas to state
+            const cur = maskPainterState.currentObj;
+            if (cur) {
+                maskPainterState.masks[cur] = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+            }
+            maskPainterState.currentObj = obj;
+            // Load saved ImageData or clear
+            maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            const saved = maskPainterState.masks[obj];
+            if (saved) maskCtx.putImageData(saved, 0, 0);
+
+            // Update tab styles
+            for (const o of maskPainterState.objects) {
+                const btn = document.getElementById(`mask-tab-${o}`);
+                if (!btn) continue;
+                const isSkipped = maskPainterState.skipped.has(o);
+                const isCurrent = o === obj;
+                btn.style.borderColor  = isCurrent ? '#3b82f6' : (isSkipped ? '#f59e0b' : '#334155');
+                btn.style.background   = isCurrent ? '#1e3a5f' : '#1e293b';
+                btn.style.color        = isCurrent ? '#93c5fd' : (isSkipped ? '#fcd34d' : '#64748b');
+            }
+            maskStatusEl.textContent = maskPainterState.skipped.has(obj) ? '⏩ This object will use LangSAM (skipped)' : '';
+        }
+
+        function clearCurrentMask() {
+            if (!maskPainterState) return;
+            maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            maskPainterState.masks[maskPainterState.currentObj] = null;
+            maskPainterState.skipped.delete(maskPainterState.currentObj);
+            updateTabStyle(maskPainterState.currentObj);
+        }
+
+        function skipCurrentObject() {
+            if (!maskPainterState) return;
+            clearCurrentMask();
+            maskPainterState.skipped.add(maskPainterState.currentObj);
+            updateTabStyle(maskPainterState.currentObj);
+            maskStatusEl.textContent = '⏩ Skipped — will use LangSAM';
+        }
+
+        function updateTabStyle(obj) {
+            if (!maskPainterState) return;
+            const btn = document.getElementById(`mask-tab-${obj}`);
+            if (!btn) return;
+            const isCur = obj === maskPainterState.currentObj;
+            const isSkip = maskPainterState.skipped.has(obj);
+            btn.style.borderColor = isCur ? '#3b82f6' : (isSkip ? '#f59e0b' : '#334155');
+            btn.style.color       = isCur ? '#93c5fd' : (isSkip ? '#fcd34d' : '#64748b');
+        }
+
+        // Canvas drawing — map from image display rect → canvas pixel coords
+        function canvasXY(evt) {
+            // offsetX/offsetY are element-relative CSS pixels — immune to modal/scroll/transform offsets
+            let cssX, cssY;
+            if (evt.offsetX != null && evt.target === maskCanvas) {
+                cssX = evt.offsetX;
+                cssY = evt.offsetY;
+            } else {
+                // Touch or re-targeted event: fall back to bounding rect
+                const r = maskCanvas.getBoundingClientRect();
+                const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+                const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+                cssX = clientX - r.left;
+                cssY = clientY - r.top;
+            }
+            const r = maskCanvas.getBoundingClientRect();
+            const scaleX = maskCanvas.width  / r.width;
+            const scaleY = maskCanvas.height / r.height;
+            return [cssX * scaleX, cssY * scaleY];
+        }
+
+        function drawStroke(x, y) {
+            const size = parseInt(document.getElementById('mask-brush-size').value, 10);
+            maskCtx.globalCompositeOperation = maskTool === 'eraser' ? 'destination-out' : 'source-over';
+            maskCtx.fillStyle = 'rgba(34,197,94,0.85)';
+            maskCtx.beginPath();
+            maskCtx.arc(x, y, size / 2, 0, Math.PI * 2);
+            maskCtx.fill();
+        }
+
+        maskCanvas.addEventListener('pointerdown', e => { maskPainting = true; const [x,y] = canvasXY(e); drawStroke(x,y); e.preventDefault(); });
+        maskCanvas.addEventListener('pointermove', e => { if (!maskPainting) return; const [x,y] = canvasXY(e); drawStroke(x,y); e.preventDefault(); });
+        maskCanvas.addEventListener('pointerup',   () => maskPainting = false);
+        maskCanvas.addEventListener('pointerleave',() => maskPainting = false);
+
+        async function submitAllMasks() {
+            if (!maskPainterState) return;
+            // Save current canvas
+            const cur = maskPainterState.currentObj;
+            if (cur) maskPainterState.masks[cur] = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+
+            // Build per-object binary (black/white) PNG blobs as base64
+            const masks = {};
+            const offscreen = document.createElement('canvas');
+            offscreen.width  = maskCanvas.width;
+            offscreen.height = maskCanvas.height;
+            const offCtx = offscreen.getContext('2d');
+
+            for (const obj of maskPainterState.objects) {
+                if (maskPainterState.skipped.has(obj)) continue;  // don't include skipped
+                const imgData = maskPainterState.masks[obj];
+                if (!imgData) continue;  // empty canvas = no mask
+                // Threshold to white/black
+                offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
+                offCtx.fillStyle = '#000';
+                offCtx.fillRect(0, 0, offscreen.width, offscreen.height);
+                offCtx.putImageData(imgData, 0, 0);
+                const pngDataUrl = offscreen.toDataURL('image/png');
+                masks[obj] = pngDataUrl;  // includes "data:image/png;base64,..."
+            }
+
+            if (Object.keys(masks).length === 0) {
+                // No masks painted - still submit with empty dict to unblock pose estimation
+                maskStatusEl.textContent = '⚠️ No masks painted — all objects will use LangSAM';
+            }
+
+            maskStatusEl.textContent = '⏳ Submitting masks...';
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/control/submit-pose-masks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_id: maskPainterState.episodeId,
+                        state_id:   maskPainterState.stateId,
+                        masks,
+                    }),
+                });
+                if (resp.ok) {
+                    maskPainterModal.style.display = 'none';
+                    maskPainterState = null;
+                    showToast(`✅ Masks submitted (${Object.keys(masks).length} objects)`);
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    maskStatusEl.textContent = `❌ Submit failed: ${err.message || resp.status}`;
+                }
+            } catch (e) {
+                maskStatusEl.textContent = `❌ Network error: ${e.message}`;
+            }
+        }
+
+        async function fetchPendingMaskPainting() {
+            if (!API_BASE_URL) return;
+            if (maskPainterModal.style.display === 'flex') return;  // already open
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/control/pending-mask-painting`, { headers: { Accept: 'application/json' } });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (data.needs_painting) {
+                    openMaskPainter(data);
+                }
+            } catch (_) { /* silent */ }
+        }
+
         // --- Auto-refresh ---
         function startAutoRefresh() {
             stopAutoRefresh();
@@ -3342,7 +3566,13 @@
                         asyncProgressInFlight = true;
                         fetchAsyncProgress().finally(() => asyncProgressInFlight = false);
                     }
-                }, 2000)  // Poll async progress every 2s
+                }, 2000),  // Poll async progress every 2s
+                maskPainting: setInterval(() => {
+                    if (!maskPaintInFlight) {
+                        maskPaintInFlight = true;
+                        fetchPendingMaskPainting().finally(() => maskPaintInFlight = false);
+                    }
+                }, 800),  // Poll for mask painting request every 800ms
             };
         }
         function stopAutoRefresh() {
@@ -3353,6 +3583,7 @@
                 clearInterval(autoRefreshInterval.approval);
                 clearInterval(autoRefreshInterval.undoClassification);
                 clearInterval(autoRefreshInterval.asyncProgress);
+                clearInterval(autoRefreshInterval.maskPainting);
                 autoRefreshInterval = null;
             }
         }
