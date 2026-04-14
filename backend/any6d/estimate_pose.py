@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 import trimesh
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 # Add external/any6d to sys.path so we can import estimater, foundationpose, etc.
 # This file is at: backend/any6d/estimate_pose.py
@@ -107,6 +107,19 @@ def _apply_exclusion_mask(rgb_np: np.ndarray) -> np.ndarray:
         pts = np.array(poly_pts, dtype=np.int32).reshape(-1, 1, 2)
         cv2.fillPoly(masked, [pts], color=(255, 255, 255))
     return masked
+
+
+def _boost_saturation(rgb_np: np.ndarray, factor: float) -> np.ndarray:
+    """Boost the saturation of an RGB uint8 image by `factor`.
+
+    factor=1.0 => no change, factor=2.0 => double saturation, etc.
+    Returns a new uint8 array; the input is not modified.
+    """
+    if factor == 1.0:
+        return rgb_np
+    pil = Image.fromarray(rgb_np)
+    enhanced = ImageEnhance.Color(pil).enhance(factor)
+    return np.asarray(enhanced, dtype=np.uint8)
 
 
 # ------------------------- Reusable engines -------------------------
@@ -372,6 +385,11 @@ def estimate_pose_from_tensors(
     track_refine_iter: int = 8,
     debug: int = 0,
     engines: PoseEngines | None = None,
+    langsam_saturation: float = 3.0,   # >1.0 boosts colour vividness for LangSAM
+    any6d_saturation: float = 1.5,     # >1.0 boosts colour vividness for any6d/FoundationPose
+    debug_images_dir: Optional[str] = None,  # if set, save input debug images here
+    debug_images_prefix: str = "debug",      # filename prefix for debug images
+    external_mask: Optional[np.ndarray] = None,  # if set, bypass LangSAM and use this (H,W) bool mask
 ) -> PoseOutput:
     """
     Minimal single-call 6D pose estimation:
@@ -401,9 +419,8 @@ def estimate_pose_from_tensors(
     to_origin_np, extents = trimesh.bounds.oriented_bounds(mesh)  # (4,4), (3,)
     bbox_np = np.stack([-extents / 2.0, extents / 2.0], axis=0).reshape(2, 3)
 
-    # ---- Build LangSAM mask
+    # ---- Build LangSAM mask (or use external pre-painted mask)
     try:
-        # Use provided engines if available; otherwise build a temporary set.
         if engines is None:
             engines = create_engines(mesh=mesh, debug=debug)
         langsam = engines.langsam
@@ -412,37 +429,58 @@ def estimate_pose_from_tensors(
 
         reset_tracking(engines)
 
-        # Apply exclusion mask (white-out containers etc.) before LangSAM
-        rgb_for_langsam = _apply_exclusion_mask(rgb_np)
-        image_pil = Image.fromarray(rgb_for_langsam)
-        out = langsam.predict([image_pil], [language_prompt])[0]
-        masks = np.asarray(out.get("masks", []))
+        if external_mask is not None:
+            # Admin-painted mask: skip LangSAM entirely
+            lang_mask = np.asarray(external_mask, dtype=bool)
+            if lang_mask.shape != rgb_np.shape[:2]:
+                raise ValueError(f"external_mask shape {lang_mask.shape} != image shape {rgb_np.shape[:2]}")
+            print(f"[PoseEst] 🖌️  Using external painted mask (bypassing LangSAM), area={lang_mask.sum()}", flush=True)
+        else:
+            # Apply exclusion mask (white-out containers etc.) before LangSAM
+            rgb_for_langsam = _apply_exclusion_mask(rgb_np)
+            # Boost saturation so colourful objects pop against muted backgrounds
+            rgb_for_langsam = _boost_saturation(rgb_for_langsam, langsam_saturation)
+            
+            # Save debug image of what LangSAM sees
+            if debug_images_dir is not None:
+                try:
+                    import os as _os
+                    _os.makedirs(debug_images_dir, exist_ok=True)
+                    langsam_debug_path = Path(debug_images_dir) / f"{debug_images_prefix}_langsam_input.png"
+                    cv2.imwrite(str(langsam_debug_path), cv2.cvtColor(rgb_for_langsam, cv2.COLOR_RGB2BGR))
+                    print(f"[PoseEst] 📸 Saved LangSAM input debug image: {langsam_debug_path}", flush=True)
+                except Exception as _e:
+                    print(f"[PoseEst] ⚠️  Could not save LangSAM debug image: {_e}", flush=True)
+            
+            image_pil = Image.fromarray(rgb_for_langsam)
+            out = langsam.predict([image_pil], [language_prompt])[0]
+            masks = np.asarray(out.get("masks", []))
 
-        # Check GDINO detection scores — if empty, the object was not detected at all
-        # np.atleast_1d handles scalar returns (single detection → 0-d array)
-        gdino_scores = np.atleast_1d(np.asarray(out.get("scores", [])))
-        mask_scores = np.atleast_1d(np.asarray(out.get("mask_scores", [])))
-        if masks.ndim == 2:
-            masks = masks[np.newaxis]  # (H,W) → (1,H,W)
+            # Check GDINO detection scores — if empty, the object was not detected at all
+            # np.atleast_1d handles scalar returns (single detection → 0-d array)
+            gdino_scores = np.atleast_1d(np.asarray(out.get("scores", [])))
+            mask_scores = np.atleast_1d(np.asarray(out.get("mask_scores", [])))
+            if masks.ndim == 2:
+                masks = masks[np.newaxis]  # (H,W) → (1,H,W)
 
-        # Log detection scores for debugging
-        print(f"[PoseEst] 🔍 '{language_prompt}': GDINO scores={gdino_scores.tolist()}, mask_scores={mask_scores.tolist()}, num_detections={gdino_scores.size}")
+            # Log detection scores for debugging
+            print(f"[PoseEst] 🔍 '{language_prompt}': GDINO scores={gdino_scores.tolist()}, mask_scores={mask_scores.tolist()}, num_detections={gdino_scores.size}")
 
-        if gdino_scores.size == 0 or masks.size == 0:
-            return PoseOutput(
-                success=False,
-                pose_cam_T_obj=None,
-                mask=None,
-                bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
-                to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
-                extras={"error": f"No GDINO detections for '{language_prompt}'"},
-            )
+            if gdino_scores.size == 0 or masks.size == 0:
+                return PoseOutput(
+                    success=False,
+                    pose_cam_T_obj=None,
+                    mask=None,
+                    bbox_obj_frame=torch.from_numpy(bbox_np.astype(np.float32)),
+                    to_origin=torch.from_numpy(to_origin_np.astype(np.float32)),
+                    extras={"error": f"No GDINO detections for '{language_prompt}'"},
+                )
 
-        idx = int(np.argmax(mask_scores))
-        best_gdino_score = float(gdino_scores[idx]) if idx < gdino_scores.size else 0.0
-        best_mask_score = float(mask_scores[idx]) if idx < mask_scores.size else 0.0
-        print(f"[PoseEst] ✅ '{language_prompt}': best detection idx={idx}, gdino_score={best_gdino_score:.4f}, mask_score={best_mask_score:.4f}")
-        lang_mask = masks[idx].astype(bool)
+            idx = int(np.argmax(mask_scores))
+            best_gdino_score = float(gdino_scores[idx]) if idx < gdino_scores.size else 0.0
+            best_mask_score = float(mask_scores[idx]) if idx < mask_scores.size else 0.0
+            print(f"[PoseEst] ✅ '{language_prompt}': best detection idx={idx}, gdino_score={best_gdino_score:.4f}, mask_score={best_mask_score:.4f}")
+            lang_mask = masks[idx].astype(bool)
     except Exception as e:
         return PoseOutput(
             success=False,
@@ -498,10 +536,24 @@ def estimate_pose_from_tensors(
         )
 
     # ---- Run Any6D initialization
+    # Optionally boost saturation for any6d/FoundationPose so texture matching is stronger
+    rgb_for_pose = _boost_saturation(rgb_np, any6d_saturation)
+    
+    # Save debug image of what any6d sees
+    if debug_images_dir is not None:
+        try:
+            import os as _os
+            _os.makedirs(debug_images_dir, exist_ok=True)
+            pose_debug_path = Path(debug_images_dir) / f"{debug_images_prefix}_pose_input.png"
+            cv2.imwrite(str(pose_debug_path), cv2.cvtColor(rgb_for_pose, cv2.COLOR_RGB2BGR))
+            print(f"[PoseEst] 📸 Saved pose estimator input debug image: {pose_debug_path}", flush=True)
+        except Exception as _e:
+            print(f"[PoseEst] ⚠️  Could not save pose debug image: {_e}", flush=True)
+    
     try:
         pose_init_np = any6d.register_any6d(
             K=K_np,
-            rgb=rgb_np,
+            rgb=rgb_for_pose,
             depth=depth_np,
             ob_mask=ob_mask,
             iteration=est_refine_iter,
@@ -521,7 +573,7 @@ def estimate_pose_from_tensors(
 
     # ---- Optional one-step refinement with FoundationPose (helps stability)
     try:
-        pose_refined_np = fpose.track_one(rgb=rgb_np, depth=depth_np, K=K_np, iteration=track_refine_iter)
+        pose_refined_np = fpose.track_one(rgb=rgb_for_pose, depth=depth_np, K=K_np, iteration=track_refine_iter)
         pose_np = pose_refined_np.astype(np.float32)
     except Exception:
         # Fallback to init pose if refinement fails

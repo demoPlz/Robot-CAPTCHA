@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "sorting"  # Single-word identifier for the task
+        self.task_name: str = "switches"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # Never change this. Policy language conditioning is irrelevant for this project
 
         # ========== Labeling Requirements ==========
@@ -131,7 +131,7 @@ class CrowdInterfaceConfig:
             self.objects: dict[str, str] = {
                 "switch_red": "Red Bowl", 
                 "switch_yellow": "Yellow Bowl", 
-                "switch_dark_blue": "Navy Blue Bowl",
+                "switch_dark_blue": "Navy Blue Bowl NOT GREEN",
                 "switch_green": "Green Bowl"
             }
             self.object_mesh_paths: dict[str, str] = {

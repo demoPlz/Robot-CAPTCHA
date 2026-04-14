@@ -828,6 +828,95 @@
         </div>
     </div>
 
+    <!-- Mask Painter Modal -->
+    <div id="mask-painter-modal" style="display:none; position:fixed; inset:0; z-index:9000; background:rgba(2,6,23,0.92); align-items:center; justify-content:center;">
+      <div style="background:#0f172a; border-radius:18px; box-shadow:0 40px 100px rgba(0,0,0,0.6); width:min(96vw,1080px); max-height:94vh; display:flex; flex-direction:column; border:1px solid #1e3a5f; overflow:hidden;">
+
+        <!-- Header -->
+        <div style="padding:14px 20px; border-bottom:1px solid #1e3a5f; display:flex; align-items:center; gap:12px; background:#0b1220;">
+          <span style="font-size:22px;">🖌️</span>
+          <div>
+            <div style="font-size:17px; font-weight:700; color:#e2e8f0;">Paint Object Masks</div>
+            <div style="font-size:12px; color:#64748b;">Brush over each object so the pose estimator knows exactly where to look. Objects you skip will use LangSAM automatically.</div>
+          </div>
+          <div style="margin-left:auto; font-size:12px; color:#475569; background:#1e293b; padding:4px 10px; border-radius:6px;" id="mask-painter-epstate"></div>
+        </div>
+
+        <!-- Object Tabs -->
+        <div style="display:flex; gap:6px; padding:10px 16px; background:#0b1220; border-bottom:1px solid #1e3a5f; flex-wrap:wrap;" id="mask-painter-tabs"></div>
+
+        <!-- Main area: image+canvas left, toolbar right -->
+        <div style="display:flex; flex:1; min-height:0; gap:0; overflow:hidden;">
+
+          <!-- Canvas area -->
+          <div style="flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden;" id="mask-canvas-wrap">
+            <!-- Background image -->
+            <img id="mask-bg-img" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none;" />
+            <!-- Painted mask overlay -->
+            <canvas id="mask-painter-canvas" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; cursor:crosshair; touch-action:none;"></canvas>
+          </div>
+
+          <!-- Toolbar -->
+          <div style="width:180px; min-width:160px; background:#0f172a; border-left:1px solid #1e3a5f; padding:16px 12px; display:flex; flex-direction:column; gap:14px; overflow-y:auto;">
+
+            <!-- Tool: Brush -->
+            <div>
+              <div style="font-size:11px; color:#64748b; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px;">Tool</div>
+              <div style="display:flex; gap:6px;">
+                <button id="mask-tool-brush" onclick="setMaskTool('brush')"
+                  style="flex:1; padding:8px 4px; border-radius:8px; border:2px solid #3b82f6; background:#1e3a5f; color:#93c5fd; font-size:12px; font-weight:600; cursor:pointer;">🖌️ Brush</button>
+                <button id="mask-tool-eraser" onclick="setMaskTool('eraser')"
+                  style="flex:1; padding:8px 4px; border-radius:8px; border:2px solid #475569; background:#1e293b; color:#94a3b8; font-size:12px; font-weight:600; cursor:pointer;">⬜ Eraser</button>
+              </div>
+            </div>
+
+            <!-- Brush size -->
+            <div>
+              <div style="font-size:11px; color:#64748b; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px;">
+                Brush Size: <span id="mask-brush-size-val">24</span>px
+              </div>
+              <input type="range" id="mask-brush-size" min="4" max="80" value="24"
+                style="width:100%; accent-color:#3b82f6;"
+                oninput="document.getElementById('mask-brush-size-val').textContent=this.value">
+            </div>
+
+            <!-- Opacity preview -->
+            <div>
+              <div style="font-size:11px; color:#64748b; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px;">Mask Opacity</div>
+              <input type="range" id="mask-opacity" min="10" max="90" value="50"
+                style="width:100%; accent-color:#a855f7;"
+                oninput="updateMaskCanvasOpacity(this.value)">
+            </div>
+
+            <!-- Per-object clear/skip -->
+            <div style="border-top:1px solid #1e3a5f; padding-top:12px;">
+              <div style="font-size:11px; color:#64748b; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px;">Current object</div>
+              <button onclick="clearCurrentMask()"
+                style="width:100%; padding:8px; border-radius:8px; border:1px solid #ef4444; background:#1e293b; color:#fca5a5; font-size:12px; font-weight:600; cursor:pointer; margin-bottom:6px;">🗑️ Clear mask</button>
+              <button onclick="skipCurrentObject()"
+                style="width:100%; padding:8px; border-radius:8px; border:1px solid #f59e0b; background:#1e293b; color:#fcd34d; font-size:12px; font-weight:600; cursor:pointer;">⏩ Skip (use LangSAM)</button>
+            </div>
+
+            <!-- Legend -->
+            <div style="border-top:1px solid #1e3a5f; padding-top:10px; font-size:11px; color:#475569; line-height:1.6;">
+              <div>🟢 Painted = use mask</div>
+              <div>🟡 Skipped = auto LangSAM</div>
+              <div>⬜ Empty = auto LangSAM</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:12px 20px; border-top:1px solid #1e3a5f; background:#0b1220; display:flex; align-items:center; gap:12px; justify-content:flex-end;">
+          <span id="mask-painter-status" style="font-size:13px; color:#64748b; flex:1;"></span>
+          <button onclick="submitAllMasks()"
+            style="padding:12px 32px; border-radius:10px; border:none; background:linear-gradient(135deg,#10b981,#059669); color:white; font-size:15px; font-weight:700; cursor:pointer; box-shadow:0 4px 16px rgba(16,185,129,.35);">
+            ✅ Submit Masks &amp; Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Undo Classification Modal -->
     <div class="approval-modal-overlay" id="undo-classification-modal">
         <div class="approval-modal-card">

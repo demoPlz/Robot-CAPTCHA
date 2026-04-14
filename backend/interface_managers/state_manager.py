@@ -528,8 +528,8 @@ class StateManager:
         with self.state_lock:
             ep = self.completed_states_buffer_by_episode.get(latest_episode_id, {})
             if ep:
-                # Find previous critical state
-                critical_states = [sid for sid, sinfo in ep.items() if sinfo.get("critical", False)]
+                # Find previous critical state (must be strictly before latest_state_id)
+                critical_states = [sid for sid, sinfo in ep.items() if sinfo.get("critical", False) and sid < latest_state_id]
                 critical_states.sort()
                 
                 if len(critical_states) > 0:
@@ -567,8 +567,11 @@ class StateManager:
             
             # Also mark in completed_states_by_episode (same state object reference, but just to be safe)
             ep2 = self.completed_states_by_episode.get(latest_episode_id, {})
-            if ep2 and len(critical_states) > 0:
-                prev_critical_state_id = critical_states[-1]
+            if ep2:
+                critical_states2 = [sid for sid, sinfo in ep2.items() if sinfo.get("critical", False) and sid < latest_state_id]
+                critical_states2.sort()
+                if len(critical_states2) > 0:
+                    prev_critical_state_id = critical_states2[-1]
                 if prev_critical_state_id in ep2:
                     prev_state_info2 = ep2[prev_critical_state_id]
                     exec_history2 = prev_state_info2.get("execution_history", [])
@@ -610,9 +613,29 @@ class StateManager:
             print(f"⏭️  Skipping pose estimation (reusing poses from previous critical state)")
             poses_ready = True
         else:
+            # Detect first critical state of this episode: no previous critical states exist
+            # If so, prompt the admin to paint per-object masks before pose estimation runs
+            _is_first_critical = True
+            _all_pools = [
+                self.pending_states_by_episode.get(latest_episode_id, {}),
+                self.completed_states_buffer_by_episode.get(latest_episode_id, {}),
+                self.completed_states_by_episode.get(latest_episode_id, {}),
+            ]
+            for _pool in _all_pools:
+                for _sid, _sinfo in _pool.items():
+                    if _sid < latest_state_id and _sinfo.get("critical", False):
+                        _is_first_critical = False
+                        break
+                if not _is_first_critical:
+                    break
+
+            if _is_first_critical and hasattr(self.pose_estimator, "request_mask_painting"):
+                self.pose_estimator.request_mask_painting(latest_episode_id, latest_state_id)
+
             poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
                 latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
             )
+
 
         # ---- Phase 2.5: Estimate drawer position if tracking enabled ----
         drawer_positions_ready = False
@@ -1532,31 +1555,36 @@ class StateManager:
                         critical_states = []
                         
                         # Check pending_states_by_episode (async mode - approved but not submitted yet)
-                        ep_pending = self.pending_states_by_episode.get(episode_id, {})
-                        for sid, sinfo in ep_pending.items():
-                            if sinfo.get("critical", False) and sid < state_id:
-                                critical_states.append((sid, sinfo))
+                        for ep_dict in self.pending_states_by_episode.values():
+                            for sid, sinfo in ep_dict.items():
+                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                    critical_states.append((sid, sinfo))
                         
                         # Check completed_states_buffer_by_episode (buffered states)
-                        ep_buffer = self.completed_states_buffer_by_episode.get(episode_id, {})
-                        for sid, sinfo in ep_buffer.items():
-                            if sinfo.get("critical", False):
-                                critical_states.append((sid, sinfo))
+                        for ep_dict in self.completed_states_buffer_by_episode.values():
+                            for sid, sinfo in ep_dict.items():
+                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                    critical_states.append((sid, sinfo))
                         
                         # Check completed_states_by_episode (fully completed states)
-                        ep_completed = self.completed_states_by_episode.get(episode_id, {})
-                        for sid, sinfo in ep_completed.items():
-                            if sinfo.get("critical", False):
-                                critical_states.append((sid, sinfo))
+                        for ep_dict in self.completed_states_by_episode.values():
+                            for sid, sinfo in ep_dict.items():
+                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                    critical_states.append((sid, sinfo))
                         
                         if critical_states:
-                            # Sort by state_id and get the most recent
                             critical_states.sort(key=lambda x: x[0])
-                            last_critical_state_id, last_critical_info = critical_states[-1]
                             
-                            # Copy object poses from last critical state
-                            if "object_poses" in last_critical_info:
-                                copied_poses = last_critical_info["object_poses"].copy()
+                            copied_poses = None
+                            source_state_id = None
+                            for sid, sinfo in reversed(critical_states):
+                                if "object_poses" in sinfo:
+                                    copied_poses = sinfo["object_poses"].copy()
+                                    source_state_id = sid
+                                    break
+                            
+                            if copied_poses is not None:
+                                print(f"♻️  Copied {len(copied_poses)} object poses from state {source_state_id}")
                                 # Filter by active_objects: null out deselected objects
                                 current_active = state_info.get("active_objects")
                                 if current_active:
@@ -1566,9 +1594,9 @@ class StateManager:
                                             print(f"⏭️  [{obj_key}] Deselected — hiding in sim (pose set to None)")
                                 state_info["object_poses"] = copied_poses
                                 state_info["skip_pose_estimation"] = True
-                                print(f"✅ Reusing object poses from state {last_critical_state_id} (skipped pose estimation)")
+                                print(f"✅ Reusing object poses from state {source_state_id} (skipped pose estimation)")
                             else:
-                                print(f"⚠️  Last critical state {last_critical_state_id} has no object_poses - will run pose estimation")
+                                print(f"⚠️  No previous critical state with object_poses found - will run pose estimation")
                         else:
                             print(f"⚠️  No previous critical state found - will run pose estimation")
                     
@@ -1887,11 +1915,11 @@ class StateManager:
                 print("⚠️  No states in latest episode")
                 return None
 
-            # Find all critical states in chronological order
+            # Find all critical states in chronological order (exclude rejected/pending)
             critical_states = [
                 (state_id, state_info)
                 for state_id, state_info in sorted(episode_states.items())
-                if state_info.get("critical", False)
+                if state_info.get("critical", False) and state_info.get("approval_status") not in ["rejected", "pending"]
             ]
 
             if len(critical_states) < 2:
@@ -3194,15 +3222,8 @@ class StateManager:
         state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
         state_info["pre_approval_loop_complete"] = True
 
-        # Mark as approved since we're auto-filling with "Return to Home position."
-        state_info["approval_status"] = "approved"
-        
-        # Don't mark episode as end here, just autofill and complete the state
-
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        del self.pending_states_by_episode[episode_id][state_id]
+        # Skip unnecessary pose estimation for autofill movements
+        state_info["skip_pose_estimation"] = True
 
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:
@@ -3211,7 +3232,7 @@ class StateManager:
                 and self.pending_approval_state["episode_id"] == int(episode_id)
                 and self.pending_approval_state["state_id"] == int(state_id)
             ):
-                self.pending_approval_state = None
+                self.pending_approval_state["approved"] = True
         
         print(f"🏠 State {state_id} automatically fast-forwarded to Home Position!")
         
@@ -3252,15 +3273,8 @@ class StateManager:
         state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
         state_info["pre_approval_loop_complete"] = True
 
-        # Mark as approved since we're auto-filling with "Open/Close Gripper"
-        state_info["approval_status"] = "approved"
-        
-        # Don't mark episode as end here, just autofill and complete the state
-
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        del self.pending_states_by_episode[episode_id][state_id]
+        # Skip unnecessary pose estimation for autofill movements
+        state_info["skip_pose_estimation"] = True
 
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:
@@ -3269,7 +3283,7 @@ class StateManager:
                 and self.pending_approval_state["episode_id"] == int(episode_id)
                 and self.pending_approval_state["state_id"] == int(state_id)
             ):
-                self.pending_approval_state = None
+                self.pending_approval_state["approved"] = True
         
         state_str = "Open" if open_gripper else "Close"
         print(f"🗜️ State {state_id} automatically fast-forwarded to {state_str} Gripper!")
@@ -3313,17 +3327,12 @@ class StateManager:
         state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
         state_info["pre_approval_loop_complete"] = True
 
-        # Mark as approved since we're auto-filling with "End."
-        state_info["approval_status"] = "approved"
-        
         # Mark this episode as ended - block any new states
         self.episodes_marked_as_end.add(episode_id)
         print(f"🏁 Episode {episode_id} marked as END - no more states will be accepted")
 
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        del self.pending_states_by_episode[episode_id][state_id]
+        # Skip unnecessary pose estimation for autofill movements
+        state_info["skip_pose_estimation"] = True
 
         # Clear pending approval if this state was awaiting approval
         with self.approval_lock:

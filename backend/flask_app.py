@@ -740,16 +740,18 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             inherited_active_objects = None
             previous_video_prompt = None
             with crowd_interface.state_manager.state_lock:
-                all_pools = [
-                    crowd_interface.state_manager.pending_states_by_episode.get(pending["episode_id"], {}),
-                    crowd_interface.state_manager.completed_states_buffer_by_episode.get(pending["episode_id"], {}),
-                    crowd_interface.state_manager.completed_states_by_episode.get(pending["episode_id"], {}),
-                ]
+                all_pools = []
+                for pool_group in [
+                    crowd_interface.state_manager.pending_states_by_episode,
+                    crowd_interface.state_manager.completed_states_buffer_by_episode,
+                    crowd_interface.state_manager.completed_states_by_episode,
+                ]:
+                    all_pools.extend(pool_group.values())
                 prev_active = None
                 prev_critical = None  # (sid, sinfo) of most recent critical state
                 for pool in all_pools:
                     for sid, sinfo in pool.items():
-                        if sid < pending["state_id"] and sinfo.get("critical"):
+                        if sid < pending["state_id"] and sinfo.get("critical") and sinfo.get("approval_status") not in ["rejected", "pending"]:
                             if "active_objects" in sinfo:
                                 if prev_active is None or sid > prev_active[0]:
                                     prev_active = (sid, sinfo["active_objects"])
@@ -1183,9 +1185,107 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/control/pending-mask-painting", methods=["GET"])
+    @require_monitor_auth
+    def get_pending_mask_painting():
+        """Check if mask painting is needed for a pose estimation job.
+
+        Returns:
+            {needs_painting: false} if not waiting, or
+            {needs_painting: true, episode_id, state_id, image_b64, objects}
+        """
+        try:
+            info = crowd_interface.pose_estimator.get_pending_mask_info()
+            if info is None:
+                return jsonify({"needs_painting": False})
+
+            episode_id = info["episode_id"]
+            state_id = info["state_id"]
+
+            # Encode the cam_main frame so the painter can use it as background
+            image_b64 = None
+            with crowd_interface.state_lock:
+                ep = crowd_interface.pending_states_by_episode.get(episode_id, {})
+                st = ep.get(state_id, {})
+                obs_path = st.get("obs_path")
+            if obs_path:
+                try:
+                    obs = crowd_interface.dataset_manager.load_obs_from_disk(obs_path)
+                    img = crowd_interface.load_main_cam_from_obs(obs)
+                    if img is not None:
+                        image_b64 = crowd_interface.encode_jpeg_base64(img)
+                except Exception as load_e:
+                    print(f"⚠️  Could not load obs for mask painter: {load_e}")
+
+            # Determine which objects need masks (active for this state)
+            active_objs = None
+            with crowd_interface.state_lock:
+                ep = crowd_interface.pending_states_by_episode.get(episode_id, {})
+                st = ep.get(state_id, {})
+                active_objs = st.get("active_objects") or list((crowd_interface.objects or {}).keys())
+
+            return jsonify({
+                "needs_painting": True,
+                "episode_id": episode_id,
+                "state_id": state_id,
+                "image_b64": image_b64,
+                "objects": active_objs,
+            })
+        except Exception as e:
+            print(f"❌ Error in pending-mask-painting endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/control/submit-pose-masks", methods=["POST"])
+    @require_monitor_auth
+    def submit_pose_masks():
+        """Submit brush-painted masks for active objects.
+
+        Body JSON:
+            {
+              "episode_id": <int>,
+              "state_id": <int>,
+              "masks": {
+                "<object_name>": "<base64-encoded PNG>"
+              }
+            }
+        """
+        try:
+            import base64
+            data = request.get_json(force=True, silent=True) or {}
+            episode_id = data.get("episode_id")
+            state_id = data.get("state_id")
+            masks_b64 = data.get("masks", {})
+
+            if episode_id is None or state_id is None:
+                return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
+            if not masks_b64:
+                return jsonify({"status": "error", "message": "No masks provided"}), 400
+
+            # Decode base64 PNG bytes for each object
+            mask_pngs = {}
+            for obj_name, b64_str in masks_b64.items():
+                # Strip data URL prefix if present
+                if "," in b64_str:
+                    b64_str = b64_str.split(",", 1)[1]
+                mask_pngs[obj_name] = base64.b64decode(b64_str)
+
+            saved = crowd_interface.pose_estimator.submit_painted_masks(
+                int(episode_id), int(state_id), mask_pngs
+            )
+
+            return jsonify({"status": "ok", "saved": saved})
+        except Exception as e:
+            print(f"❌ Error in submit-pose-masks endpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     # =========================
     # Phase 2 Checkpoint Endpoint
     # =========================
+
 
     @app.route("/api/control/save-phase2-checkpoint", methods=["POST"])
     @require_monitor_auth

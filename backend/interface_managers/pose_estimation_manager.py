@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -92,6 +92,16 @@ class PoseEstimationManager:
         # Store one random pose per object that will be reused for all states
         self._random_fixed_poses: dict[str, dict] = {}
 
+        # === Manual mask painting support ===
+        # painted_masks: {(episode_id, state_id, object_name): Path to PNG file}
+        self._painted_masks: dict[tuple, Path] = {}
+        self._mask_painting_lock = Lock()
+        # Event set when admin submits masks; cleared when waiting begins
+        self._masks_ready_event: Event = Event()
+        self._masks_ready_event.set()  # Initially set so non-painting states proceed immediately
+        self._pending_mask_episode: int | None = None
+        self._pending_mask_state: int | None = None
+
         # Skip worker initialization if using random poses
         if self.use_random_poses:
             print("🎲 Random pose mode enabled - skipping pose estimation workers")
@@ -156,6 +166,56 @@ class PoseEstimationManager:
                   f"rot=[{quat[0]:.3f}, {quat[1]:.3f}, {quat[2]:.3f}, {quat[3]:.3f}]")
         
         print("✅ Random fixed poses generated")
+
+    # =========================
+    # Manual Mask Painting
+    # =========================
+
+    def request_mask_painting(self, episode_id: int, state_id: int) -> None:
+        """Signal that admin must paint masks before pose estimation proceeds for this state."""
+        with self._mask_painting_lock:
+            self._pending_mask_episode = episode_id
+            self._pending_mask_state = state_id
+            self._masks_ready_event.clear()  # Block enqueue_pose_jobs_for_state
+        print(f"🖌️  Mask painting requested for ep={episode_id}, state={state_id}")
+
+    def submit_painted_masks(self, episode_id: int, state_id: int, mask_pngs: dict) -> dict:
+        """Called by Flask when admin submits brush-painted masks.
+
+        Args:
+            episode_id: Episode ID
+            state_id: State ID
+            mask_pngs: {object_name: PNG bytes}
+
+        Returns:
+            {object_name: saved_path_str}
+        """
+        saved = {}
+        masks_dir = self.pose_jobs_root / "painted_masks"
+        masks_dir.mkdir(parents=True, exist_ok=True)
+        with self._mask_painting_lock:
+            for obj_name, png_bytes in mask_pngs.items():
+                fname = masks_dir / f"{episode_id}_{state_id}_{obj_name}.png"
+                fname.write_bytes(png_bytes)
+                self._painted_masks[(episode_id, state_id, obj_name)] = fname
+                saved[obj_name] = str(fname)
+                print(f"   🖌️  Saved mask for {obj_name}: {fname}")
+            # Unblock pose estimation
+            self._pending_mask_episode = None
+            self._pending_mask_state = None
+            self._masks_ready_event.set()
+        print(f"✅ All painted masks saved ({len(saved)}), unblocking pose estimation")
+        return saved
+
+    def get_pending_mask_info(self) -> dict | None:
+        """Returns info about the state currently waiting for mask painting, or None."""
+        with self._mask_painting_lock:
+            if self._pending_mask_episode is None:
+                return None
+            return {
+                "episode_id": self._pending_mask_episode,
+                "state_id": self._pending_mask_state,
+            }
 
     def set_obs_cache_root(self, obs_cache_root: Path):
         """Update observation workspace root used for pose job queues.
@@ -660,11 +720,20 @@ class PoseEstimationManager:
             # Nothing to do; treat as ready.
             return True
 
+        # ---------- Wait for admin to finish painting masks (if requested) ----------
+        if not self._masks_ready_event.is_set():
+            print(f"⏸️  Waiting for admin to paint masks for ep={episode_id}, state={state_id}...")
+            self._masks_ready_event.wait()  # Blocks until submit_painted_masks() calls .set()
+            print(f"▶️  Masks received, proceeding with pose estimation")
+
         # ---------- Enqueue jobs (do not mark object_poses yet) ----------
         print(f"📬 Enqueueing pose jobs for episode={episode_id} state={state_id} objects={expected_objs}")
         for obj in expected_objs:
             mesh_path = self.object_mesh_paths[obj]
-                
+
+            # Check if a pre-painted mask exists for this object
+            painted_mask_path = self._painted_masks.get((episode_id, state_id, obj))
+            
             job_id = f"{episode_id}_{state_id}_{obj}_{uuid.uuid4().hex[:8]}"
             job = {
                 "job_id": job_id,
@@ -678,6 +747,9 @@ class PoseEstimationManager:
                 "est_refine_iter": int(os.getenv("POSE_EST_ITERS", "20")),
                 "track_refine_iter": int(os.getenv("POSE_TRACK_ITERS", "8")),
             }
+            if painted_mask_path is not None:
+                job["mask_path"] = str(painted_mask_path)
+                print(f"   🖌️  Using painted mask for {obj}: {painted_mask_path}")
             print(f"   📝 Creating job {job_id}")
             print(f"      obj={obj}, obs_path={job['obs_path']}")
             tmp = self.pose_tmp / f"{job_id}.json"
@@ -692,6 +764,7 @@ class PoseEstimationManager:
 
         if not wait:
             return True
+
 
         # ---------- Wait for watcher to fold ALL results into state ----------
         # NOTE: Do NOT hold self.state_lock while sleeping; watcher needs it.

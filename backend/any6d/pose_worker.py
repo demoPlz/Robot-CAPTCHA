@@ -312,6 +312,7 @@ def main():
         obs_path = job.get("obs_path")  # Single observation (legacy)
         obs_paths = job.get("obs_paths")  # Multiple observations (multi-frame)
         prompt = job.get("prompt", object_name)  # Use job's prompt (for color-specific masks)
+        mask_path = job.get("mask_path")  # Optional pre-painted mask (bypasses LangSAM)
         K = _as_K_array(job.get("K"))
         est_iters = int(job.get("est_refine_iter") or args.est_refine_iter or 20)
         track_iters = int(job.get("track_refine_iter") or args.track_refine_iter or 8)
@@ -476,6 +477,21 @@ def main():
                 reset_tracking(engines)
                 
                 print(f"[{object_name}] 🎯 Running pose estimation...", flush=True)
+                
+                # Load external painted mask if provided (bypasses LangSAM)
+                external_mask = None
+                if mask_path:
+                    try:
+                        import cv2 as _cv2
+                        mask_bgr = _cv2.imread(mask_path, _cv2.IMREAD_GRAYSCALE)
+                        if mask_bgr is not None:
+                            external_mask = mask_bgr > 127  # threshold to bool
+                            print(f"[{object_name}] 🖌️  Loaded painted mask from {mask_path} (area={external_mask.sum()})", flush=True)
+                        else:
+                            print(f"[{object_name}] ⚠️  Could not load mask image at {mask_path}, falling back to LangSAM", flush=True)
+                    except Exception as _me:
+                        print(f"[{object_name}] ⚠️  Failed to load mask: {_me}, falling back to LangSAM", flush=True)
+                
                 out = estimate_pose_from_tensors(
                     mesh=mesh,
                     rgb_t=rgb_t,
@@ -486,6 +502,9 @@ def main():
                     track_refine_iter=track_iters,
                     debug=0,
                     engines=engines,
+                    debug_images_dir=str(outbox),
+                    debug_images_prefix=job_id,
+                    external_mask=external_mask,
                 )
                 
                 if out.success:
