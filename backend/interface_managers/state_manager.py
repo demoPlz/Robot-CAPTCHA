@@ -522,6 +522,15 @@ class StateManager:
             ep = self.pending_states_by_episode.get(latest_episode_id)
             if ep and latest_state_id in ep:
                 ep[latest_state_id]["approval_status"] = "approved"
+            
+            # Also update completed buffers immediately (important for autofilled/presets that moved early)
+            ep2 = self.completed_states_by_episode.get(latest_episode_id)
+            if ep2 and latest_state_id in ep2:
+                ep2[latest_state_id]["approval_status"] = "approved"
+                
+            ep3 = self.completed_states_buffer_by_episode.get(latest_episode_id)
+            if ep3 and latest_state_id in ep3:
+                ep3[latest_state_id]["approval_status"] = "approved"
         
         # Record final_executed_action for the PREVIOUS critical state (the one we moved FROM)
         # The action that got us to latest_state_id belongs to the previous critical state
@@ -1183,6 +1192,9 @@ class StateManager:
                     # Save to completed states (for monitoring)
                     if episode_id not in self.completed_states_by_episode:
                         self.completed_states_by_episode[episode_id] = {}
+                        
+                    # Explicitly set status to approved so logic querying completed_states_by_episode (like UI mapping) knows it is fully done
+                    state_info["approval_status"] = "approved"
                     self.completed_states_by_episode[episode_id][state_id] = state_info
                     
                     # Set final_executed_action to admin's action (first in execution_history)
@@ -1556,22 +1568,19 @@ class StateManager:
                         critical_states = []
                         
                         # Check pending_states_by_episode (async mode - approved but not submitted yet)
-                        for ep_dict in self.pending_states_by_episode.values():
-                            for sid, sinfo in ep_dict.items():
-                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
-                                    critical_states.append((sid, sinfo))
+                        for sid, sinfo in self.pending_states_by_episode.get(episode_id, {}).items():
+                            if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                critical_states.append((sid, sinfo))
                         
                         # Check completed_states_buffer_by_episode (buffered states)
-                        for ep_dict in self.completed_states_buffer_by_episode.values():
-                            for sid, sinfo in ep_dict.items():
-                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
-                                    critical_states.append((sid, sinfo))
+                        for sid, sinfo in self.completed_states_buffer_by_episode.get(episode_id, {}).items():
+                            if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                critical_states.append((sid, sinfo))
                         
                         # Check completed_states_by_episode (fully completed states)
-                        for ep_dict in self.completed_states_by_episode.values():
-                            for sid, sinfo in ep_dict.items():
-                                if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
-                                    critical_states.append((sid, sinfo))
+                        for sid, sinfo in self.completed_states_by_episode.get(episode_id, {}).items():
+                            if sinfo.get("critical", False) and sinfo.get("approval_status") not in ["rejected", "pending"] and sid < state_id:
+                                critical_states.append((sid, sinfo))
                         
                         if critical_states:
                             critical_states.sort(key=lambda x: x[0])
@@ -3236,6 +3245,8 @@ class StateManager:
 
         if episode_id not in self.completed_states_by_episode:
             self.completed_states_by_episode[episode_id] = {}
+            
+        state_info["approval_status"] = "approved"
         self.completed_states_by_episode[episode_id][state_id] = state_info
 
         if state_id in self.pending_states_by_episode.get(episode_id, {}):
@@ -3298,6 +3309,8 @@ class StateManager:
 
         if episode_id not in self.completed_states_by_episode:
             self.completed_states_by_episode[episode_id] = {}
+            
+        state_info["approval_status"] = "approved"
         self.completed_states_by_episode[episode_id][state_id] = state_info
 
         if state_id in self.pending_states_by_episode.get(episode_id, {}):
@@ -3367,6 +3380,8 @@ class StateManager:
 
         if episode_id not in self.completed_states_by_episode:
             self.completed_states_by_episode[episode_id] = {}
+            
+        state_info["approval_status"] = "approved"
         self.completed_states_by_episode[episode_id][state_id] = state_info
 
         if state_id in self.pending_states_by_episode.get(episode_id, {}):

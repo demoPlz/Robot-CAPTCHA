@@ -741,12 +741,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             previous_video_prompt = None
             with crowd_interface.state_manager.state_lock:
                 all_pools = []
+                ep_id = pending["episode_id"]
                 for pool_group in [
                     crowd_interface.state_manager.pending_states_by_episode,
                     crowd_interface.state_manager.completed_states_buffer_by_episode,
                     crowd_interface.state_manager.completed_states_by_episode,
                 ]:
-                    all_pools.extend(pool_group.values())
+                    if ep_id in pool_group:
+                        all_pools.append(pool_group[ep_id])
                 prev_active = None
                 prev_critical = None  # (sid, sinfo) of most recent critical state
                 for pool in all_pools:
