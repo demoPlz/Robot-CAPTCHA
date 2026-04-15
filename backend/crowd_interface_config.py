@@ -131,7 +131,7 @@ class CrowdInterfaceConfig:
             self.objects: dict[str, str] = {
                 "switch_red": "Red Bowl", 
                 "switch_yellow": "Yellow Bowl", 
-                "switch_dark_blue": "Navy Blue Bowl NOT GREEN",
+                "switch_dark_blue": "Navy Blue Bowl",
                 "switch_green": "Green Bowl"
             }
             self.object_mesh_paths: dict[str, str] = {

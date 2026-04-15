@@ -1729,6 +1729,25 @@
   background: #0b0d12;
 }
 
+/* Debug timing overlay (bottom-left, admin-only) */
+#debugTimingOverlay {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(0,0,0,0.75);
+  color: #0f0;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  z-index: 99999;
+  pointer-events: none;
+  line-height: 1.5;
+}
+#debugTimingOverlay .timing-row { display: flex; gap: 8px; justify-content: space-between; }
+#debugTimingOverlay .timing-label { color: #999; }
+#debugTimingOverlay .timing-value { color: #0f0; font-weight: bold; min-width: 50px; text-align: right; }
+
 /* Approval Counter (lower right corner for Netlify users) */
 #approvalCounter {
   position: fixed;
@@ -1853,6 +1872,11 @@
     <div class="counter-details">0/0 (0%)</div>
   </div>
   
+  <!-- Debug timing overlay (bottom-left) -->
+  <div id="debugTimingOverlay">
+    <div class="timing-row"><span class="timing-label">served→now</span><span id="timingDuration" class="timing-value">0.0s</span></div>
+    <div class="timing-row"><span class="timing-label">interact→now</span><span id="timingInteraction" class="timing-value">—</span></div>
+  </div>
 <script type="module">
 
 // === High-quality recording profile ==========================================
@@ -2063,7 +2087,11 @@ function buildGetStateUrl() {
 
 async function getInitialState() {
   try {
-    const url = buildGetStateUrl();
+    // Use buildGetStateUrl + page_load=true so backend resets served_at timing
+    // (background polling omits page_load, so it won't reset the timer)
+    const baseUrl = buildGetStateUrl();
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const url = `${baseUrl}${separator}page_load=true`;
     console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}${url}`);
     const response = await apiFetch(url, {
       headers: {
@@ -4309,12 +4337,28 @@ loader.load(
     
     // Track first user interaction timestamp (drag, slider, gripper, animation click)
     let firstInteractionAt = null;
+    let _initComplete = false;  // Guard: don't count interactions during page init
     function markFirstInteraction() {
+      if (!_initComplete) return;  // Skip programmatic calls during init
       if (!firstInteractionAt) {
         firstInteractionAt = Date.now();
         console.log('[timing] First interaction recorded at', new Date(firstInteractionAt).toISOString());
       }
     }
+    
+    // Debug timing overlay — live counters matching what gets logged
+    const _pageLoadedAt = Date.now();  // approximates served_at (set on page load)
+    setInterval(() => {
+      const now = Date.now();
+      const durationEl = document.getElementById('timingDuration');
+      const interactionEl = document.getElementById('timingInteraction');
+      if (durationEl) durationEl.textContent = ((now - _pageLoadedAt) / 1000).toFixed(1) + 's';
+      if (interactionEl) {
+        interactionEl.textContent = firstInteractionAt
+          ? ((now - firstInteractionAt) / 1000).toFixed(1) + 's'
+          : '—';
+      }
+    }, 100);
     
     // After: const state = await getInitialState();
     RECORDING_ALLOWED =
@@ -7593,6 +7637,7 @@ loader.load(
     updateGoal();
     updateGripHUDInteractivity();
     updateGripArrowVisibility();  // Initialize arrow visibility after all variables are defined
+    _initComplete = true;  // Now user interactions will be tracked
 
     // Add gripper buttons after sliders
     if (gripperButtonsContainer) {

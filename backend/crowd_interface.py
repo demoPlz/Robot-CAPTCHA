@@ -567,7 +567,7 @@ class CrowdInterface:
         """
         return self.state_manager.set_last_state_to_critical()
 
-    def get_latest_state(self, user_email: str = None, user_name: str = None) -> dict:
+    def get_latest_state(self, user_email: str = None, user_name: str = None, page_load: bool = False) -> dict:
         """Get the latest pending critical state for labeling.
 
         Delegates to StateManager.
@@ -575,9 +575,10 @@ class CrowdInterface:
         Args:
             user_email: Optional user email for timing tracking
             user_name: Optional user name for test user detection
+            page_load: True on fresh page load (resets served_at), False for background polling
 
         """
-        return self.state_manager.get_latest_state(user_email=user_email, user_name=user_name)
+        return self.state_manager.get_latest_state(user_email=user_email, user_name=user_name, page_load=page_load)
 
     def record_response(self, response_data: dict):
         """Record a user response for a state.

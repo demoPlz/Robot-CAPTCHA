@@ -689,7 +689,7 @@ class StateManager:
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
 
-    def get_latest_state(self, user_email: str = None, user_name: str = None) -> dict:
+    def get_latest_state(self, user_email: str = None, user_name: str = None, page_load: bool = False) -> dict:
         """Get a pending state from current serving episode. 
         
         Only serves states that have been approved by the monitor admin.
@@ -700,6 +700,8 @@ class StateManager:
         Args:
             user_email: Email of user requesting state (for timing tracking)
             user_name: User name for test user detection (e.g. test_approved)
+            page_load: True if this is a fresh page load (manual refresh) — resets served_at.
+                       False for background polling — preserves existing served_at.
         """
         # Store user name mapping early so we can detect test users at assignment time
         if user_email and user_name:
@@ -748,22 +750,23 @@ class StateManager:
                 
                 if state_info:
                     # Track timing for async served state
-                    # ALWAYS update served_at on every fetch (including refreshes)
-                    # This starts the timer from when user realizes they can't skip and must work on this state
+                    # page_load=True (manual refresh): always reset served_at
+                    # page_load=False (background poll): only set if not already tracked
                     if user_email:
                         import datetime
                         if "user_timings" not in state_info:
                             state_info["user_timings"] = {}
                         
-                        now = time.time()
-                        now_iso = datetime.datetime.now().isoformat()
-                        state_info["user_timings"][user_email] = {
-                            "served_at": now,
-                            "served_at_iso": now_iso,
-                            "submitted_at": None,
-                            "submitted_at_iso": None,
-                            "duration_seconds": None,
-                        }
+                        if page_load or user_email not in state_info["user_timings"]:
+                            now = time.time()
+                            now_iso = datetime.datetime.now().isoformat()
+                            state_info["user_timings"][user_email] = {
+                                "served_at": now,
+                                "served_at_iso": now_iso,
+                                "submitted_at": None,
+                                "submitted_at_iso": None,
+                                "duration_seconds": None,
+                            }
                     
                     return state_info.copy()
                 else:
@@ -838,22 +841,24 @@ class StateManager:
                     "blocked_critical_states": True,
                 }
             
-            # Track timing for this user - ALWAYS update to current time
-            # This ensures duration measures from most recent fetch, not first encounter
+            # Track timing for this user
+            # page_load=True (manual refresh): always reset served_at
+            # page_load=False (background poll): only set if not already tracked
             if user_email:
                 import datetime
                 if "user_timings" not in state_info:
                     state_info["user_timings"] = {}
                 
-                now = time.time()
-                now_iso = datetime.datetime.now().isoformat()
-                state_info["user_timings"][user_email] = {
-                    "served_at": now,
-                    "served_at_iso": now_iso,
-                    "submitted_at": None,
-                    "submitted_at_iso": None,
-                    "duration_seconds": None,
-                }
+                if page_load or user_email not in state_info["user_timings"]:
+                    now = time.time()
+                    now_iso = datetime.datetime.now().isoformat()
+                    state_info["user_timings"][user_email] = {
+                        "served_at": now,
+                        "served_at_iso": now_iso,
+                        "submitted_at": None,
+                        "submitted_at_iso": None,
+                        "duration_seconds": None,
+                    }
             else:
                 # Only show warning once per session (to avoid spam from monitor.html polling)
                 if not self._no_user_email_warning_shown:

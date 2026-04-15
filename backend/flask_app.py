@@ -143,8 +143,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Extract user email and name from request to track timing and user identity
             user_email = request.args.get('user_email', None) or None  # Convert empty string to None
             user_name = request.args.get('user_name', None) or None
+            page_load = request.args.get('page_load', 'false').lower() == 'true'
             
-            state = crowd_interface.get_latest_state(user_email=user_email, user_name=user_name)
+            state = crowd_interface.get_latest_state(user_email=user_email, user_name=user_name, page_load=page_load)
 
             # Check if this is a status response (no real state)
             if isinstance(state, dict) and state.get("status"):
