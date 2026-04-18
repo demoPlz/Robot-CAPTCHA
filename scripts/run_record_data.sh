@@ -26,11 +26,11 @@ python backend/collect_data.py \
   --control.fps=30 \
   --control.single_task="${TASK_TEXT}" \
   --task-name=${TASK_NAME} \
-  --control.repo_id=${TASK_NAME}/${TASK_NAME}_c20_phase1_2 \
-  --control.data_collection_policy_repo_id=${TASK_NAME}/${TASK_NAME}_c20_phase1_2_dcp \
+  --control.repo_id=${TASK_NAME}/${TASK_NAME}_c40_phase1 \
+  --control.data_collection_policy_repo_id=${TASK_NAME}/${TASK_NAME}_c40_phase1_dcp \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
-  --control.num_episodes=20 \
+  --control.num_episodes=40 \
   --control.push_to_hub=false \
   --control.num_image_writer_processes=8 \
   --control.play_sound=false \

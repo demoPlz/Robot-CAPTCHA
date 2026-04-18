@@ -7,8 +7,8 @@ configuration.
 
 # Camera device indices (change to match your system's USB camera enumeration)
 CAM_IDS = {
-    "front": 12,
-    "left": 14,
+    "front": 14,
+    "left": 16,
     "right": 1,
     "perspective": 10,
 }

@@ -273,8 +273,26 @@ class StateManager:
         state_id = self.next_state_id
         self.next_state_id += 1
 
+        # Push obs to monitoring frontend (done BEFORE view snapshot so obs_wrist is available)
+        self.obs_stream.push_obs_view("obs_main", obs_dict.get("observation.images.cam_main"))
+        self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+
         # Persist views to disk to avoid storing in memory
-        view_paths = self._persist_views_callback(episode_id, state_id, self._snapshot_views_callback())  # legacy
+        views_snapshot = self._snapshot_views_callback()
+
+        # For insertion task: directly encode obs_wrist synchronously into the snapshot
+        # (the background queue may not have processed it yet, so we bypass it)
+        wrist_img = obs_dict.get("observation.images.cam_wrist")
+        if wrist_img is not None:
+            rgb = self.obs_stream._to_uint8_rgb(wrist_img)
+            if rgb is not None:
+                import numpy as np
+                # Rotate 180° for insertion task (camera is mounted upside-down)
+                if "insertion" in (getattr(self.obs_stream, "task_name", "") or ""):
+                    rgb = np.ascontiguousarray(np.rot90(rgb, 2))
+                views_snapshot["obs_wrist"] = self.obs_stream._encoder_func(rgb)
+
+        view_paths = self._persist_views_callback(episode_id, state_id, views_snapshot)  # legacy
 
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():
@@ -285,10 +303,6 @@ class StateManager:
         else:
             print(f"✓ Persisted obs to: {obs_path}")
         del obs_dict_deep_copy
-
-        # Push obs to monitoring frontend
-        self.obs_stream.push_obs_view("obs_main", obs_dict.get("observation.images.cam_main"))
-        self.obs_stream.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
 
         state_info = {
             # Identity
@@ -638,8 +652,8 @@ class StateManager:
                 if not _is_first_critical:
                     break
 
-            # MANUAL MASK PAINTING — disabled by default; uncomment to enable:
-            if _is_first_critical and hasattr(self.pose_estimator, "request_mask_painting"):
+            # MANUAL MASK PAINTING — only for switches task (other tasks use LangSAM):
+            if _is_first_critical and hasattr(self.pose_estimator, "request_mask_painting") and getattr(self.pose_estimator, "task_name", None) == "switches":
                 self.pose_estimator.request_mask_painting(latest_episode_id, latest_state_id)
 
             poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
@@ -1692,9 +1706,10 @@ class StateManager:
         # Run pose estimation + sim capture in a background thread so we don't block the endpoint
         def _redo_worker():
             try:
-                # MANUAL MASK PAINTING — disabled by default; uncomment to enable:
-                print(f"🖌️  Requesting mask painting for redo: episode={episode_id}, state={state_id}")
-                self.pose_estimator.request_mask_painting(episode_id, state_id)
+                # MANUAL MASK PAINTING — only for switches task (other tasks use LangSAM):
+                if getattr(self.pose_estimator, "task_name", None) == "switches":
+                    print(f"🖌️  Requesting mask painting for redo: episode={episode_id}, state={state_id}")
+                    self.pose_estimator.request_mask_painting(episode_id, state_id)
 
                 # Re-enqueue pose jobs and wait for results
                 poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(

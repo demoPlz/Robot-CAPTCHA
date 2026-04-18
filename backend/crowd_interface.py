@@ -262,7 +262,7 @@ class CrowdInterface:
         )
 
         # Observation stream manager
-        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64)
+        self.obs_stream = ObservationStreamManager(encoder_func=self.webcam_manager.encode_jpeg_base64, task_name=task_name)
 
         # Sim manager
         # Note: obs_cache_root will be set in init_dataset(), not here
