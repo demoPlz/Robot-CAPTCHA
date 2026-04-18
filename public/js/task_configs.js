@@ -127,7 +127,7 @@ function getTaskConfig() {
     title: 'Push straight down to the bottom' 
   };
   
-  // Shallow clone and conditionally inject the push_down preset
+  // Shallow clone and inject the push_down preset for all tasks
   const clone = Object.assign({}, cfg);
   clone.containerPresets = clone.containerPresets ? [...clone.containerPresets] : [];
   
