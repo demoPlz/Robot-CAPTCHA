@@ -82,7 +82,7 @@ class CrowdInterfaceConfig:
         # ========== Home Position ==========
         # Robot home position in degrees: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper_rotate, gripper]
         if self.task_name == "insertion":
-            self.home_position_deg: list[float] = [0, 100, 80, -67, 0, 0, -1]
+            self.home_position_deg: list[float] = [0, 45, 40, -83, 0, 0, -1]
         elif self.task_name == "switches":
             self.home_position_deg: list[float] = [0, 100, 90, -78, 0, 0, -1]
         else:
