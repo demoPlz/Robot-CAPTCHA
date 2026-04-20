@@ -715,6 +715,23 @@ class IsaacSimWorker:
 
         # Dynamically set poses for all configured objects
         from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
+        
+        # STEP 3A: Banish ALL objects far away in X/Y first to clear the scene
+        print(f"[Worker] 🧹 Clearing scene (moving all objects far away in X/Y)...")
+        banish_idx = 0
+        for obj_name, obj_prim in self.objects.items():
+            if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                continue
+                
+            if obj_prim and obj_prim.is_valid():
+                banish_pos = np.array([100.0, 100.0 + banish_idx * 2.0, -100.0])
+                obj_prim.set_world_pose(position=banish_pos)
+                if hasattr(obj_prim, 'set_linear_velocity'):
+                    obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                    obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                banish_idx += 1
+
+        # STEP 3B: Place the active ones
         for obj_name, obj_prim in self.objects.items():
             # Skip non-RigidPrim objects (like trays)
             if obj_name in ["tray_01", "tray_02", "tray_03"]:
@@ -722,21 +739,20 @@ class IsaacSimWorker:
                 
             if obj_prim and obj_prim.is_valid():
                 state = object_states.get(obj_name)
+                obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
+                
                 if state:
                     # Object detected — show it and set pose
-                    obj_usd_prim = get_prim_at_path(obj_prim.prim_path)
                     if obj_usd_prim and obj_usd_prim.IsValid():
                         set_prim_visibility(obj_usd_prim, True)
                     pos = np.array(state["pos"])
                     rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                     obj_prim.set_world_pose(position=pos, orientation=rot)
                 else:
-                    # Object absent (None pose) — just move far away
-                    obj_prim.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
-                    if hasattr(obj_prim, 'set_linear_velocity'):
-                        obj_prim.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                        obj_prim.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                    print(f"[Worker]    👻 Banished {obj_name} to [0,0,-100] (state={state})")
+                    # Object absent (None pose) — hide it, already banished
+                    if obj_usd_prim and obj_usd_prim.IsValid():
+                        set_prim_visibility(obj_usd_prim, False)
+                    print(f"[Worker]    👻 Kept {obj_name} banished (state={state})")
 
         # STEP 4: Set drawer position
         print(f"[Worker] 🗄️  Positioning drawer")
@@ -1093,7 +1109,20 @@ class IsaacSimWorker:
                 if user_id == 0:
                     # User 0: Use original object references - reset to absolute positions
 
-                    # Dynamically sync all configured objects
+                    # STEP 3A: Banish ALL objects first to clear scene
+                    banish_idx = 0
+                    for obj_name in object_states.keys():
+                        if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                            continue
+                        if obj_name in self.objects and self.objects[obj_name]:
+                            obj_prim_ref = self.objects[obj_name]
+                            banish_pos = np.array([100.0, 100.0 + banish_idx * 2.0, -100.0])
+                            obj_prim_ref.set_world_pose(position=banish_pos)
+                            obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        banish_idx += 1
+
+                    # STEP 3B: Position placed objects
                     for obj_name, state in object_states.items():
                         # Skip non-RigidPrim objects
                         if obj_name in ["tray_01", "tray_02", "tray_03"]:
@@ -1101,8 +1130,9 @@ class IsaacSimWorker:
                             
                         if obj_name in self.objects and self.objects[obj_name]:
                             obj_prim_ref = self.objects[obj_name]
+                            obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
+                            
                             if state is not None:  # Object present — show and position
-                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
                                 if obj_usd_prim and obj_usd_prim.IsValid():
                                     set_prim_visibility(obj_usd_prim, True)
                                 pos = np.array(state["pos"])
@@ -1111,60 +1141,49 @@ class IsaacSimWorker:
                                 obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                                 obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
                             else:
-                                # Object absent — hide and banish far away
-                                obj_usd_prim = get_prim_at_path(obj_prim_ref.prim_path)
                                 if obj_usd_prim and obj_usd_prim.IsValid():
                                     set_prim_visibility(obj_usd_prim, False)
-                                obj_prim_ref.set_world_pose(position=np.array([0.0, 0.0, -100.0]))
-                                obj_prim_ref.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                                obj_prim_ref.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
                 else:
                     # Cloned environments: Sync objects using scene registry WITH SPATIAL OFFSET
-
-                    # Calculate the spatial offset for this environment
-                    # User environments are spaced diagonally: [user_id * spacing, user_id * spacing, 0]
                     spatial_offset = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, 0])
                     
-                    # Sync each cloned object using scene registry with spatial offset applied
-                    # Dynamically build object mappings based on configured objects
+                    # STEP 3A: Banish ALL objects first to clear scene
+                    banish_idx = 0
                     for obj_name in object_states.keys():
-                        # Skip non-RigidPrim objects
+                        if obj_name in ["tray_01", "tray_02", "tray_03"]:
+                            continue
+                        scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
+                        if self.world.scene.object_exists(scene_name):
+                            scene_obj = self.world.scene.get_object(scene_name)
+                            banish_pos = np.array([user_id * self.environment_spacing + 100.0, user_id * self.environment_spacing + 100.0 + banish_idx * 2.0, -100.0])
+                            scene_obj.set_world_pose(position=banish_pos)
+                            scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+                            scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+                        banish_idx += 1
+
+                    # STEP 3B: Position placed objects
+                    for obj_name in object_states.keys():
                         if obj_name in ["tray_01", "tray_02", "tray_03"]:
                             continue
                             
                         state = object_states[obj_name]
-
-                        # For Tennis ball, use lowercase naming convention for scene registry
                         scene_name = f"{obj_name.lower()}_user_{user_id}" if obj_name == "Tennis" else f"{obj_name}_user_{user_id}"
-
-                        if state is None:
-                            # Object absent — hide and banish in cloned environment
-                            obj_path = f"{world_path}/{obj_name}"
-                            obj_usd_prim = get_prim_at_path(obj_path)
-                            if obj_usd_prim and obj_usd_prim.IsValid():
-                                set_prim_visibility(obj_usd_prim, False)
-                            # Move far away to prevent phantom collisions
-                            if self.world.scene.object_exists(scene_name):
-                                scene_obj = self.world.scene.get_object(scene_name)
-                                banish_pos = np.array([user_id * self.environment_spacing, user_id * self.environment_spacing, -100.0])
-                                scene_obj.set_world_pose(position=banish_pos)
-                                scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
-                                scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                            continue
-
-                        # Object present — show and position with offset
                         obj_path = f"{world_path}/{obj_name}"
                         obj_usd_prim = get_prim_at_path(obj_path)
+
+                        if state is None:
+                            if obj_usd_prim and obj_usd_prim.IsValid():
+                                set_prim_visibility(obj_usd_prim, False)
+                            continue
+
                         if obj_usd_prim and obj_usd_prim.IsValid():
                             set_prim_visibility(obj_usd_prim, True)
 
-                        # CRITICAL: Apply spatial offset to object position
                         original_pos = np.array(state["pos"])
                         offset_pos = original_pos + spatial_offset
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
 
-                        # Set object position using scene registry with offset
                         if self.world.scene.object_exists(scene_name):
                             scene_obj = self.world.scene.get_object(scene_name)
                             scene_obj.set_world_pose(position=offset_pos, orientation=rot)

@@ -1,13 +1,13 @@
 Move above one of the unlit switches.
 Move down to press the switch.
-Return to Home position.
+Return to Home position. [HOME]
 Move above one of the unlit switches.
 Move down to press the switch.
-Return to Home position.
+Return to Home position. [HOME]
 Move above one of the unlit switches.
 Move down to press the switch.
-Return to Home position.
+Return to Home position. [HOME]
 Move above one of the unlit switches.
 Move down to press the switch.
-Return to Home position.
-End.
+Return to Home position. [HOME]
+End. [END]

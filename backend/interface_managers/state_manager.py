@@ -2524,17 +2524,16 @@ class StateManager:
         state_info["prompt_ready"] = True
 
         if text:
-            clean_text = text.strip().lower()
-            if clean_text == "end.":
+            if "[END]" in text or text.strip().lower() in ["end", "end."]:
                 with self.state_lock:
                     self._auto_fill_end_state_locked(state_info, episode_id, state_id)
-            elif clean_text in ["return to home position.", "return to home."]:
+            elif "[HOME]" in text:
                 with self.state_lock:
                     self._auto_fill_home_state_locked(state_info, episode_id, state_id)
-            elif clean_text == "open gripper.":
+            elif "[RELEASE]" in text:
                 with self.state_lock:
                     self._auto_fill_gripper_state_locked(state_info, episode_id, state_id, open_gripper=True)
-            elif clean_text == "close gripper.":
+            elif "[GRASP]" in text:
                 with self.state_lock:
                     self._auto_fill_gripper_state_locked(state_info, episode_id, state_id, open_gripper=False)
 
@@ -3220,11 +3219,54 @@ class StateManager:
             "overall_avg_state_duration": sum(all_state_durations) / len(all_state_durations) if all_state_durations else 0,
         }
 
-    def _auto_fill_home_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
-        """Auto-fill a critical state labeled as 'Return to Home position.' with the home position.
+    def _finalize_auto_filled_state_locked(self, state_info: dict, episode_id: int, state_id: int, position_action: torch.Tensor, is_dynamic_preset: bool = False, print_msg: str = None) -> None:
+        """Helper to apply common logic for all auto-filled states, removing duplicate boilerplate."""
+        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
+        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
 
-        MUST be called with self.state_lock already held.
-        """
+        state_info["action_to_save"] = all_actions
+        
+        if is_dynamic_preset:
+            state_info["is_dynamic_preset"] = True
+            state_info["container_preset_autofilled"] = True
+        
+        state_info["execution_history"] = [
+            {
+                "action": position_action.clone(),
+                "propensity": 1.0,
+                "approval": 1,
+                "submitted_by": [],
+            }
+            for _ in range(self.required_responses_per_critical_state)
+        ]
+        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
+        state_info["pre_approval_loop_complete"] = True
+        state_info["skip_pose_estimation"] = True
+
+        if episode_id not in self.completed_states_buffer_by_episode:
+            self.completed_states_buffer_by_episode[episode_id] = {}
+        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
+
+        if episode_id not in self.completed_states_by_episode:
+            self.completed_states_by_episode[episode_id] = {}
+            
+        state_info["approval_status"] = "approved"
+        self.completed_states_by_episode[episode_id][state_id] = state_info
+
+        if state_id in self.pending_states_by_episode.get(episode_id, {}):
+            del self.pending_states_by_episode[episode_id][state_id]
+
+        with self.approval_lock:
+            if (self.pending_approval_state and 
+                self.pending_approval_state["episode_id"] == int(episode_id) and 
+                self.pending_approval_state["state_id"] == int(state_id)):
+                self.pending_approval_state["approved"] = True
+
+        if print_msg:
+            print(print_msg)
+
+    def _auto_fill_home_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
+        """Auto-fill a critical state labeled as 'Return to Home position.' with the home position."""
         import math
         HOME_POSITION_DEG = self.home_position_deg if self.home_position_deg else [0, 60, 75, -60, 0, 0, 2]
         
@@ -3233,191 +3275,61 @@ class StateManager:
             v = HOME_POSITION_DEG[i] * math.pi / 180.0
             goal_positions.append(v)
             
-        # Gripper handling identical to _auto_fill_end_state_locked logic
         home_gripper_val = HOME_POSITION_DEG[-1]
         goal_positions.append(0.044 if home_gripper_val > 0 else 0.0)
 
         position_action = torch.tensor(goal_positions, dtype=torch.float32)
-        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
-        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
-
-        state_info["action_to_save"] = all_actions
-        
-        # Create execution_history with all actions auto-approved
-        state_info["execution_history"] = [
-            {
-                "action": position_action.clone(),
-                "propensity": 1.0,
-                "approval": 1,  # Auto-approved
-                "submitted_by": [],  # Auto-filled, no user
-            }
-            for _ in range(self.required_responses_per_critical_state)
-        ]
-        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
-        state_info["pre_approval_loop_complete"] = True
-
-        # Skip unnecessary pose estimation for autofill movements
-        state_info["skip_pose_estimation"] = True
-
-        if episode_id not in self.completed_states_buffer_by_episode:
-            self.completed_states_buffer_by_episode[episode_id] = {}
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-
-        if episode_id not in self.completed_states_by_episode:
-            self.completed_states_by_episode[episode_id] = {}
-            
-        state_info["approval_status"] = "approved"
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        if state_id in self.pending_states_by_episode.get(episode_id, {}):
-            del self.pending_states_by_episode[episode_id][state_id]
-
-        # Clear pending approval if this state was awaiting approval
-        with self.approval_lock:
-            if (
-                self.pending_approval_state
-                and self.pending_approval_state["episode_id"] == int(episode_id)
-                and self.pending_approval_state["state_id"] == int(state_id)
-            ):
-                self.pending_approval_state["approved"] = True
-        
-        print(f"🏠 State {state_id} automatically fast-forwarded to Home Position!")
+        self._finalize_auto_filled_state_locked(state_info, episode_id, state_id, position_action, print_msg=f"🏠 State {state_id} automatically fast-forwarded to Home Position!")
         
     def _auto_fill_gripper_state_locked(self, state_info: dict, episode_id: int, state_id: int, open_gripper: bool) -> None:
-        """Auto-fill a critical state labeled as 'Open/Close gripper.' with the current position but forced gripper state.
-
-        MUST be called with self.state_lock already held.
-        """
-        # Direct access to joint positions in flattened structure
+        """Auto-fill a critical state labeled as 'Open/Close gripper.' with the current position but forced gripper state."""
         joint_positions = state_info.get("joint_positions", {})
-
-        # Convert joint positions to action tensor (same as autolabel logic)
         goal_positions = []
         for joint_name in JOINT_NAMES:
             v = joint_positions.get(joint_name, 0.0)
             v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
             goal_positions.append(v)
             
-        # Set gripper position explicitly based on requested state
         goal_positions[-1] = 0.044 if open_gripper else 0.0
+        position_action = torch.tensor(goal_positions, dtype=torch.float32)
+        state_str = "Open" if open_gripper else "Close"
+        
+        self._finalize_auto_filled_state_locked(state_info, episode_id, state_id, position_action, print_msg=f"🗜️ State {state_id} automatically fast-forwarded to {state_str} Gripper!")
+
+    def _auto_fill_push_down_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
+        """Auto-fill a critical state labeled as 'Lower the gripper to prepare for grasp.' with the current position but marked as a dynamic preset."""
+        joint_positions = state_info.get("joint_positions", {})
+        goal_positions = []
+        for joint_name in JOINT_NAMES:
+            v = joint_positions.get(joint_name, 0.0)
+            v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
+            goal_positions.append(v)
 
         position_action = torch.tensor(goal_positions, dtype=torch.float32)
-        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
-        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
-
-        state_info["action_to_save"] = all_actions
-        
-        # Create execution_history with all actions auto-approved
-        state_info["execution_history"] = [
-            {
-                "action": position_action.clone(),
-                "propensity": 1.0,
-                "approval": 1,  # Auto-approved
-                "submitted_by": [],  # Auto-filled, no user
-            }
-            for _ in range(self.required_responses_per_critical_state)
-        ]
-        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
-        state_info["pre_approval_loop_complete"] = True
-
-        # Skip unnecessary pose estimation for autofill movements
-        state_info["skip_pose_estimation"] = True
-
-        if episode_id not in self.completed_states_buffer_by_episode:
-            self.completed_states_buffer_by_episode[episode_id] = {}
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-
-        if episode_id not in self.completed_states_by_episode:
-            self.completed_states_by_episode[episode_id] = {}
-            
-        state_info["approval_status"] = "approved"
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        if state_id in self.pending_states_by_episode.get(episode_id, {}):
-            del self.pending_states_by_episode[episode_id][state_id]
-
-        # Clear pending approval if this state was awaiting approval
-        with self.approval_lock:
-            if (
-                self.pending_approval_state
-                and self.pending_approval_state["episode_id"] == int(episode_id)
-                and self.pending_approval_state["state_id"] == int(state_id)
-            ):
-                self.pending_approval_state["approved"] = True
-        
-        state_str = "Open" if open_gripper else "Close"
-        print(f"🗜️ State {state_id} automatically fast-forwarded to {state_str} Gripper!")
+        self._finalize_auto_filled_state_locked(state_info, episode_id, state_id, position_action, is_dynamic_preset=True, print_msg=f"⬇️ State {state_id} automatically fast-forwarded to Push Down Preset!")
 
     def _auto_fill_end_state_locked(self, state_info: dict, episode_id: int, state_id: int) -> None:
-        """Auto-fill an critical state labeled as "end." with multiple copies of its current position.
-
-        MUST be called with self.state_lock already held.
-
-        """
-        # Direct access to joint positions and gripper in flattened structure
+        """Auto-fill an critical state labeled as "end." with multiple copies of its current position."""
         joint_positions = state_info.get("joint_positions", {})
         gripper_action = state_info.get("gripper", 0)
 
-        # Convert joint positions to action tensor (same as autolabel logic)
         goal_positions = []
         for joint_name in JOINT_NAMES:
             v = joint_positions.get(joint_name, 0.0)
             v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
             goal_positions.append(v)
-        # Set gripper position based on gripper action
         goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
 
         position_action = torch.tensor(goal_positions, dtype=torch.float32)
-
-        state_info["actions"] = [position_action for _ in range(self.required_responses_per_critical_state)]
-        all_actions = torch.cat(state_info["actions"][: self.required_responses_per_critical_state], dim=0)
-
-        state_info["action_to_save"] = all_actions
         
-        # Create execution_history with all actions auto-approved
-        state_info["execution_history"] = [
-            {
-                "action": position_action.clone(),
-                "propensity": 1.0,
-                "approval": 1,  # Auto-approved
-                "submitted_by": [],  # Auto-filled, no user
-            }
-            for _ in range(self.required_responses_per_critical_state)
-        ]
-        state_info["num_pre_approvals_completed"] = self.required_responses_per_critical_state
-        state_info["pre_approval_loop_complete"] = True
-
-        # Mark this episode as ended - block any new states
         self.episodes_marked_as_end.add(episode_id)
         print(f"🏁 Episode {episode_id} marked as END - no more states will be accepted")
-
-        # Skip unnecessary pose estimation for autofill movements
-        state_info["skip_pose_estimation"] = True
-
-        if episode_id not in self.completed_states_buffer_by_episode:
-            self.completed_states_buffer_by_episode[episode_id] = {}
-        self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
-
-        if episode_id not in self.completed_states_by_episode:
-            self.completed_states_by_episode[episode_id] = {}
-            
-        state_info["approval_status"] = "approved"
-        self.completed_states_by_episode[episode_id][state_id] = state_info
-
-        if state_id in self.pending_states_by_episode.get(episode_id, {}):
-            del self.pending_states_by_episode[episode_id][state_id]
-
-        # Clear pending approval if this state was awaiting approval
+        
+        self._finalize_auto_filled_state_locked(state_info, episode_id, state_id, position_action)
+        
+        # Additional END state specific check that was present in the original method
         with self.approval_lock:
-            if (
-                self.pending_approval_state
-                and self.pending_approval_state["episode_id"] == int(episode_id)
-                and self.pending_approval_state["state_id"] == int(state_id)
-            ):
-                print(f"✅ Auto-approved state {state_id} (marked as end)")
-                # Set approved to True so the waiting thread sees it as approval, not demotion
-                self.pending_approval_state["approved"] = True
-            elif self.pending_approval_state:
+            if self.pending_approval_state and self.pending_approval_state.get("episode_id") != int(episode_id):
                 print(f"⚠️  END auto-approval MISMATCH: pending=({self.pending_approval_state['episode_id']!r}, {self.pending_approval_state['state_id']!r}) vs end=({episode_id!r}, {state_id!r})")
 
 

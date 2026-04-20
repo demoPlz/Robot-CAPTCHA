@@ -1,18 +1,18 @@
 Position the arm to grip the handle of the middle drawer.
-Grasp the drawer handle.
+Grasp the drawer handle. [GRASP]
 Pull the drawer open.
-Release the gripper.
-Return to the home position.
+Release the gripper. [RELEASE]
+Return to the home position. [HOME]
 Move horizontally such that the gripper is in the general area above the cube.
 Lower and pitch the gripper till vertical to be ~3cm above the cube. Align the right yellow line to the object's side. 
 Rotate the gripper to align with grasp angle, and adjust the positioning.
 Rotate the gripper to align with grasp angle.
 Lower the gripper to prepare for grasp.
-Close gripper to grasp.
+Close gripper to grasp. [GRASP]
 Raise the gripper such that the gripper and the cube clear the height of the middle drawer's handle.
 Move horizontally such that the gripper is above the opened drawer.
-Open gripper to release object into the drawer.
+Open gripper to release object into the drawer. [RELEASE]
 Move horizontally left to be slightly left of the drawer.
 Move down the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
 Push the drawer close.
-End.
+End. [END]

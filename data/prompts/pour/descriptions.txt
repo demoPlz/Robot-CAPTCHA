@@ -2,7 +2,7 @@ Move the arm to be over and behind the cup.
 Lower the gripper vertically to the bottom.
 Flatten the gripper.
 Push forward to prepare for a deep grip of the cup.
-Close the gripper.
+Close the gripper. [GRASP]
 Elevate the gripper to the side of the cup.
 Pour.
-End.
+End. [END]
