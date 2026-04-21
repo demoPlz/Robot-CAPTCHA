@@ -3568,16 +3568,21 @@ class StateManager:
                 else:
                     states_completed += 1
             
-            # Total needed = total states * required responses per state
-            total_needed = total_states * self.required_responses_per_critical_state
+            # Subtract Phase 1 admin baseline so progress only reflects Phase 2 crowd work
+            # Each state entered the pool with async_admin_responses_per_state admin submissions
+            phase1_baseline = total_states * self.async_admin_responses_per_state
+            total_approved_phase2 = max(0, total_approved - phase1_baseline)
             
-            # Total submissions = count all entries in execution_history across pool states
+            # Total needed for Phase 2 = total minus the admin baseline already present
+            total_needed = total_states * (self.required_responses_per_critical_state - self.async_admin_responses_per_state)
+            
+            # Total submissions = count all entries in execution_history minus admin baseline
             # (async_user_submissions is a set of unique state keys, which undercounts
             #  when users submit multiple times to the same state)
             total_submissions = sum(
                 len(state_info.get("execution_history", []))
                 for state_info in self.async_state_pool.values()
-            )
+            ) - phase1_baseline
             
             # User statistics
             total_users = len(self.async_user_submissions)
@@ -3600,7 +3605,7 @@ class StateManager:
                 "total_states": total_states,
                 "states_needing_labels": states_needing_labels,
                 "states_completed": states_completed,
-                "total_approved": total_approved,
+                "total_approved": total_approved_phase2,
                 "total_needed": total_needed,
                 "total_submissions": total_submissions,
                 "total_users": total_users,
