@@ -526,6 +526,31 @@
             display: block;
             border-radius: 4px;
         }
+
+        /* === Phase 2 Only Mode === */
+        body.phase2-only-mode .camera-section { display: none !important; }
+        body.phase2-only-mode .control-section { display: none !important; }
+        body.phase2-only-mode #robot-state-card { display: none !important; }
+        body.phase2-only-mode #tutorial-save-section { display: none !important; }
+        body.phase2-only-mode .top-section {
+            /* Status column takes minimal space at top */
+            flex-direction: column;
+        }
+        body.phase2-only-mode .status-control-column {
+            flex: none;
+        }
+        body.phase2-only-mode .main-content {
+            flex: 1;
+        }
+        body.phase2-only-mode .episode-charts-container {
+            max-height: none;
+            flex: 1;
+            overflow-y: auto;
+        }
+        body.phase2-only-mode .left-panel {
+            flex: 1;
+            min-height: 0;
+        }
     </style>
 </head>
 <body>
@@ -1756,6 +1781,19 @@
                 document.getElementById('async-states-text').textContent = `${data.states_completed}/${data.total_states} states done`;
                 document.getElementById('async-submissions-text').textContent = `${data.total_submissions || 0} submissions`;
                 document.getElementById('async-users-text').textContent = `${data.total_users || 0} users`;
+
+                // Phase 2-only mode: hide cameras/controls, maximize charts
+                if (data.phase2_only && !document.body.classList.contains('phase2-only-mode')) {
+                    document.body.classList.add('phase2-only-mode');
+                    // Stop polling endpoints that aren't relevant in phase2-only
+                    // Keep preExecutionApproval — needed for admin to approve/reject real user submissions
+                    if (autoRefreshInterval) {
+                        clearInterval(autoRefreshInterval.cameras);
+                        clearInterval(autoRefreshInterval.approval);
+                        clearInterval(autoRefreshInterval.undoClassification);
+                        clearInterval(autoRefreshInterval.maskPainting);
+                    }
+                }
             } catch (e) {
                 // Silently ignore — endpoint may not exist in non-async mode
             }

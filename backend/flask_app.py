@@ -1321,6 +1321,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """Get status of async state pool."""
         try:
             status = crowd_interface.state_manager.get_async_pool_status()
+            status["phase2_only"] = bool(getattr(crowd_interface, "_phase2_only", False))
             return jsonify(status)
         except Exception as e:
             print(f"❌ Error getting async status: {e}")

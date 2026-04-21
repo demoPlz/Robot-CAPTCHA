@@ -430,6 +430,7 @@ def control_robot(cfg: ControlPipelineConfig):
     print(f"📝 Updated {config_file} with port {port}")
     
     crowd_interface = CrowdInterface(**_CROWD_CONFIG.to_crowd_interface_kwargs())
+    crowd_interface._phase2_only = bool(_CROWD_CONFIG.phase2_only)
     # Skip camera init in Phase 2-only mode — all images are served from disk
     # and webcams must be free for control_robot.py policy rollout
     if not _CROWD_CONFIG.phase2_only:

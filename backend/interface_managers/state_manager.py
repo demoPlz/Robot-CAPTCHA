@@ -902,6 +902,11 @@ class StateManager:
                 or state_id not in self.pending_states_by_episode[episode_id]
             ):
                 # State already fully labeled
+                user_email = response_data.get("user_email", "?")
+                ep_exists = episode_id in self.pending_states_by_episode
+                ep_states = list(self.pending_states_by_episode.get(episode_id, {}).keys())[:5] if ep_exists else []
+                in_pool = (episode_id, state_id) in self.async_state_pool if self.async_pool_finalized else "N/A"
+                print(f"⚠️  record_response: state ({episode_id}, {state_id}) not in pending_states (user={user_email}, ep_exists={ep_exists}, ep_states_sample={ep_states}, in_pool={in_pool})")
                 return
 
             state_info = self.pending_states_by_episode[episode_id][state_id]
