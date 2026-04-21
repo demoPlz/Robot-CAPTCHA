@@ -98,6 +98,7 @@ class AsyncUserLogger:
         ip_address: Optional[str] = None,
         queue_length: int = 0,
         interaction_to_submit_seconds: Optional[float] = None,
+        video_prompt: Optional[int] = None,
     ):
         """Log a single submission immediately after approval/rejection.
         
@@ -114,6 +115,7 @@ class AsyncUserLogger:
             current_total_count: Total number of reviewed submissions so far
             ip_address: IP address of the user (optional)
             interaction_to_submit_seconds: Time from first interaction to submit
+            video_prompt: Prompt/video index assigned to this state
         """
         timestamp = time.time()
         timestamp_iso = datetime.now().isoformat()
@@ -178,6 +180,7 @@ class AsyncUserLogger:
             "current_approval_rate": round(current_approval_rate, 3) if current_approval_rate is not None else None,
             "current_approval_count": current_approval_count,
             "current_total_count": current_total_count,
+            "video_prompt": video_prompt,
         }
         
         # Append to log file
@@ -188,7 +191,8 @@ class AsyncUserLogger:
         status_emoji = "✅" if approval_status == 1 else "❌"
         approval_str = f"{current_approval_count}/{current_total_count}" if current_total_count is not None else "0/0"
         queue_str = f"Queue: {queue_length}" if queue_length > 0 else "Queue: empty"
-        print(f"{status_emoji} {user_name} ({user_email}) | {duration_seconds:.1f}s | {approval_str} | {queue_str}")
+        prompt_str = f"p{video_prompt}" if video_prompt is not None else "p?"
+        print(f"{status_emoji} {user_name} ({user_email}) | {duration_seconds:.1f}s | {approval_str} | {prompt_str} | {queue_str}")
 
     def generate_final_summary(self):
         """Generate and save final summary of all users' performance.

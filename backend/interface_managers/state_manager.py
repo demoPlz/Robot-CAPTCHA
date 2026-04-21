@@ -2815,6 +2815,7 @@ class StateManager:
                         ip_address=ip_address,
                         queue_length=queue_length,
                         interaction_to_submit_seconds=interaction_to_submit_seconds,
+                        video_prompt=state_info.get("video_prompt"),
                     )
             
             # After recording decision, clear current and activate next from queue (only for normal flow)
@@ -3570,8 +3571,13 @@ class StateManager:
             # Total needed = total states * required responses per state
             total_needed = total_states * self.required_responses_per_critical_state
             
-            # Total submissions = sum of all user submission counts
-            total_submissions = sum(len(s) for s in self.async_user_submissions.values())
+            # Total submissions = count all entries in execution_history across pool states
+            # (async_user_submissions is a set of unique state keys, which undercounts
+            #  when users submit multiple times to the same state)
+            total_submissions = sum(
+                len(state_info.get("execution_history", []))
+                for state_info in self.async_state_pool.values()
+            )
             
             # User statistics
             total_users = len(self.async_user_submissions)
