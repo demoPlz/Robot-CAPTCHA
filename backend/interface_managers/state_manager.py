@@ -155,6 +155,9 @@ class StateManager:
         # test_rejected: track rejections per state to enforce 10-rejection limit
         self.test_rejected_state_rejections = {}  # (episode_id, state_id) -> rejection_count
         
+        # Admin activity events log (persisted to checkpoint)
+        self.admin_events_log = []  # List of {timestamp, type, episode_id, state_id, entry_index, user_name, detail}
+        
         # Warning suppression
         self._no_user_email_warning_shown = False
 
@@ -2654,6 +2657,10 @@ class StateManager:
             # Auto-approve/reject test users (bypass monitor like localhost does)
             if is_test_approved or is_test_rejected:
                 approved = is_test_approved
+                evt_type = "auto_approved" if approved else "auto_rejected"
+                self._log_admin_event(evt_type, episode_id, state_id,
+                                       user_name="test_approved" if approved else "test_rejected",
+                                       detail=f"Auto-{'approved' if approved else 'rejected'} test user")
                 print(f"{'✅' if approved else '❌'} Auto-{'approved' if approved else 'rejected'} test user (state {state_id})")
             else:
                 # Normal approval flow: Set up pre-execution approval modal (blocking)
@@ -2708,7 +2715,17 @@ class StateManager:
             
             if approved:
                 num_approved += 1
+                submitter_name = action_users[0].get("name", "Unknown") if action_users else "Unknown"
+                self._log_admin_event("approved", episode_id, state_id,
+                                       entry_index=len(existing_history) + len(reviewed_actions) - 1,
+                                       user_name=submitter_name,
+                                       detail=f"Pre-exec approved")
             else:
+                submitter_name = action_users[0].get("name", "Unknown") if action_users else "Unknown"
+                self._log_admin_event("rejected", episode_id, state_id,
+                                       entry_index=len(existing_history) + len(reviewed_actions) - 1,
+                                       user_name=submitter_name,
+                                       detail=f"Pre-exec rejected")
                 # Handle rejection: give users another chance by re-inserting state in their queue
                 state_key = (episode_id, state_id)
                 for user in action_users:
@@ -4192,6 +4209,7 @@ class StateManager:
                     "total_pool_size": len(self.async_state_pool),
                     "total_approved": total_approved,
                     "total_rejected": total_rejected,
+                    "admin_events_log": self.admin_events_log,
                 }
 
                 # Atomic write
@@ -4230,6 +4248,30 @@ class StateManager:
             if si is not None:
                 return si
         return None
+
+    def _log_admin_event(self, event_type: str, episode_id: int, state_id: int,
+                          entry_index: int = -1, user_name: str = "", detail: str = ""):
+        """Log an admin action event for the activity feed.
+        
+        Args:
+            event_type: 'approved', 'rejected', 'deleted', 'duplicated', 'auto_approved'
+            episode_id: Episode ID
+            state_id: State ID
+            entry_index: Index of the submission entry (-1 if N/A)
+            user_name: Name of the user whose submission was acted on
+            detail: Additional detail text
+        """
+        import datetime
+        self.admin_events_log.append({
+            "timestamp": time.time(),
+            "timestamp_iso": datetime.datetime.now().isoformat(),
+            "type": event_type,
+            "episode_id": episode_id,
+            "state_id": state_id,
+            "entry_index": entry_index,
+            "user_name": user_name,
+            "detail": detail,
+        })
 
     def _serialize_execution_history(self, episode_id: int, state_id: int, state_info: dict) -> dict:
         """Serialize execution history for the frontend. Caller must hold state_lock."""
@@ -4317,13 +4359,22 @@ class StateManager:
             
             if action == "approve":
                 entry["approval"] = 1
+                submitter = entry.get("submitted_by", [{}])
+                uname = submitter[0].get("name", "Unknown") if isinstance(submitter, list) and submitter else "Unknown"
+                self._log_admin_event("approved", episode_id, state_id, index, uname, "Manual approve")
                 print(f"✅ Manual approve: state ({episode_id}, {state_id}) entry {index}")
                 
             elif action == "reject":
-                entry["approval"] = 0
+                entry["approval"] = -1
+                submitter = entry.get("submitted_by", [{}])
+                uname = submitter[0].get("name", "Unknown") if isinstance(submitter, list) and submitter else "Unknown"
+                self._log_admin_event("rejected", episode_id, state_id, index, uname, "Manual reject")
                 print(f"❌ Manual reject: state ({episode_id}, {state_id}) entry {index}")
                 
             elif action == "delete":
+                submitter = entry.get("submitted_by", [{}])
+                uname = submitter[0].get("name", "Unknown") if isinstance(submitter, list) and submitter else "Unknown"
+                self._log_admin_event("deleted", episode_id, state_id, index, uname, "Manual delete")
                 history.pop(index)
                 # Decrement responses_received
                 if "responses_received" in state_info:
@@ -4370,6 +4421,9 @@ class StateManager:
                     state_info.setdefault("actions", []).insert(index + 1 + i, clone_fn())
                 
                 state_info["responses_received"] = state_info.get("responses_received", 0) + actual_count
+                submitter = entry.get("submitted_by", [{}])
+                uname = submitter[0].get("name", "Unknown") if isinstance(submitter, list) and submitter else "Unknown"
+                self._log_admin_event("duplicated", episode_id, state_id, index, uname, f"Duplicated ×{actual_count}")
                 print(f"📋 Manual duplicate: state ({episode_id}, {state_id}) entry {index} × {actual_count} (requested {duplicate_count}, capped to available slots)")
             else:
                 return {"status": "error", "message": f"Unknown action: {action}"}
@@ -4571,6 +4625,9 @@ class StateManager:
                     f.write(json.dumps(resume_marker) + "\n")
             except Exception as e:
                 print(f"⚠️  Could not write resume marker to JSONL: {e}")
+        
+        # Restore admin events log
+        self.admin_events_log = checkpoint.get("admin_events_log", [])
         
         total_rejected = checkpoint.get("total_rejected", 0)
         print(f"✅ Phase 2 checkpoint loaded: {restored_states} states, {restored_approved} approved, {total_rejected} rejected")

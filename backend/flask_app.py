@@ -1413,6 +1413,20 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.route("/api/admin/events-log", methods=["GET"])
+    @require_monitor_auth
+    def get_admin_events_log():
+        """Get the admin activity events log for the monitor feed."""
+        try:
+            since = request.args.get("since", type=float, default=0)
+            events = crowd_interface.state_manager.admin_events_log
+            if since > 0:
+                events = [e for e in events if e.get("timestamp", 0) > since]
+            return jsonify({"status": "ok", "events": events, "total": len(crowd_interface.state_manager.admin_events_log)})
+        except Exception as e:
+            print(f"❌ Error getting events log: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/state/submission-preview", methods=["GET"])
     def get_submission_preview():
         """Get preview data for a single submission (for rendering in viewer modal)."""

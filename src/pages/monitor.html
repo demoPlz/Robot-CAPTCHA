@@ -58,6 +58,30 @@
         .status-indicator.warning { background:#f59e0b; box-shadow:0 0 8px rgba(245,158,11,.4); }
         .progress-bar { width:100%; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; }
         .progress-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#1d4ed8); border-radius:4px; transition:width .3s ease; }
+        /* Activity log */
+        .activity-entry {
+            display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px;
+            cursor:pointer; transition:background .15s; border-left:3px solid transparent;
+        }
+        .activity-entry:hover { background:#f1f5f9; }
+        .activity-entry.type-approved  { border-left-color:#10b981; }
+        .activity-entry.type-rejected  { border-left-color:#ef4444; }
+        .activity-entry.type-deleted   { border-left-color:#94a3b8; }
+        .activity-entry.type-duplicated { border-left-color:#8b5cf6; }
+        .activity-entry.type-auto_approved { border-left-color:#06b6d4; }
+        .activity-entry.type-auto_rejected { border-left-color:#f97316; }
+        .activity-badge {
+            display:inline-flex; align-items:center; justify-content:center; padding:1px 6px;
+            border-radius:4px; font-size:10px; font-weight:600; letter-spacing:.3px; white-space:nowrap;
+        }
+        .activity-badge.approved  { background:#d1fae5; color:#065f46; }
+        .activity-badge.rejected  { background:#fee2e2; color:#991b1b; }
+        .activity-badge.deleted   { background:#f1f5f9; color:#64748b; }
+        .activity-badge.duplicated { background:#ede9fe; color:#5b21b6; }
+        .activity-badge.auto_approved { background:#cffafe; color:#155e75; }
+        .activity-badge.auto_rejected { background:#ffedd5; color:#9a3412; }
+        .activity-meta { color:#94a3b8; font-size:10px; white-space:nowrap; margin-left:auto; }
+        .activity-text { color:#334155; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .robot-state { padding:12px; border-radius:6px; font-weight:500; text-align:center; margin:8px 0; }
         .robot-state.stationary { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
         .robot-state.resetting { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:pulse 2s infinite; }
@@ -636,24 +660,36 @@
                     <div class="status-card" id="robot-state-card" style="display:none;">
                         <div class="robot-state stationary" id="robot-state">🛑 Robot Status Unknown</div>
                     </div>
-                    <!-- Phase 2 Async Progress -->
-                    <div class="status-card" id="async-progress-card" style="display:none;">
-                        <div style="font-weight:600; font-size:14px; color:#1e293b; margin-bottom:8px;">
-                            📊 Phase 2 Progress
+                    <!-- Phase 2 row: progress + activity side by side -->
+                    <div id="phase2-status-row" style="display:none; gap:12px;">
+                        <div class="status-card" id="async-progress-card" style="min-width:220px; flex-shrink:0;">
+                            <div style="font-weight:600; font-size:14px; color:#1e293b; margin-bottom:8px;">
+                                📊 Phase 2 Progress
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:13px; color:#64748b; margin-bottom:4px;">
+                                <span id="async-progress-text">0 / 0 approved</span>
+                                <span id="async-progress-pct">0%</span>
+                            </div>
+                            <div class="progress-bar" style="height:10px;">
+                                <div class="progress-fill" id="async-progress-fill" style="width:0%;"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:11px; color:#94a3b8; margin-top:6px;">
+                                <span id="async-states-text">0/0 states done</span>
+                                <span id="async-submissions-text">0 submissions</span>
+                                <span id="async-users-text">0 users</span>
+                            </div>
+                            <button class="control-button" id="save-phase2-checkpoint-btn" style="margin-top:8px; background:#059669; color:#fff; width:100%; font-size:12px; padding:6px 10px;" title="Manually save Phase 2 labeling progress"><span class="control-icon">💾</span>Save Checkpoint</button>
                         </div>
-                        <div style="display:flex; justify-content:space-between; font-size:13px; color:#64748b; margin-bottom:4px;">
-                            <span id="async-progress-text">0 / 0 approved</span>
-                            <span id="async-progress-pct">0%</span>
+                        <!-- Admin Activity Log -->
+                        <div class="status-card" id="admin-activity-card" style="flex:1; min-width:0; display:flex; flex-direction:column;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                <span style="font-weight:600; font-size:14px; color:#1e293b;">📋 Activity Log</span>
+                                <span style="font-size:11px; color:#94a3b8;" id="activity-log-count">0 events</span>
+                            </div>
+                            <div id="activity-log-list" style="flex:1; min-height:0; max-height:240px; overflow-y:auto; display:flex; flex-direction:column; gap:2px; font-size:12px;">
+                                <div style="color:#94a3b8; text-align:center; padding:12px;">No events yet</div>
+                            </div>
                         </div>
-                        <div class="progress-bar" style="height:10px;">
-                            <div class="progress-fill" id="async-progress-fill" style="width:0%;"></div>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-size:11px; color:#94a3b8; margin-top:6px;">
-                            <span id="async-states-text">0/0 states done</span>
-                            <span id="async-submissions-text">0 submissions</span>
-                            <span id="async-users-text">0 users</span>
-                        </div>
-                        <button class="control-button" id="save-phase2-checkpoint-btn" style="margin-top:8px; background:#059669; color:#fff; width:100%; font-size:12px; padding:6px 10px;" title="Manually save Phase 2 labeling progress"><span class="control-icon">💾</span>Save Checkpoint</button>
                     </div>
                 </div>
                 <div class="control-section">
@@ -1809,12 +1845,12 @@
                 const response = await fetch(`${API_BASE_URL}/api/async/status`, { headers:{ 'Accept':'application/json' }});
                 if (!response.ok) return;
                 const data = await response.json();
-                const card = document.getElementById('async-progress-card');
+                const row = document.getElementById('phase2-status-row');
                 if (!data.pool_finalized || data.total_states === 0) {
-                    card.style.display = 'none';
+                    row.style.display = 'none';
                     return;
                 }
-                card.style.display = 'block';
+                row.style.display = 'flex';
                 const approved = data.total_approved || 0;
                 const needed = data.total_needed || 1;
                 const pct = Math.min(Math.round((approved / needed) * 100), 100);
@@ -1839,6 +1875,104 @@
                 }
             } catch (e) {
                 // Silently ignore — endpoint may not exist in non-async mode
+            }
+        }
+
+        // --- Admin Activity Log ---
+        let lastEventTimestamp = 0;
+        const EVENT_ICONS = {
+            approved: '✅', rejected: '❌', deleted: '🗑️', duplicated: '📋',
+            auto_approved: '🤖✅', auto_rejected: '🤖❌'
+        };
+        const EVENT_LABELS = {
+            approved: 'APPROVED', rejected: 'REJECTED', deleted: 'DELETED', duplicated: 'DUPLICATED',
+            auto_approved: 'AUTO ✓', auto_rejected: 'AUTO ✗'
+        };
+
+        async function fetchAdminEventsLog() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/admin/events-log?since=${lastEventTimestamp}`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.status !== 'ok') return;
+                
+                const list = document.getElementById('activity-log-list');
+                const countEl = document.getElementById('activity-log-count');
+                
+                countEl.textContent = `${data.total} events`;
+                
+                if (data.events.length === 0) return; // No new events
+                
+                // Clear placeholder on first events
+                if (lastEventTimestamp === 0 && data.events.length > 0) {
+                    list.innerHTML = '';
+                }
+                
+                // Render new events (newest at top)
+                const fragment = document.createDocumentFragment();
+                for (const evt of data.events) {
+                    const row = document.createElement('div');
+                    row.className = `activity-entry type-${evt.type}`;
+                    row.dataset.episodeId = evt.episode_id;
+                    row.dataset.stateId = evt.state_id;
+                    row.dataset.entryIndex = evt.entry_index;
+                    
+                    const ts = new Date(evt.timestamp * 1000);
+                    const timeStr = ts.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+                    
+                    const badge = EVENT_LABELS[evt.type] || evt.type.toUpperCase();
+                    const badgeClass = evt.type;
+                    
+                    row.innerHTML = `
+                        <span class="activity-badge ${badgeClass}">${badge}</span>
+                        <span class="activity-text">ep${evt.episode_id} s${evt.state_id} — ${evt.user_name || 'unknown'}</span>
+                        <span class="activity-meta">${timeStr}</span>
+                    `;
+                    row.title = `${evt.detail || ''}\nClick to navigate to this state`;
+                    row.addEventListener('click', () => activityNavigateToState(evt));
+                    fragment.prepend(row); // newest first
+                }
+                list.prepend(fragment);
+                
+                // Cap visible entries
+                while (list.children.length > 200) {
+                    list.removeChild(list.lastChild);
+                }
+                
+                // Update cursor
+                const maxTs = Math.max(...data.events.map(e => e.timestamp));
+                if (maxTs > lastEventTimestamp) lastEventTimestamp = maxTs;
+            } catch (e) {
+                // Silently ignore
+            }
+        }
+
+        async function activityNavigateToState(evt) {
+            const { episode_id, state_id, entry_index } = evt;
+            try {
+                // Open the state detail modal
+                await openVlmModal(episode_id, state_id);
+                
+                // Wait a tick for the modal DOM to render, then highlight the entry
+                requestAnimationFrame(() => {
+                    setTimeout(() => {
+                        const rows = document.querySelectorAll(`.submission-row[data-index="${entry_index}"]`);
+                        if (rows.length > 0) {
+                            const row = rows[0];
+                            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            // Flash highlight animation
+                            row.style.transition = 'background 0.3s ease';
+                            row.style.background = '#fef3c7';
+                            setTimeout(() => {
+                                row.style.background = '#fffbeb';
+                                setTimeout(() => { row.style.background = ''; }, 1500);
+                            }, 500);
+                        }
+                    }, 200);
+                });
+            } catch (e) {
+                console.error('activityNavigateToState error:', e);
+                showToast(`Failed to open state (${episode_id}, ${state_id})`);
             }
         }
 
@@ -2950,7 +3084,7 @@
                 
                 let badgeClass, badgeText;
                 if (e.approval === 1) { badgeClass = 'approved'; badgeText = '✅ Approved'; }
-                else if (e.approval === 0) { badgeClass = 'rejected'; badgeText = '❌ Rejected'; }
+                else if (e.approval === 0 || e.approval === -1) { badgeClass = 'rejected'; badgeText = '❌ Rejected'; }
                 else { badgeClass = 'pending'; badgeText = '⏳ Pending'; }
                 
                 // Gripper state
@@ -2964,7 +3098,7 @@
                     <div class="sub-actions">
                         <button onclick="viewSubmission(${episode_id},${state_id},${e.index})" title="View">👁️</button>
                         ${e.approval !== 1 ? `<button onclick="modifySubmission(${episode_id},${state_id},${e.index},'approve')" title="Approve">✅</button>` : ''}
-                        ${e.approval !== 0 ? `<button onclick="modifySubmission(${episode_id},${state_id},${e.index},'reject')" title="Reject">❌</button>` : ''}
+                        ${(e.approval !== 0 && e.approval !== -1) ? `<button onclick="modifySubmission(${episode_id},${state_id},${e.index},'reject')" title="Reject">❌</button>` : ''}
                         <button onclick="duplicateSubmission(${episode_id},${state_id},${e.index},${required - num_approved})" title="Duplicate to fill slots">📋</button>
                         <button class="danger" onclick="deleteSubmission(${episode_id},${state_id},${e.index})" title="Delete">🗑️</button>
                     </div>
@@ -3788,6 +3922,9 @@
                         fetchPendingMaskPainting().finally(() => maskPaintInFlight = false);
                     }
                 }, 800),  // Poll for mask painting request every 800ms
+                activityLog: setInterval(() => {
+                    fetchAdminEventsLog();
+                }, 3000),  // Poll activity log every 3s
             };
         }
         function stopAutoRefresh() {
@@ -3799,6 +3936,7 @@
                 clearInterval(autoRefreshInterval.undoClassification);
                 clearInterval(autoRefreshInterval.asyncProgress);
                 clearInterval(autoRefreshInterval.maskPainting);
+                clearInterval(autoRefreshInterval.activityLog);
                 autoRefreshInterval = null;
             }
         }
@@ -3812,6 +3950,7 @@
             });
             await fetchPendingStatesInfo();
             fetchLatestState();
+            fetchAdminEventsLog();
             startAutoRefresh();
             setTimeout(fetchPendingStatesInfo, 500);
 
@@ -4226,6 +4365,9 @@
                                             mat.emissive.setHex(color);
                                             mat.emissiveIntensity = 0.3;
                                         }
+                                        mat.transparent = true;
+                                        mat.opacity = 0.55;
+                                        mat.depthWrite = false;
                                         mat.needsUpdate = true;
                                     });
                                 }
