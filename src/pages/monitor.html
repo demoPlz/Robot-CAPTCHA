@@ -2339,6 +2339,16 @@
             console.log('Full data object:', JSON.stringify(data, null, 2));
             console.log('submitted_by field:', data.submitted_by);
             
+            // Reset modal title (viewSubmission may have overwritten it)
+            const titleEl = document.querySelector('#pre-execution-modal .approval-modal-title');
+            if (titleEl) {
+                const isPhase2 = document.body.classList.contains('phase2-only-mode');
+                const submitterName = data.submitted_by?.[0]?.name || 'user';
+                titleEl.textContent = isPhase2
+                    ? `Review Submission from ${submitterName}`
+                    : 'Approve Action Before Execution?';
+            }
+            
             // Display user info and prompt
             const userInfoEl = document.getElementById('pre-exec-user-info');
             let infoHtml = '';
@@ -3041,12 +3051,15 @@
             // Restore the original footer content for the pre-execution modal
             const footer = document.querySelector('#pre-execution-modal .approval-modal-footer');
             if (footer) {
+                const isPhase2 = document.body.classList.contains('phase2-only-mode');
+                const rejectLabel = isPhase2 ? 'Reject' : 'Reject &amp; Resample';
+                const approveLabel = isPhase2 ? 'Approve' : 'Approve &amp; Execute';
                 footer.innerHTML = `<div style="display:flex;justify-content:center;gap:16px;flex:1;">
                     <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
-                        <span class="control-icon">❌</span> Reject &amp; Resample
+                        <span class="control-icon">❌</span> ${rejectLabel}
                     </button>
                     <button class="approval-btn approval-btn-proceed" id="pre-exec-approve-btn">
-                        <span class="control-icon">✅</span> Approve &amp; Execute
+                        <span class="control-icon">✅</span> ${approveLabel}
                     </button>
                 </div>`;
                 // Re-attach event listeners
@@ -3499,7 +3512,7 @@
         });
         // Keyboard shortcut: I toggles mode
         document.addEventListener('keydown', (e) => {
-            if (e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
+            if (e.key && e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
                 criticalOnlyMode = !criticalOnlyMode;
                 updateToggleUI();
                 applyCriticalOnlyMode();

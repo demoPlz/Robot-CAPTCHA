@@ -430,7 +430,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     # Get submitted actions
                     actions = p_info.get("actions", [])
                     for action_tensor in actions:
-                        actions_list.append(action_tensor.tolist())
+                        if hasattr(action_tensor, "tolist"):
+                            actions_list.append(action_tensor.tolist())
+                        elif isinstance(action_tensor, list):
+                            actions_list.append(action_tensor)
+                        else:
+                            actions_list.append(list(action_tensor))
                 else:
                     # Completed metadata
                     c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
