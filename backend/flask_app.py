@@ -459,6 +459,16 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             # Description bank
             bank = crowd_interface.get_description_bank()
 
+            # Get execution history for submission management (critical states only)
+            exec_history = None
+            if is_imp:
+                try:
+                    eh = crowd_interface.state_manager.get_state_execution_history(ep, sid)
+                    if eh.get("status") == "ok":
+                        exec_history = eh
+                except Exception as eh_err:
+                    print(f"⚠️  get_state_execution_history failed for ({ep}, {sid}): {eh_err}")
+
             return jsonify(
                 {
                     "ok": True,
@@ -471,6 +481,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     "description_bank": bank["entries"],
                     "description_bank_text": bank["raw_text"],
                     "submitted_actions": actions_list,
+                    "execution_history": exec_history,
                 }
             )
         except Exception as e:
@@ -1349,6 +1360,114 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
     
+    # =========================
+    # Submission Management
+    # =========================
+
+    @app.route("/api/state/execution-history", methods=["GET"])
+    def get_state_execution_history():
+        """Get detailed execution history for a state."""
+        try:
+            ep = request.args.get("episode_id", type=int)
+            sid = request.args.get("state_id", type=int)
+            if ep is None or sid is None:
+                return jsonify({"status": "error", "message": "episode_id and state_id required"}), 400
+            
+            result = crowd_interface.state_manager.get_state_execution_history(ep, sid)
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error getting execution history: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/state/modify-submission", methods=["POST"])
+    def modify_submission():
+        """Modify a specific submission (approve/reject/delete/duplicate)."""
+        try:
+            data = request.get_json(force=True, silent=True)
+            if not data:
+                return jsonify({"status": "error", "message": "Invalid JSON"}), 400
+            
+            ep = data.get("episode_id")
+            sid = data.get("state_id")
+            action = data.get("action")
+            index = data.get("index")
+            duplicate_count = data.get("duplicate_count", 1)
+            
+            if ep is None or sid is None or action is None or index is None:
+                return jsonify({"status": "error", "message": "episode_id, state_id, action, and index required"}), 400
+            
+            result = crowd_interface.state_manager.modify_submission(
+                int(ep), int(sid), str(action), int(index), int(duplicate_count)
+            )
+            return jsonify(result)
+        except Exception as e:
+            print(f"❌ Error modifying submission: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/state/submission-preview", methods=["GET"])
+    def get_submission_preview():
+        """Get preview data for a single submission (for rendering in viewer modal)."""
+        try:
+            ep = request.args.get("episode_id", type=int)
+            sid = request.args.get("state_id", type=int)
+            idx = request.args.get("index", type=int)
+            if ep is None or sid is None or idx is None:
+                return jsonify({"status": "error", "message": "episode_id, state_id, and index required"}), 400
+            
+            preview = crowd_interface.state_manager.get_submission_preview(ep, sid, idx)
+            if preview is None:
+                return jsonify({"status": "error", "message": "Submission not found"}), 404
+            
+            # Load observation image
+            current_image_url = None
+            if preview.get("obs_path"):
+                try:
+                    obs = crowd_interface.dataset_manager.load_obs_from_disk(preview["obs_path"])
+                    img = crowd_interface.load_main_cam_from_obs(obs)
+                    if img is not None:
+                        current_image_url = crowd_interface.encode_jpeg_base64(img)
+                except Exception as e:
+                    print(f"⚠️  Failed to load obs for preview: {e}")
+            
+            # Load view images
+            view_urls = {}
+            for view_name, view_path in preview.get("view_paths", {}).items():
+                try:
+                    import base64
+                    from pathlib import Path
+                    if Path(view_path).exists():
+                        with open(view_path, 'rb') as f:
+                            img_data = f.read()
+                            view_urls[view_name] = f"data:image/jpeg;base64,{base64.b64encode(img_data).decode()}"
+                except Exception as e:
+                    print(f"⚠️  Failed to load view {view_name} for preview: {e}")
+            
+            return jsonify({
+                "status": "ok",
+                "episode_id": preview["episode_id"],
+                "state_id": preview["state_id"],
+                "index": preview["index"],
+                "action": preview["action"],
+                "original_joint_positions": preview["original_joint_positions"],
+                "current_image_url": current_image_url,
+                "view_urls": view_urls,
+                "camera_poses": crowd_interface.calibration.get_camera_poses(),
+                "camera_models": crowd_interface.calibration.get_camera_models(),
+                "submitted_by": preview["submitted_by"],
+                "text_prompt": preview.get("text_prompt"),
+                "video_prompt": preview.get("video_prompt"),
+                "approval": preview.get("approval"),
+            })
+        except Exception as e:
+            print(f"❌ Error getting submission preview: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/user/approval-count", methods=["GET"])
     def get_user_approval_count():
         """Get approval count for current user (for Netlify users)."""

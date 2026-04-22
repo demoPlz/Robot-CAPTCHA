@@ -551,7 +551,50 @@
             flex: 1;
             min-height: 0;
         }
+
+        /* === Submission Management === */
+        .submission-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 10px; background: white; border-radius: 6px;
+            border: 1px solid #e2e8f0; margin-bottom: 4px;
+            font-size: 12px; transition: background .1s;
+        }
+        .submission-row:hover { background: #f8fafc; }
+        .submission-row .sub-index {
+            min-width: 24px; height: 24px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 11px; color: white; flex-shrink: 0;
+        }
+        .submission-row .sub-index.admin { background: #8b5cf6; }
+        .submission-row .sub-index.user { background: #3b82f6; }
+        .submission-row .sub-user { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #334155; }
+        .submission-row .sub-badge {
+            padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; flex-shrink: 0;
+        }
+        .sub-badge.approved { background: #dcfce7; color: #166534; }
+        .sub-badge.rejected { background: #fee2e2; color: #991b1b; }
+        .sub-badge.pending  { background: #fef3c7; color: #92400e; }
+        .submission-row .sub-actions { display: flex; gap: 4px; flex-shrink: 0; }
+        .submission-row .sub-actions button {
+            background: transparent; border: 1px solid #e2e8f0; border-radius: 4px;
+            cursor: pointer; padding: 3px 6px; font-size: 12px; line-height: 1;
+            transition: all .1s;
+        }
+        .submission-row .sub-actions button:hover { background: #f1f5f9; border-color: #94a3b8; }
+        .submission-row .sub-actions button.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+        .submission-summary {
+            display: flex; gap: 12px; font-size: 12px; color: #64748b;
+            padding: 6px 0; border-bottom: 1px solid #e2e8f0; margin-bottom: 6px;
+        }
+        .submission-summary span { font-weight: 600; }
+
+        /* Duplicate count input */
+        .dup-input {
+            width: 36px; padding: 2px 4px; border: 1px solid #cbd5e1; border-radius: 4px;
+            font-size: 11px; text-align: center;
+        }
     </style>
+
 </head>
 <body>
 
@@ -725,9 +768,9 @@
                         <span class="muted">Video ID:</span> <span id="kv-video">-</span>
                     </div>
                     
-                    <!-- Submitted Actions Section -->
-                    <div id="submitted-actions-section" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: none;">
-                        <div class="field-label" style="font-weight: 600; margin-bottom: 8px;">📊 Submitted Actions:</div>
+                    <!-- Submission Management Section -->
+                    <div id="submitted-actions-section" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: none; max-height: 320px; overflow-y: auto;">
+                        <div class="field-label" style="font-weight: 600; margin-bottom: 8px;">📋 Submission Management:</div>
                         <div id="submitted-actions-list" class="muted" style="font-size: 13px;">
                             Loading...
                         </div>
@@ -987,7 +1030,7 @@
     </div>
 
     <!-- Pre-Execution Approval Modal -->
-    <div class="approval-modal-overlay" id="pre-execution-modal">
+    <div class="approval-modal-overlay" id="pre-execution-modal" style="z-index: 10001;">
         <div class="pre-execution-modal-card">
             <div class="approval-modal-header">
                 <h2 class="approval-modal-title">Approve Action Before Execution?</h2>
@@ -2772,7 +2815,12 @@
                 updateModalNavigation();
                 
                 // Display submitted actions
-                displaySubmittedActions(details.submitted_actions || []);
+                // Display execution history with management controls (prefer over legacy submitted_actions)
+                if (details.execution_history) {
+                    displayExecutionHistory(details.execution_history);
+                } else {
+                    displaySubmittedActions(details.submitted_actions || []);
+                }
             } catch (e) {
                 console.error('Error in openVlmModal:', e);
                 showToast('Failed to load VLM details.');
@@ -2854,45 +2902,161 @@
             }
         }
         
-        // Display submitted actions for a state
+        // Display submitted actions for a state (legacy fallback)
         function displaySubmittedActions(actions) {
+            // Now handled by displayExecutionHistory — keep as no-op for backward compat
+        }
+
+        // === Submission Management ===
+        function displayExecutionHistory(execHistory) {
             const actionsSection = document.getElementById('submitted-actions-section');
             const actionsList = document.getElementById('submitted-actions-list');
             
-            console.log('[Submitted Actions] Displaying', actions.length, 'actions');
+            if (!actionsSection || !actionsList) return;
             
-            if (!actionsSection || !actionsList) {
-                console.warn('[Submitted Actions] Section elements not found');
-                return;
-            }
-            
-            if (actions.length === 0) {
-                actionsList.innerHTML = 'No actions submitted yet';
+            if (!execHistory || !execHistory.entries || execHistory.entries.length === 0) {
+                actionsList.innerHTML = '<div style="color:#64748b;">No submissions yet</div>';
                 actionsSection.style.display = 'block';
                 return;
             }
             
-            // Show section and populate list
             actionsSection.style.display = 'block';
+            const { entries, num_approved, num_rejected, num_pending, required, episode_id, state_id } = execHistory;
             
-            const jointNames = ['waist', 'shoulder', 'elbow', 'forearm_roll', 'wrist_angle', 'wrist_rotate', 'gripper'];
+            // Summary header
+            let summaryHtml = `<div class="submission-summary">
+                <div>✅ <span>${num_approved}</span>/${required} approved</div>
+                <div>❌ <span>${num_rejected}</span> rejected</div>
+                <div>⏳ <span>${num_pending}</span> pending</div>
+                <div>📊 <span>${entries.length}</span> total</div>
+            </div>`;
             
-            const items = actions.map((action, idx) => {
-                const jointValues = action.map((val, jIdx) => {
-                    const name = jointNames[jIdx] || `joint_${jIdx}`;
-                    return `<div style="font-size: 11px;"><span style="color: #64748b;">${name}:</span> ${val.toFixed(4)}</div>`;
-                }).join('');
+            // Render each entry
+            const rows = entries.map(e => {
+                const userName = e.submitted_by?.[0]?.name || 'Unknown';
+                const userEmail = e.submitted_by?.[0]?.email || '';
+                const indexClass = e.is_admin ? 'admin' : 'user';
+                const indexLabel = e.is_admin ? 'A' : (e.index + 1);
                 
-                return `
-                    <div style="margin-bottom: 8px; padding: 8px; background: white; border-radius: 4px; border: 1px solid #e2e8f0;">
-                        <div style="font-weight: 600; margin-bottom: 4px;">Submission ${idx + 1}</div>
-                        ${jointValues}
+                let badgeClass, badgeText;
+                if (e.approval === 1) { badgeClass = 'approved'; badgeText = '✅ Approved'; }
+                else if (e.approval === 0) { badgeClass = 'rejected'; badgeText = '❌ Rejected'; }
+                else { badgeClass = 'pending'; badgeText = '⏳ Pending'; }
+                
+                // Gripper state
+                const gripperVal = e.action?.[6];
+                const gripperText = gripperVal > 0.02 ? 'open' : 'closed';
+                
+                return `<div class="submission-row" data-index="${e.index}">
+                    <div class="sub-index ${indexClass}" title="${e.is_admin ? 'Admin baseline' : 'User submission'}">${indexLabel}</div>
+                    <div class="sub-user" title="${userEmail}">${userName}${e.executed ? ' 🤖' : ''}</div>
+                    <div class="sub-badge ${badgeClass}">${badgeText}</div>
+                    <div class="sub-actions">
+                        <button onclick="viewSubmission(${episode_id},${state_id},${e.index})" title="View">👁️</button>
+                        ${e.approval !== 1 ? `<button onclick="modifySubmission(${episode_id},${state_id},${e.index},'approve')" title="Approve">✅</button>` : ''}
+                        ${e.approval !== 0 ? `<button onclick="modifySubmission(${episode_id},${state_id},${e.index},'reject')" title="Reject">❌</button>` : ''}
+                        <button onclick="duplicateSubmission(${episode_id},${state_id},${e.index},${required - num_approved})" title="Duplicate to fill slots">📋</button>
+                        <button class="danger" onclick="deleteSubmission(${episode_id},${state_id},${e.index})" title="Delete">🗑️</button>
                     </div>
-                `;
+                </div>`;
             }).join('');
             
-            actionsList.innerHTML = items;
-            console.log('[Submitted Actions] Displayed', actions.length, 'actions');
+            actionsList.innerHTML = summaryHtml + rows;
+        }
+
+        async function modifySubmission(episodeId, stateId, index, action, duplicateCount) {
+            try {
+                const body = { episode_id: episodeId, state_id: stateId, action, index };
+                if (duplicateCount) body.duplicate_count = duplicateCount;
+                
+                const resp = await fetch(`${API_BASE_URL}/api/state/modify-submission`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    displayExecutionHistory(data);
+                    showToast(`${action} successful`);
+                } else {
+                    showToast(data.message || 'Failed');
+                }
+            } catch (e) {
+                console.error('modifySubmission error:', e);
+                showToast('Network error');
+            }
+        }
+
+        async function deleteSubmission(episodeId, stateId, index) {
+            if (!confirm(`Delete submission #${index + 1}? This cannot be undone.`)) return;
+            await modifySubmission(episodeId, stateId, index, 'delete');
+        }
+
+        function duplicateSubmission(episodeId, stateId, index, slotsAvailable) {
+            if (slotsAvailable <= 0) {
+                showToast('No slots available — state already fully approved');
+                return;
+            }
+            const count = prompt(`How many copies? (max ${slotsAvailable})`, '1');
+            if (count === null) return;
+            const n = Math.min(Math.max(1, parseInt(count) || 1), slotsAvailable);
+            modifySubmission(episodeId, stateId, index, 'duplicate', n);
+        }
+
+        async function viewSubmission(episodeId, stateId, index) {
+            try {
+                showToast('Loading preview...');
+                const url = `${API_BASE_URL}/api/state/submission-preview?episode_id=${episodeId}&state_id=${stateId}&index=${index}`;
+                const resp = await fetch(url, { headers: { 'Accept': 'application/json' }});
+                const data = await resp.json();
+                if (data.status !== 'ok') {
+                    showToast(data.message || 'Failed to load preview');
+                    return;
+                }
+                // Reuse the pre-execution approval modal for display
+                await showPreExecutionModal(data);
+                // Hide the approve/reject buttons (this is view-only)
+                const footer = document.querySelector('#pre-execution-modal .approval-modal-footer');
+                if (footer) {
+                    footer.dataset.origDisplay = footer.style.display;
+                    footer.innerHTML = `<div style="display:flex;justify-content:center;gap:16px;flex:1;">
+                        <button class="approval-btn" style="background:#64748b;color:white;" onclick="hidePreExecutionModal();restorePreExecFooter();">Close Preview</button>
+                    </div>`;
+                }
+                // Update header text
+                const header = document.querySelector('#pre-execution-modal .approval-modal-title');
+                if (header) {
+                    header.dataset.origText = header.textContent;
+                    const userName = data.submitted_by?.[0]?.name || 'Unknown';
+                    const approvalBadge = data.approval === 1 ? '✅' : data.approval === 0 ? '❌' : '⏳';
+                    header.textContent = `Submission #${index + 1} by ${userName} ${approvalBadge}`;
+                }
+            } catch (e) {
+                console.error('viewSubmission error:', e);
+                showToast('Failed to load preview');
+            }
+        }
+
+        function restorePreExecFooter() {
+            // Restore the original footer content for the pre-execution modal
+            const footer = document.querySelector('#pre-execution-modal .approval-modal-footer');
+            if (footer) {
+                footer.innerHTML = `<div style="display:flex;justify-content:center;gap:16px;flex:1;">
+                    <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
+                        <span class="control-icon">❌</span> Reject &amp; Resample
+                    </button>
+                    <button class="approval-btn approval-btn-proceed" id="pre-exec-approve-btn">
+                        <span class="control-icon">✅</span> Approve &amp; Execute
+                    </button>
+                </div>`;
+                // Re-attach event listeners
+                document.getElementById('pre-exec-approve-btn').addEventListener('click', handlePreExecutionApprove);
+                document.getElementById('pre-exec-reject-btn').addEventListener('click', handlePreExecutionReject);
+            }
+            const header = document.querySelector('#pre-execution-modal .approval-modal-title');
+            if (header && header.dataset.origText) {
+                header.textContent = header.dataset.origText;
+            }
         }
 
         // Modal buttons & close mechanisms

@@ -4206,6 +4206,228 @@ class StateManager:
         print(f"✅ Phase 2 checkpoint saved: {total_approved} approved, {total_rejected} rejected across {len(pool_states)} states → {checkpoint_path}")
         return {"status": "success", "path": str(checkpoint_path), "total_approved": total_approved}
 
+    # =========================
+    # Submission Management
+    # =========================
+
+    def _resolve_state(self, episode_id: int, state_id: int):
+        """Find state_info from async_state_pool or pending/completed dicts.
+        
+        Returns state_info dict or None.
+        """
+        pool_key = (episode_id, state_id)
+        # Prefer async pool (Phase 2 states)
+        if pool_key in self.async_state_pool:
+            return self.async_state_pool[pool_key]
+        # Fallback to pending
+        if episode_id in self.pending_states_by_episode:
+            si = self.pending_states_by_episode[episode_id].get(state_id)
+            if si is not None:
+                return si
+        # Fallback to completed
+        if episode_id in self.completed_states_by_episode:
+            si = self.completed_states_by_episode[episode_id].get(state_id)
+            if si is not None:
+                return si
+        return None
+
+    def _serialize_execution_history(self, episode_id: int, state_id: int, state_info: dict) -> dict:
+        """Serialize execution history for the frontend. Caller must hold state_lock."""
+        history = state_info.get("execution_history", [])
+        entries = []
+        for i, entry in enumerate(history):
+            action = entry.get("action")
+            if hasattr(action, "tolist"):
+                action = action.tolist()
+            elif isinstance(action, list):
+                action = action
+            else:
+                action = []
+            
+            submitted_by = entry.get("submitted_by", [])
+            # Determine if admin
+            is_admin = False
+            if submitted_by:
+                emails = [u.get("email", "") for u in submitted_by]
+                is_admin = any(e in ("admin@admin.admin", "") for e in emails) or any(
+                    u.get("name", "").lower() == "admin" for u in submitted_by
+                )
+            
+            entries.append({
+                "index": i,
+                "action": action,
+                "approval": entry.get("approval"),  # 1, 0, or None
+                "executed": entry.get("executed", False),
+                "is_admin": is_admin,
+                "submitted_by": [
+                    {"name": u.get("name", "Unknown"), "email": u.get("email", "")}
+                    for u in submitted_by
+                ],
+            })
+        
+        num_approved = sum(1 for e in history if e.get("approval") == 1)
+        num_rejected = sum(1 for e in history if e.get("approval") == 0)
+        num_pending = len(history) - num_approved - num_rejected
+        
+        return {
+            "status": "ok",
+            "episode_id": episode_id,
+            "state_id": state_id,
+            "entries": entries,
+            "num_approved": num_approved,
+            "num_rejected": num_rejected,
+            "num_pending": num_pending,
+            "total": len(history),
+            "required": self.required_responses_per_critical_state,
+        }
+
+    def get_state_execution_history(self, episode_id: int, state_id: int) -> dict:
+        """Get execution history for a state, serialized for the frontend.
+        
+        Returns:
+            dict with status, entries list, summary counts, and required count
+        """
+        with self.state_lock:
+            state_info = self._resolve_state(episode_id, state_id)
+            if state_info is None:
+                return {"status": "error", "message": f"State ({episode_id}, {state_id}) not found"}
+            return self._serialize_execution_history(episode_id, state_id, state_info)
+
+    def modify_submission(self, episode_id: int, state_id: int, action: str, index: int, duplicate_count: int = 1) -> dict:
+        """Modify a specific submission in execution_history.
+        
+        Args:
+            action: "approve", "reject", "delete", or "duplicate"
+            index: index in execution_history
+            duplicate_count: number of copies for "duplicate" action
+            
+        Returns:
+            dict with status and updated execution_history summary
+        """
+        with self.state_lock:
+            state_info = self._resolve_state(episode_id, state_id)
+            if state_info is None:
+                return {"status": "error", "message": f"State ({episode_id}, {state_id}) not found"}
+            
+            history = state_info.get("execution_history", [])
+            if index < 0 or index >= len(history):
+                return {"status": "error", "message": f"Index {index} out of range (0-{len(history)-1})"}
+            
+            entry = history[index]
+            
+            if action == "approve":
+                entry["approval"] = 1
+                print(f"✅ Manual approve: state ({episode_id}, {state_id}) entry {index}")
+                
+            elif action == "reject":
+                entry["approval"] = 0
+                print(f"❌ Manual reject: state ({episode_id}, {state_id}) entry {index}")
+                
+            elif action == "delete":
+                history.pop(index)
+                # Decrement responses_received
+                if "responses_received" in state_info:
+                    state_info["responses_received"] = max(0, state_info["responses_received"] - 1)
+                # Also remove from actions list if index is valid
+                actions = state_info.get("actions", [])
+                if index < len(actions):
+                    actions.pop(index)
+                print(f"🗑️  Manual delete: state ({episode_id}, {state_id}) entry {index}")
+                
+            elif action == "duplicate":
+                # Calculate how many slots are available
+                num_approved = sum(1 for e in history if e.get("approval") == 1)
+                slots_available = self.required_responses_per_critical_state - num_approved
+                actual_count = min(duplicate_count, max(0, slots_available))
+                
+                if actual_count <= 0:
+                    return {"status": "error", "message": f"No slots available (already {num_approved}/{self.required_responses_per_critical_state} approved)"}
+                
+                # Clone the entry N times, always approved
+                source_action = entry.get("action")
+                if hasattr(source_action, "clone"):
+                    clone_fn = lambda: source_action.clone()
+                elif hasattr(source_action, "tolist"):
+                    import torch
+                    _list = source_action.tolist()
+                    clone_fn = lambda: torch.tensor(_list, dtype=torch.float32)
+                elif isinstance(source_action, list):
+                    import torch
+                    clone_fn = lambda: torch.tensor(source_action, dtype=torch.float32)
+                else:
+                    clone_fn = lambda: source_action
+                
+                for i in range(actual_count):
+                    new_entry = {
+                        "action": clone_fn(),
+                        "propensity": entry.get("propensity", 1.0),
+                        "approval": 1,  # Always approved
+                        "executed": False,
+                        "submitted_by": entry.get("submitted_by", []),
+                    }
+                    history.insert(index + 1 + i, new_entry)
+                    # Also add to actions list
+                    state_info.setdefault("actions", []).insert(index + 1 + i, clone_fn())
+                
+                state_info["responses_received"] = state_info.get("responses_received", 0) + actual_count
+                print(f"📋 Manual duplicate: state ({episode_id}, {state_id}) entry {index} × {actual_count} (requested {duplicate_count}, capped to available slots)")
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}"}
+            
+            # Check if state is now fully complete and handle accordingly
+            num_approved_now = sum(1 for e in history if e.get("approval") == 1)
+            if num_approved_now >= self.required_responses_per_critical_state:
+                state_info["approval_status"] = "approved"
+                # Remove from pending if still there
+                pool_key = (episode_id, state_id)
+                if pool_key in self.async_state_pool:
+                    # Mark as complete in pool
+                    state_info["pre_approval_loop_complete"] = True
+                    state_info["num_pre_approvals_completed"] = num_approved_now
+            
+            return self._serialize_execution_history(episode_id, state_id, state_info)
+
+    def get_submission_preview(self, episode_id: int, state_id: int, index: int) -> dict | None:
+        """Get data needed to render a submission preview (same format as pre-exec approval).
+        
+        Returns dict with action, obs_path, view_paths, original_joint_positions, submitted_by,
+        text_prompt, video_prompt — or None if not found.
+        """
+        with self.state_lock:
+            state_info = self._resolve_state(episode_id, state_id)
+            if state_info is None:
+                return None
+            
+            history = state_info.get("execution_history", [])
+            if index < 0 or index >= len(history):
+                return None
+            
+            entry = history[index]
+            action = entry.get("action")
+            if hasattr(action, "tolist"):
+                action = action.tolist()
+            
+            # Get original joint positions from state
+            original_jp = state_info.get("joint_positions", {})
+            # Convert dict to list in JOINT_NAMES order
+            original_list = []
+            for jn in JOINT_NAMES:
+                original_list.append(float(original_jp.get(jn, 0.0)))
+            
+            return {
+                "episode_id": episode_id,
+                "state_id": state_id,
+                "index": index,
+                "action": action,
+                "obs_path": state_info.get("obs_path"),
+                "view_paths": state_info.get("view_paths", {}),
+                "original_joint_positions": original_list,
+                "submitted_by": entry.get("submitted_by", []),
+                "text_prompt": state_info.get("text_prompt"),
+                "video_prompt": state_info.get("video_prompt"),
+                "approval": entry.get("approval"),
+            }
+
     def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
         """Load Phase 2 checkpoint and restore ALL async labeling progress.
         
