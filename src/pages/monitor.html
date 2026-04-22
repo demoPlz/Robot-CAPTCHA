@@ -62,6 +62,7 @@
         .activity-entry {
             display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px;
             cursor:pointer; transition:background .15s; border-left:3px solid transparent;
+            margin-bottom: 2px;
         }
         .activity-entry:hover { background:#f1f5f9; }
         .activity-entry.type-approved  { border-left-color:#10b981; }
@@ -606,6 +607,14 @@
         }
         .submission-row .sub-actions button:hover { background: #f1f5f9; border-color: #94a3b8; }
         .submission-row .sub-actions button.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+
+        @keyframes pulse-highlight {
+            0% { background: rgba(59, 130, 246, 0.4); }
+            100% { background: transparent; }
+        }
+        .highlight-pulse {
+            animation: pulse-highlight 2s ease-out;
+        }
         .submission-summary {
             display: flex; gap: 12px; font-size: 12px; color: #64748b;
             padding: 6px 0; border-bottom: 1px solid #e2e8f0; margin-bottom: 6px;
@@ -686,7 +695,7 @@
                                 <span style="font-weight:600; font-size:14px; color:#1e293b;">📋 Activity Log</span>
                                 <span style="font-size:11px; color:#94a3b8;" id="activity-log-count">0 events</span>
                             </div>
-                            <div id="activity-log-list" style="flex:1; min-height:0; max-height:240px; overflow-y:auto; display:flex; flex-direction:column; gap:2px; font-size:12px;">
+                            <div id="activity-log-list" style="height:110px; overflow-y:auto; display:block; font-size:12px;">
                                 <div style="color:#94a3b8; text-align:center; padding:12px;">No events yet</div>
                             </div>
                         </div>
