@@ -1,7 +1,8 @@
 #!/bin/bash
 # Copy uncompressed demo videos to public directory for Netlify hosting
 
-SOURCE_DIR="data/prompts/drawer/demos"
+TASK_NAME="sorting"
+SOURCE_DIR="data/prompts/${TASK_NAME}/demos"
 DEST_DIR="public/demos_hq"
 
 echo "Copying uncompressed demo videos to Netlify public directory..."
@@ -10,6 +11,7 @@ echo "Destination: $DEST_DIR"
 echo ""
 
 mkdir -p "$DEST_DIR"
+rm -f "$DEST_DIR"/*
 
 # Copy all videos
 cp -v "$SOURCE_DIR"/*.webm "$DEST_DIR/" 2>/dev/null || echo "No .webm files found"

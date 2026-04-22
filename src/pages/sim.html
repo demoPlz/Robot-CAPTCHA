@@ -2515,10 +2515,13 @@ const CanvasRecording = (() => {
     if (canvas) return;
     canvas = document.createElement('canvas');
     canvas.style.position = 'fixed';
-    canvas.style.left = '-10000px'; // keep off-screen
-    canvas.style.top  = '-10000px';
+    canvas.style.left = '0'; // keep in viewport area to prevent Chrome throttling
+    canvas.style.top  = '0';
+    canvas.style.opacity = '0.001';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = '-9999';
     document.body.appendChild(canvas);
-    ctx = canvas.getContext('2d', { alpha: false });
+    ctx = canvas.getContext('2d'); // do not use { alpha: false } here, it triggers a green-screen bug in Chrome captureStream on Linux
     // Prefer the best resampling:
     ctx.imageSmoothingEnabled = true;
     try { ctx.imageSmoothingQuality = 'high'; } catch(_) {}
@@ -2754,10 +2757,11 @@ const CanvasRecording = (() => {
     rafId = requestAnimationFrame(compose);
     if (!layout) return;
 
-    // Clear in device pixels
+    // Clear in device pixels and draw a dark solid background
     ctx.save();
     ctx.setTransform(1,0,0,1,0,0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#1e293b'; // solid dark background
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
 
     // Ensure our scaled logical transform is active
@@ -3715,7 +3719,7 @@ function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
     alpha: true,
     powerPreference: 'high-performance',
     precision: 'highp',
-    preserveDrawingBuffer: false
+    preserveDrawingBuffer: true
   });
 
   // Render more sharply even on standard monitors
@@ -4461,6 +4465,14 @@ loader.load(
           || null;
     }
 
+    function getExampleVideoUrlsFromState(s){
+      if (s?.example_video_urls && s.example_video_urls.length > 0) {
+        return s.example_video_urls.map(url => resolveExampleVideoUrl(url));
+      }
+      const single = getExampleVideoUrlFromState(s);
+      return single ? [resolveExampleVideoUrl(single)] : [];
+    }
+
     // --- helper: absolutize /api/... against API_BASE_URL ---
     function resolveExampleVideoUrl(raw) {
       if (!raw) return null;
@@ -4474,31 +4486,29 @@ loader.load(
 
     // Only show the button if there's a flex-processed video ID for this state
     const hasFlexVideo = !!(state?.video_prompt);
-    const rawExampleUrl = hasFlexVideo ? getExampleVideoUrlFromState(state) : null;
-    const exampleUrl = hasFlexVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
-
+    const exampleUrls = hasFlexVideo ? getExampleVideoUrlsFromState(state) : [];
+    const hasVideoDemos = exampleUrls.length > 0;
+    
     // Debug logging for video ID
     if (state?.video_prompt) {
       console.log(`🎬 Example video ID: ${state.video_prompt}`, {
         video_prompt: state.video_prompt,
-        video_id: state.video_id, // alias
-        rawUrl: rawExampleUrl,
-        resolvedUrl: exampleUrl,
+        exampleUrls: exampleUrls,
         state_id: state.state_id
       });
     }
 
     // In MTurk mode, skip the modal - video is shown in the wrapper page
-    const skipModalInMTurk = isMTurkMode && hasFlexVideo && exampleUrl;
+    const skipModalInMTurk = isMTurkMode && hasVideoDemos;
     
-    if (hasFlexVideo && exampleUrl && !skipModalInMTurk) {
+    if (hasVideoDemos && !skipModalInMTurk) {
       // 1) Build the toggle button now (it did not exist before)
       exampleToggle = document.createElement('button');
       exampleToggle.className = 'prompt-example-toggle never-activated';
       exampleToggle.type = 'button';
       exampleToggle.title = 'Show example video';
       exampleToggle.setAttribute('aria-pressed', 'false');
-      exampleToggle.textContent = 'Example Video';
+      exampleToggle.textContent = exampleUrls.length > 1 ? 'Example Videos' : 'Example Video';
       promptBar.appendChild(exampleToggle);
 
       // Reserve space on the prompt bar only when the toggle exists
@@ -4506,8 +4516,68 @@ loader.load(
 
       // 2) Build the dock lazily and load the video source (no placeholder fallback)
       createExampleDockOnce();
-      // Don't clear innerHTML - preserve drag handle and structure
-      // Just update the video element that's already in the structure
+      // Do not clear the switcher container structure, just find it
+      let switcherContainer = exampleDock.querySelector('.video-switcher-container');
+      if (!switcherContainer) {
+        switcherContainer = document.createElement('div');
+        switcherContainer.className = 'video-switcher-container';
+        switcherContainer.style.display = 'flex';
+        switcherContainer.style.marginTop = '8px';
+        switcherContainer.style.gap = '8px';
+        switcherContainer.style.justifyContent = 'center';
+        switcherContainer.style.flexWrap = 'wrap';
+        // Insert right after video but before resize handle
+        exampleVideo.parentNode.insertBefore(switcherContainer, exampleVideo.nextSibling);
+      }
+      
+      switcherContainer.innerHTML = '';
+
+      if (exampleUrls.length > 1) {
+        switcherContainer.style.display = 'flex';
+        exampleUrls.forEach((url, i) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'demo-switch-btn';
+          btn.textContent = `Demo ${i + 1}`;
+          
+          Object.assign(btn.style, {
+            padding: '4px 8px',
+            fontSize: '12px',
+            borderRadius: '4px',
+            border: 'none',
+            background: i === 0 ? '#3b82f6' : '#e5e7eb',
+            color: i === 0 ? 'white' : '#374151',
+            cursor: 'pointer',
+            fontWeight: '600',
+            transition: 'background 0.2s'
+          });
+
+          btn.addEventListener('click', () => {
+            // Update active button styling
+            const allBtns = switcherContainer.querySelectorAll('.demo-switch-btn');
+            allBtns.forEach(b => {
+              b.style.background = '#e5e7eb';
+              b.style.color = '#374151';
+            });
+            btn.style.background = '#3b82f6';
+            btn.style.color = 'white';
+
+            // Swap video source
+            exampleVideo.innerHTML = '';
+            const newSrc = document.createElement('source');
+            newSrc.src = url;
+            newSrc.type = '';
+            exampleVideo.appendChild(newSrc);
+            exampleVideo.load();
+            exampleVideo.play().catch(e => console.warn('Auto-play blocked when switching demo:', e));
+          });
+          switcherContainer.appendChild(btn);
+        });
+      } else {
+        switcherContainer.style.display = 'none';
+      }
+
+      // Load initially with the first URL
       exampleVideo.innerHTML = '';
       exampleVideo.muted = true;
       exampleVideo.loop = false;
@@ -4518,24 +4588,17 @@ loader.load(
       exampleVideo.crossOrigin = 'anonymous';
 
       const src = document.createElement('source');
-      src.src  = exampleUrl;
-      // Use a generic type; servers may emit mp4 or webm depending on encoder
+      src.src = exampleUrls[0];
       src.type = '';
       exampleVideo.appendChild(src);
 
       // Do not auto-open the dock; let the user click the toggle
       exampleVideo.addEventListener('error', () => {
-        console.error(`❌ Example video failed to load (ID: ${state?.video_prompt}):`, exampleVideo?.error, exampleUrl);
+        console.error(`❌ Example video failed to load (ID: ${state?.video_prompt}):`, exampleVideo?.error, exampleUrls[0]);
       });
 
       exampleVideo.addEventListener('loadedmetadata', () => {
         // noop; keep dock hidden until user clicks
-        console.log(`✅ Example video loaded successfully (ID: ${state?.video_prompt}):`, {
-          duration: exampleVideo.duration,
-          videoWidth: exampleVideo.videoWidth,
-          videoHeight: exampleVideo.videoHeight,
-          url: exampleUrl
-        });
       });
 
       exampleVideo.load();
@@ -6624,7 +6687,7 @@ loader.load(
           alpha: true,
           powerPreference: 'high-performance',
           precision: 'highp',
-          preserveDrawingBuffer: false
+          preserveDrawingBuffer: true
         });
         
         renderer.setPixelRatio(Math.max(window.devicePixelRatio || 1, 2));

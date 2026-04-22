@@ -497,32 +497,24 @@ class CrowdInterface:
             
             # Prefer a VLM-selected clip if available and present
             video_id = state.get("video_prompt")
-            chosen_url = None
+            chosen_urls = []
             if video_id is not None:
-                p, _ = self.video_manager.find_show_video_by_id(video_id)
-                if p:
-                    # Serve from static demos directory for fast loading
-                    video_filename = Path(p).name
-                    # If from Netlify, use Netlify CDN (same origin, no CORS)
-                    # If from localhost, use backend tunnel with high quality videos
-                    if is_netlify_origin and self.frontend_url:
-                        chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
-                    else:
-                        # Serve high quality through backend tunnel (works for localhost and other origins)
-                        chosen_url = f"/demos_hq/{video_filename}"
+                video_matches = self.video_manager.find_show_videos_by_id(video_id)
+                if video_matches:
+                    for p, _ in video_matches:
+                        video_filename = Path(p).name
+                        # If from Netlify, use Netlify CDN (same origin, no CORS)
+                        # If from localhost, use backend tunnel with high quality videos
+                        if is_netlify_origin and self.frontend_url:
+                            chosen_urls.append(f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}")
+                        else:
+                            # Serve high quality through backend tunnel (works for localhost and other origins)
+                            chosen_urls.append(f"/demos_hq/{video_filename}")
 
-            # Fallback: latest available .webm
-            if not chosen_url:
-                lp, lid = self.video_manager.find_latest_show_video()
-                if lp and lid:
-                    video_filename = Path(lp).name
-                    if is_netlify_origin and self.frontend_url:
-                        chosen_url = f"{self.frontend_url.rstrip('/')}/demos_hq/{video_filename}"
-                    else:
-                        chosen_url = f"/demos_hq/{video_filename}"
-
-            if chosen_url:
-                out["example_video_url"] = chosen_url
+            if chosen_urls:
+                out["example_video_urls"] = chosen_urls
+                # Fallback for backwards compatibility with older clients if they only look for single URL
+                out["example_video_url"] = chosen_urls[0]
 
         return out
 

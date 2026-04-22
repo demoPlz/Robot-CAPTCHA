@@ -1,0 +1,22 @@
+=== 1 ===
+Only use Simulated: Top-view to drag.
+The red cross should be on the center-point of the square, skewed left (see Example Videos) to off-set pose estimation imprecision.
+The gripper should be on top of a cube that is present in the scene (check the Real-Life views).
+=== 2 ===
+If not already, the red cross should be adjusted to be on the center-point of the square, skewed left (see Example Videos) to off-set pose estimation imprecision
+Use Simulated: Left-view to lower the gripper, then pitch gripper to be vertical.
+The red line should end up approximately the same height as the top of the containers.
+=== 3 ===
+Only use Simulated: Top-view to rotate (red wheel)
+Align the parallel grippers to be parallel to the sides of the cube (look at red cross)
+=== 9 ===
+Only use Simulated: Top-view to drag
+The red cross should be on the center-point of the square, skewed left (see Example Videos) to off-set pose estimation imprecision
+The gripper should be on top of a cube that is present in the scene (check the Real-Life views)
+=== 10 ===
+If not already, the red cross should be adjusted to be on the center-point of the square, skewed left (see Example Videos) to off-set pose estimation imprecision; this is to be maintained when lowering the gripper.
+Use Simulated: Left-view to lower the gripper straight down, then pitch gripper to be vertical.
+The red line should end up approximately the same height as the top of the containers.
+=== 11 ===
+Only use Simulated: Top-view to rotate (red wheel)
+Align the parallel grippers to be parallel to the sides of the cube (look at red cross)

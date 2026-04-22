@@ -205,6 +205,29 @@ class DemoVideoManager:
             idx = self._compute_next_video_index()
             return f"{idx}{ext}", idx
 
+    def find_show_videos_by_id(self, video_id: int | str) -> list[tuple[Path, str]]:
+        """
+        VP9-only: resolve <id>_*.webm inside the show_videos_dir and return a sorted list of their paths + mime.
+
+        Args:
+            video_id: Video ID (numeric)
+
+        Returns:
+            List of Tuples of (path, mime_type). Empty list if not found.
+        """
+        vid = str(video_id).strip()
+        if not vid.isdigit() or not self._show_videos_dir:
+            return []
+
+        matches = []
+        for p in self._show_videos_dir.glob(f"{vid}_*.webm"):
+            mime = mimetypes.guess_type(str(p))[0] or "video/webm"
+            matches.append((p, mime))
+
+        # Sort them explicitly by file name (so 1_1 comes before 1_2)
+        matches.sort(key=lambda x: x[0].name)
+        return matches
+
     def find_show_video_by_id(self, video_id: int | str) -> tuple[Path | None, str | None]:
         """
         VP9-only: resolve <id>.webm inside the show_videos_dir and return its path + mime.
