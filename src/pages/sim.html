@@ -1156,7 +1156,7 @@
   margin-left: 20px;
   white-space: normal;
   overflow: hidden;
-  height: 100%;
+  /* height is set dynamically by JS to match #viewport */
 }
 
 .hints-panel.visible {
@@ -3572,7 +3572,7 @@ hintsPanel.innerHTML = `
   
   <div class="sidebar-tab-content" id="tab-content-qna">
     <h3>Task Q&A</h3>
-    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Ask questions or clear up ambiguities about this task. Admins will reply here.</div>
+    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Ask questions about this task. Admins will reply here.</div>
     
     <div style="background:#fff; border:1px solid #e2e8f0; border-radius:6px; padding:10px; margin-bottom:12px;">
       <textarea id="qna-new-input" rows="3" placeholder="Type your question..." style="width:100%; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:4px; padding:8px; font-family:inherit; font-size:13px; resize:vertical; margin-bottom:8px;"></textarea>
@@ -3597,9 +3597,25 @@ hintsPanel.innerHTML = `
 `;
 document.getElementById('page-wrapper').appendChild(hintsPanel);
 
+// Sync hints panel height exactly to #viewport height
+function syncHintsPanelHeight() {
+  const vp = document.getElementById('viewport');
+  if (!vp || !hintsPanel) return;
+  const h = vp.offsetHeight;
+  if (h > 0) {
+    hintsPanel.style.maxHeight = h + 'px';
+    hintsPanel.style.overflowY = 'auto';
+  }
+}
+// Run once after layout, then watch for resize
+requestAnimationFrame(() => { requestAnimationFrame(syncHintsPanelHeight); });
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(syncHintsPanelHeight).observe(document.getElementById('viewport') || document.body);
+}
+
 // Simple function to maintain compatibility with existing code
 function updateHintsPosition() {
-  // Inline-block layout handles positioning automatically
+  syncHintsPanelHeight();
 }
 
 // Everything below goes into recordRegion (NOT directly into mount)
@@ -8518,7 +8534,9 @@ window.refreshSidebarData = async function(state) {
            if (data.gallery.length === 0) {
               grid.innerHTML = '<div style="grid-column:1/-1; color:#94a3b8; text-align:center; padding:20px; font-size:12px;">No pre-rendered expert tasks found yet.</div>';
            } else {
-              data.gallery.forEach(item => {
+              // Shuffle randomly so order is not predictable
+              const shuffled = [...data.gallery].sort(() => Math.random() - 0.5);
+              shuffled.forEach(item => {
                  const primaryCam = item.view_paths['front'] || item.view_paths['webcam_front'] || Object.values(item.view_paths)[0];
                  // primaryCam might be relative, absolutize it!
                  const absCamUrl = primaryCam.startsWith('http') ? primaryCam : `${API_BASE_URL}${primaryCam}`;
@@ -8526,7 +8544,6 @@ window.refreshSidebarData = async function(state) {
                  div.className = 'gallery-item';
                  div.innerHTML = `
                     <img src="${absCamUrl}" class="gallery-thumb" loading="lazy">
-                    <div class="gallery-badge">Episode ${item.episode_id}</div>
                  `;
                  
                  // Deep clone the item and ensure view_paths are fully absolute for the modal!
