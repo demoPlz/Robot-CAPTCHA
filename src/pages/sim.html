@@ -3557,9 +3557,10 @@ hintsPanel.innerHTML = `
     <ol>
       <li>Use the UI to suggest the <b>goal position</b> for the robot to travel to according the specified <b>Task</b>.</li>
       <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
-      <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and adjust accordingly if necessary.</li>
       <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
       <li>Click the <b>ⓘ</b> button to view <b>detailed acceptance criteria</b>.</li>
+      <li>View more example valid submissions in the <b>"Gallery"</b> tab.</li>
+      <li>View commonly asked questions in the <b>"Q&amp;A"</b> tab.</li>
     </ol>
   </div>
   
@@ -8574,29 +8575,42 @@ window.refreshSidebarData = async function(state) {
            if (data.qna_list.length === 0) {
               feed.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">No Q&A recorded yet.</div>';
            } else {
-              data.qna_list.forEach(q => {
-                 const isAnswered = !!q.answer;
+              // Determine the current user's name (matches asked_by field)
+               const _myName = (() => {
+                 if (window.userIdentity && window.userIdentity.name) return window.userIdentity.name;
+                 try { const j = JSON.parse(localStorage.getItem('userIdentity') || '{}'); return j.name || ''; } catch(e){ return ''; }
+               })();
+
+               data.qna_list.forEach(q => {
+                 const isMyQuestion = _myName && q.asked_by === _myName;
+
+                 // Hide unanswered questions unless this user is the one who asked
+                 if (!q.answer && !isMyQuestion) return;
+
                  const scopeClass = q.scope === 'exact_state' ? 'scope-exact'
                                   : q.scope === 'all_states'  ? 'scope-all'
                                   : 'scope-prompt';
-                 const scopeLabel = q.scope === 'exact_state' ? 'STATE-SPECIFIC'
-                                  : q.scope === 'all_states'  ? 'GLOBAL'
-                                  : 'PROMPT-WIDE';
-                 
-                 let aHtml = '';
-                 if (isAnswered) {
-                    aHtml = `<div class="qna-a"><b>Admin (${q.answered_by}):</b> ${q.answer}</div>`;
-                 } else {
-                    aHtml = `<div class="qna-unanswered">Awaiting admin reply...</div>`;
-                 }
 
-                 feed.innerHTML += `
-                    <div class="qna-card ${scopeClass}">
-                       <div class="qna-q">Q: ${q.question}</div>
-                       ${aHtml}
-                    </div>
-                 `;
-              });
+                 if (q.answer) {
+                   feed.innerHTML += `
+                      <div class="qna-card ${scopeClass}">
+                         <div class="qna-q">Q: ${q.question}</div>
+                         <div class="qna-a"><b>Admin:</b> ${q.answer}</div>
+                      </div>
+                   `;
+                 } else {
+                   // Unanswered — only visible to the asker
+                   feed.innerHTML += `
+                      <div class="qna-card ${scopeClass}" style="opacity:0.65;">
+                         <div class="qna-q">Q: ${q.question}</div>
+                         <div class="qna-unanswered">⏳ Awaiting admin reply...</div>
+                      </div>
+                   `;
+                 }
+               });
+               if (!feed.querySelector('.qna-card')) {
+                 feed.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">No Q&A recorded yet.</div>';
+               }
            }
         }
       } catch (e) { console.error('Qna err:', e); }
@@ -8630,9 +8644,13 @@ window.postQnaQuestion = async function() {
 
   // Get user info if available
   let userStr = "worker";
-  const userStrData = localStorage.getItem('crowd_ui_user_identity');
-  if (userStrData) {
-     try { const j = JSON.parse(userStrData); if (j.name) userStr = j.name; } catch(e){}
+  if (window.userIdentity && window.userIdentity.name) {
+     userStr = window.userIdentity.name;
+  } else {
+     const userStrData = localStorage.getItem('userIdentity');
+     if (userStrData) {
+        try { const j = JSON.parse(userStrData); if (j.name) userStr = j.name; } catch(e){}
+     }
   }
 
   try {

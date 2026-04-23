@@ -6,7 +6,7 @@ Close gripper to grasp. [GRASP]
 Raise the cube to be above the corresponding container
 Open gripper to release object into the container. [RELEASE]
 Return to Home position. [HOME]
-Move horizontally such that the gripper is in the general area above one of the cubes.
+Move horizontally such that the gripper is directly above one of the cubes.
 Lower and pitch the gripper till vertical to be ~3cm above the cube.
 Rotate the gripper to align with grasp angle.
 Lower the gripper to prepare for grasp.

@@ -630,7 +630,7 @@ def control_robot(cfg: ControlPipelineConfig):
             if (dataset_path / "phase2_checkpoint.json").exists():
                 # Resume mode: clean up dataset artifacts but keep checkpoint + logs
                 # (dataset is empty since no episodes were saved yet — only checkpoint matters)
-                import shutil
+                import shutil, tempfile
                 KEEP_FILES = {
                     "phase2_checkpoint.json",
                     "phase1_checkpoint.json",
@@ -639,6 +639,20 @@ def control_robot(cfg: ControlPipelineConfig):
                     "phase1_dataset_workspace",
                 }
                 print(f"📂 Found Phase 2 checkpoint in {dataset_path} — cleaning dataset for re-creation")
+
+                # Stash Q&A and gallery_cache from meta/ so they survive reimport
+                _stash_dir = Path(tempfile.mkdtemp(prefix="crowd_meta_stash_"))
+                _meta_path = dataset_path / "meta"
+                for _preserve in ("qna.json", "gallery_cache"):
+                    _src = _meta_path / _preserve
+                    if _src.exists():
+                        _dst = _stash_dir / _preserve
+                        if _src.is_dir():
+                            shutil.copytree(_src, _dst)
+                        else:
+                            shutil.copy2(_src, _dst)
+                        print(f"   📦 Stashed {_preserve} for preservation")
+
                 for item in dataset_path.iterdir():
                     if item.name in KEEP_FILES:
                         continue  # keep checkpoint + logs
@@ -648,7 +662,7 @@ def control_robot(cfg: ControlPipelineConfig):
                         shutil.rmtree(item)
                     else:
                         item.unlink()
-                # Fall through to dataset creation below
+                # Fall through to dataset creation below; stash restored after create
             else:
                 # No checkpoint - auto-rename to prevent overwrite
                 original_repo_id = output_repo_id
@@ -679,6 +693,22 @@ def control_robot(cfg: ControlPipelineConfig):
             )
             # Don't start image_writer - use synchronous image writing for Phase 2
             print(f"✅ Dataset created: {crowd_interface.dataset_manager.dataset.root}")
+
+            # Restore stashed meta/ files (qna.json, gallery_cache) if we stashed them above
+            import shutil as _shutil
+            if '_stash_dir' in dir() and _stash_dir.exists():
+                _new_meta = output_dataset_root / "meta"
+                _new_meta.mkdir(parents=True, exist_ok=True)
+                for _item in _stash_dir.iterdir():
+                    _dst = _new_meta / _item.name
+                    if _item.is_dir():
+                        if _dst.exists():
+                            _shutil.rmtree(_dst)
+                        _shutil.copytree(_item, _dst)
+                    else:
+                        _shutil.copy2(_item, _dst)
+                    print(f"   ♻️  Restored {_item.name} into meta/")
+                _shutil.rmtree(_stash_dir, ignore_errors=True)
         
         # Relocate async user logger to dataset directory (it was initialized with
         # /tmp/ fallback because dataset didn't exist at CrowdInterface init time)

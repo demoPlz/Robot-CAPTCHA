@@ -1605,6 +1605,21 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             
         return jsonify({"status": "ok", "qna": qna_obj})
 
+    @app.route("/api/qna/delete", methods=["POST"])
+    @require_monitor_auth
+    def api_delete_qna():
+        data = request.json
+        q_id = data.get("q_id")
+        if not q_id:
+            return jsonify({"status": "error", "message": "q_id required"}), 400
+        db = crowd_interface.state_manager.qna_db
+        before = len(db)
+        crowd_interface.state_manager.qna_db = [q for q in db if q.get("id") != q_id]
+        if len(crowd_interface.state_manager.qna_db) < before:
+            crowd_interface.state_manager.save_qna_db()
+            return jsonify({"status": "ok"})
+        return jsonify({"status": "error", "message": "Not found"}), 404
+
     @app.route("/api/gallery/same-prompt", methods=["GET"])
     def get_gallery_same_prompt():
         text_prompt = request.args.get("text_prompt", default="")

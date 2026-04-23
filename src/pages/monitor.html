@@ -166,7 +166,7 @@
         .modal-main { display:contents; }
         .modal-left { padding:16px; border-right:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; background:#0b1220; }
         .modal-maincam { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
-        .modal-right { padding:16px; display:flex; flex-direction:column; gap:12px; }
+        .modal-right { padding:16px; display:flex; flex-direction:column; gap:12px; overflow-y:auto; }
         .field-label { font-size:12px; color:#475569; font-weight:600; }
         .select-wrap { display:flex; gap:8px; align-items:center; }
         .select-el { width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; font-size:14px; color:#0f172a; }
@@ -817,7 +817,7 @@
                     </div>
                     
                     <!-- Submission Management Section -->
-                    <div id="submitted-actions-section" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: none; max-height: 320px; overflow-y: auto;">
+                    <div id="submitted-actions-section" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: none;">
                         <div class="field-label" style="font-weight: 600; margin-bottom: 8px;">📋 Submission Management:</div>
                         <div id="submitted-actions-list" class="muted" style="font-size: 13px;">
                             Loading...
@@ -827,7 +827,7 @@
                     <!-- Q&A Section -->
                     <div id="vlm-qna-section" style="margin-top: 16px; padding: 12px; background: #0f172a; border-radius: 8px; border: 1px solid #1e3a5f; color: #f8fafc; display: none;">
                         <div class="field-label" style="font-weight: 600; margin-bottom: 8px; color:#cbd5e1;">💬 State Q&A:</div>
-                        <div id="vlm-qna-list" style="display:flex; flex-direction:column; gap:12px; max-height:200px; overflow-y:auto; margin-bottom:8px;">
+                        <div id="vlm-qna-list" style="display:flex; flex-direction:column; gap:12px; margin-bottom:8px;">
                             <!-- populated by js -->
                         </div>
                     </div>
@@ -3033,13 +3033,12 @@
                                 qnaData.qna_list.forEach(q => {
                                     const isAnswered = !!q.answer;
                                     const qHtml = document.createElement('div');
-                                    qHtml.style.background = '#1e293b';
-                                    qHtml.style.padding = '10px';
-                                    qHtml.style.borderRadius = '6px';
-                                    qHtml.style.border = '1px solid #334155';
-                                    
+                                    qHtml.style.cssText = 'background:#1e293b; padding:10px; border-radius:6px; border:1px solid #334155; margin-bottom:4px;';
                                     qHtml.innerHTML = `
-                                        <div style="font-size:12px; color:#94a3b8; font-weight:600; margin-bottom:4px;">${q.asked_by} ASKED:</div>
+                                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+                                            <div style="font-size:12px; color:#94a3b8; font-weight:600;">${q.asked_by} ASKED:</div>
+                                            <button onclick="window.deleteQnaEntry('${q.id}')" title="Delete" style="background:transparent;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 2px;">✕</button>
+                                        </div>
                                         <div style="font-size:13px; color:#f8fafc; font-style:italic; margin-bottom:8px;">"${q.question}"</div>
                                         <div style="margin-top:8px;">
                                             <div style="font-size:12px; color:#94a3b8; font-weight:600; margin-bottom:4px;">YOUR REPLY:</div>
@@ -4907,6 +4906,28 @@
                 }
             } catch (err) {
                 console.error(err);
+                alert('Connection error');
+            }
+        };
+
+        window.deleteQnaEntry = async function(qId) {
+            if (!confirm('Delete this Q&A entry? This cannot be undone.')) return;
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/qna/delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Monitor-Token': monitorToken },
+                    body: JSON.stringify({ q_id: qId })
+                });
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    // Remove the card from DOM
+                    const btn = document.querySelector(`button[onclick="window.deleteQnaEntry('${qId}')"]`);
+                    if (btn) btn.closest('div[style]').remove();
+                    showToast('Q&A entry deleted.');
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch(e) {
                 alert('Connection error');
             }
         };
