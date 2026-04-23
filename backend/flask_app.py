@@ -1422,10 +1422,358 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             events = crowd_interface.state_manager.admin_events_log
             if since > 0:
                 events = [e for e in events if e.get("timestamp", 0) > since]
-            return jsonify({"status": "ok", "events": events, "total": len(crowd_interface.state_manager.admin_events_log)})
+            
+            unanswered_qna = crowd_interface.state_manager.get_unanswered_qna()
+
+            return jsonify({"status": "ok", "events": events, "unanswered_qna": unanswered_qna, "total": len(crowd_interface.state_manager.admin_events_log)})
         except Exception as e:
             print(f"❌ Error getting events log: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/gallery/unrendered", methods=["GET"])
+    @require_monitor_auth
+    def get_gallery_unrendered():
+        sm = crowd_interface.state_manager
+        root = None
+        if sm.dataset_manager and hasattr(sm.dataset_manager, 'dataset') and sm.dataset_manager.dataset:
+            from pathlib import Path
+            root = Path(sm.dataset_manager.dataset.root)
+            
+        items = []
+        def check_pool(pool, is_dict_of_dicts):
+            if is_dict_of_dicts:
+                for ep, st_dict in pool.items():
+                    for st, si in st_dict.items():
+                        add_if_missing(ep, st, si)
+            else:
+                for (ep, st), si in pool.items():
+                    add_if_missing(ep, st, si)
+
+        seen = set()
+        def add_if_missing(ep, st, si):
+            if (ep, st) in seen: return
+            text = si.get("text_prompt")
+            # Only care about states with actions and text prompts
+            if not text: return
+            
+            history = si.get("execution_history", [])
+            action = si.get("action")
+            if hasattr(action, "tolist"):
+                action = action.tolist()
+
+            if action is None and len(history) > 0 and history[0].get("action") is not None:
+                act = history[0].get("action")
+                if hasattr(act, "tolist"):
+                    act = act.tolist()
+                action = act
+                
+            if action is None: return
+            
+            # Check cache — sentinel is front.jpg (the first sim view)
+            if root:
+                cache_dir = root / "meta" / "gallery_cache" / f"ep_{ep}_st_{st}"
+                if (cache_dir / "front.jpg").exists():
+                    return  # already rendered
+
+            # Found missing! Add to items
+            original_jp = si.get("joint_positions", {})
+            original_list = [float(original_jp.get(jn, 0.0)) for jn in sm.pose_estimator.robot_driver.JOINT_NAMES] if hasattr(sm.pose_estimator, 'robot_driver') else [float(v) for v in original_jp.values()]
+
+            # Read view images from disk and encode as base64 data URLs (same pattern as pre-exec approval)
+            import base64
+            from pathlib import Path as _Path
+            view_urls = {}
+            for view_name, view_path in si.get("view_paths", {}).items():
+                # Only include the 4 sim + 2 real views, skip obs_ variants
+                if view_name.startswith('obs_'):
+                    continue
+                try:
+                    p = _Path(view_path)
+                    if p.exists():
+                        with open(p, 'rb') as f:
+                            view_urls[view_name] = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
+                except Exception as e:
+                    print(f"⚠️  Gallery unrendered: failed to read {view_name}: {e}")
+
+            # Get global calibration data (same source as View button)
+            try:
+                cam_poses = crowd_interface.calibration.get_camera_poses()
+                cam_models = crowd_interface.calibration.get_camera_models()
+            except Exception:
+                cam_poses = {}
+                cam_models = {}
+
+            items.append({
+                "episode_id": ep,
+                "state_id": st,
+                "action": action,
+                "view_urls": view_urls,
+                "original_joint_positions": original_list,
+                "camera_poses": cam_poses,
+                "camera_models": cam_models,
+            })
+            seen.add((ep, st))
+
+        with sm.state_lock:
+            check_pool(sm.completed_states_by_episode, True)
+            check_pool(sm.async_state_pool, False)
+
+        return jsonify({"status": "ok", "items": items})
+
+    @app.route("/api/qna/list", methods=["GET"])
+    def api_get_qna_list():
+        ep = request.args.get("episode_id", type=int)
+        st = request.args.get("state_id", type=int)
+        text_prompt = request.args.get("text_prompt", default="")
+        if ep is None or st is None:
+            return jsonify({"status": "error", "message": "episode_id and state_id required"}), 400
+        
+        results = crowd_interface.state_manager.get_qna_list(text_prompt, ep, st)
+        return jsonify({"status": "ok", "qna_list": results})
+        
+    @app.route("/api/qna/post", methods=["POST"])
+    def api_post_qna():
+        data = request.json
+        ep = data.get("episode_id")
+        st = data.get("state_id")
+        text_prompt = data.get("text_prompt", "")
+        question = data.get("question", "")
+        asked_by = data.get("asked_by", "worker")
+        
+        if ep is None or st is None or not question:
+            return jsonify({"status": "error", "message": "bad input"}), 400
+            
+        qna_obj = crowd_interface.state_manager.add_qna(ep, st, text_prompt, question, asked_by, scope="prompt_text")
+        
+        # Add to admin event log
+        import time
+        crowd_interface.state_manager.admin_events_log.append({
+            "timestamp": time.time(),
+            "type": "qna_question",
+            "episode_id": ep,
+            "state_id": st,
+            "user_name": asked_by,
+            "entry_index": -1,
+            "detail": f"Q: {question[:50]}..."
+        })
+        try:
+            crowd_interface.save_phase2_checkpoint()
+        except:
+            pass
+        
+        return jsonify({"status": "ok", "qna": qna_obj})
+
+    @app.route("/api/qna/answer", methods=["POST"])
+    @require_monitor_auth
+    def api_answer_qna():
+        data = request.json
+        q_id = data.get("q_id")
+        answer = data.get("answer")
+        answered_by = data.get("answered_by", "admin")
+        scope = data.get("scope")
+        
+        if not q_id or not answer:
+            return jsonify({"status": "error", "message": "bad input"}), 400
+            
+        # Update scope if changed
+        for q in crowd_interface.state_manager.qna_db:
+            if q.get("id") == q_id:
+                if scope:
+                    q["scope"] = scope
+                break
+
+        res = crowd_interface.state_manager.answer_qna(q_id, answer, answered_by)
+        if res:
+            return jsonify({"status": "ok", "qna": res})
+        return jsonify({"status": "error", "message": "Not found"}), 404
+
+    @app.route("/api/qna/create", methods=["POST"])
+    @require_monitor_auth
+    def api_create_qna():
+        # Proactively created by admin
+        data = request.json
+        ep = data.get("episode_id")
+        st = data.get("state_id")
+        text_prompt = data.get("text_prompt", "")
+        question = data.get("question", "")
+        answer = data.get("answer", "")
+        scope = data.get("scope", "prompt_text")
+        
+        qna_obj = crowd_interface.state_manager.add_qna(ep, st, text_prompt, question, "admin", scope)
+        if answer:
+            qna_obj = crowd_interface.state_manager.answer_qna(qna_obj["id"], answer, "admin")
+            
+        return jsonify({"status": "ok", "qna": qna_obj})
+
+    @app.route("/api/gallery/same-prompt", methods=["GET"])
+    def get_gallery_same_prompt():
+        text_prompt = request.args.get("text_prompt", default="")
+        if not text_prompt:
+            return jsonify({"status": "ok", "gallery": []})
+
+        gallery_items = []
+        # Need to find Phase 1 executed states matching the text_prompt
+        # Check both completed and async_pool
+        sm = crowd_interface.state_manager
+        
+        def check_pool(pool, is_dict_of_dicts):
+            if is_dict_of_dicts:
+                # pool is dict[ep] -> dict[st] -> state_info
+                for ep, st_dict in pool.items():
+                    for st, si in st_dict.items():
+                        if si.get("text_prompt") == text_prompt:
+                            add_gallery_item(ep, st, si)
+            else:
+                # async pool is dict[(ep, st)] -> state_info
+                for (ep, st), si in pool.items():
+                    if si.get("text_prompt") == text_prompt:
+                        add_gallery_item(ep, st, si)
+
+        root = None
+        if sm.dataset_manager and hasattr(sm.dataset_manager, 'dataset') and sm.dataset_manager.dataset is not None:
+            from pathlib import Path
+            root = Path(sm.dataset_manager.dataset.root)
+
+        # Store dedup so we don't return the same ep/st multiple times
+        seen = set()
+
+        def add_gallery_item(ep, st, si):
+            if (ep, st) in seen: return
+            # Check for thumbnails in dataset/meta/gallery_cache/ep_X_st_Y
+            # The thumbnails are just images: thumb_cam_main.jpg etc...
+            has_cache = False
+            urls = {}
+            if root:
+                cache_dir = root / "meta" / "gallery_cache" / f"ep_{ep}_st_{st}"
+                if cache_dir.exists():
+                    has_cache = True
+                    for cam in ["front", "left", "right", "top", "webcam_front", "webcam_left"]:
+                        if (cache_dir / f"{cam}.jpg").exists():
+                            urls[cam] = f"/api/gallery/image?ep={ep}&st={st}&cam={cam}"
+            
+            # The original joint positions
+            original_jp = si.get("joint_positions", {})
+            import json
+            original_list = [float(original_jp.get(jn, 0.0)) for jn in sm.pose_estimator.robot_driver.JOINT_NAMES] if hasattr(sm.pose_estimator, 'robot_driver') else []
+
+            if not original_list: # Fallback if JOINT_NAMES not avail here
+                original_list = [float(v) for v in original_jp.values()]
+
+            history = si.get("execution_history", [])
+            action = si.get("action")
+            if hasattr(action, "tolist"):
+                action = action.tolist()
+
+            if action is None and len(history) > 0 and history[0].get("action") is not None:
+                act = history[0].get("action")
+                if hasattr(act, "tolist"):
+                    act = act.tolist()
+                action = act
+
+            if action is not None:
+                seen.add((ep, st))
+                gallery_items.append({
+                    "episode_id": ep,
+                    "state_id": st,
+                    "action": action,
+                    "view_paths": urls if has_cache else si.get("view_paths", {}), # Fallback to original view_paths if not cached
+                    "has_cache": has_cache,
+                    "original_joint_positions": original_list
+                })
+
+        # Lock state while looping
+        with sm.state_lock:
+            check_pool(sm.completed_states_by_episode, True)
+            check_pool(sm.async_state_pool, False)
+
+        return jsonify({"status": "ok", "gallery": gallery_items})
+
+    @app.route("/api/gallery/image", methods=["GET"])
+    def get_gallery_image():
+        ep = request.args.get("ep")
+        st = request.args.get("st")
+        cam = request.args.get("cam")
+        sm = crowd_interface.state_manager
+        if sm.dataset_manager and hasattr(sm.dataset_manager, 'dataset') and sm.dataset_manager.dataset is not None:
+            from pathlib import Path
+            root = Path(sm.dataset_manager.dataset.root)
+            img_path = root / "meta" / "gallery_cache" / f"ep_{ep}_st_{st}" / f"{cam}.jpg"
+            if img_path.exists():
+                from flask import send_file
+                return send_file(img_path, mimetype='image/jpeg')
+        return "Not found", 404
+
+    @app.route("/api/gallery/save-cache", methods=["POST"])
+    @require_monitor_auth
+    def save_gallery_cache():
+        data = request.json
+        ep = data.get("episode_id")
+        st = data.get("state_id")
+        images = data.get("images", {}) # dict mapping cam_name -> base64 string
+        
+        sm = crowd_interface.state_manager
+        if sm.dataset_manager and hasattr(sm.dataset_manager, 'dataset') and sm.dataset_manager.dataset is not None:
+            from pathlib import Path
+            root = Path(sm.dataset_manager.dataset.root)
+            cache_dir = root / "meta" / "gallery_cache" / f"ep_{ep}_st_{st}"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            import base64
+            for cam, b64 in images.items():
+                if "base64," in b64:
+                    b64 = b64.split("base64,")[1]
+                img_data = base64.b64decode(b64)
+                with open(cache_dir / f"{cam}.jpg", "wb") as f:
+                    f.write(img_data)
+                    
+            return jsonify({"status": "ok"})
+        return jsonify({"status": "error", "message": "No dataset root"}), 500
+
+    @app.route("/api/state/image/<int:ep>/<int:st>/<cam_name>")
+    def api_get_state_image(ep, st, cam_name):
+        # We need to find the obs_path for this state, dynamically extract the image, and serve it.
+        sm = crowd_interface.state_manager
+        
+        # Look up state in completed states buffer or async state pool
+        state_info = None
+        with sm.state_lock:
+            # 1. Try completed states branch
+            if ep in sm.completed_states_by_episode:
+                if st in sm.completed_states_by_episode[ep]:
+                    state_info = sm.completed_states_by_episode[ep][st]
+            # 2. Try async state pool branch
+            if not state_info:
+                if (ep, st) in sm.async_state_pool:
+                    state_info = sm.async_state_pool[(ep, st)]
+
+        if not state_info:
+            return "State not found", 404
+
+        obs_path = state_info.get("obs_path")
+        if not obs_path:
+            # Maybe it has view_paths directly
+            view_path = state_info.get("view_paths", {}).get(cam_name)
+            if view_path:
+                from flask import send_file
+                from pathlib import Path
+                if Path(view_path).exists():
+                    return send_file(view_path, mimetype='image/jpeg')
+            return "No observation or view path", 404
+
+        try:
+            # Load chunk and extract numpy array
+            obs = crowd_interface.dataset_manager.load_obs_from_disk(obs_path)
+            img_arr = crowd_interface.load_cam_from_obs(obs, cam_name)
+            if img_arr is None:
+                return "Camera matrix not in chunk", 404
+                
+            # Convert to JPEG and serve inline
+            import cv2
+            _, buffer = cv2.imencode('.jpg', cv2.cvtColor(img_arr, cv2.COLOR_RGB2BGR))
+            return iter([buffer.tobytes()]), 200, {'Content-Type': 'image/jpeg'}
+        except Exception as e:
+            print(f"❌ Failed extracting image from {obs_path}: {e}")
+            return "Error extracting image", 500
 
     @app.route("/api/state/submission-preview", methods=["GET"])
     def get_submission_preview():

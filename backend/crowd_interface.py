@@ -1616,14 +1616,25 @@ class CrowdInterface:
         
         return ip_stats
 
-    def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
-        """Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing."""
+    def load_cam_from_obs(self, obs: dict, cam_name: str) -> np.ndarray | None:
+        """Extract a specific camera image as RGB uint8 HxWx3; returns None if missing."""
         if not isinstance(obs, dict):
             return None
-        for k in ("observation.images.cam_main", "observation.images.main", "observation.cam_main"):
+        # Try exact matches or observation.images.<cam_name>
+        candidates = [
+            f"observation.images.{cam_name}",
+            f"observation.{cam_name}",
+            cam_name,
+            f"observation.images.{cam_name.replace('cam_', '')}"
+        ]
+        for k in candidates:
             if k in obs:
                 return self.obs_stream._to_uint8_rgb(obs[k])
         return None
+
+    def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
+        """Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing."""
+        return self.load_cam_from_obs(obs, "cam_main")
 
     # =========================
     # Phase 1/2 Checkpoint

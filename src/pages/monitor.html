@@ -693,7 +693,10 @@
                         <div class="status-card" id="admin-activity-card" style="flex:1; min-width:0; display:flex; flex-direction:column;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                                 <span style="font-weight:600; font-size:14px; color:#1e293b;">📋 Activity Log</span>
-                                <span style="font-size:11px; color:#94a3b8;" id="activity-log-count">0 events</span>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <button class="control-button" onclick="prerenderAllGallery()" style="padding:2px 8px; font-size:11px; background:#4f46e5; color:white;" title="Batch preprocess all missing Gallery thumbnails for sim.html">Prerender Gallery</button>
+                                    <span style="font-size:11px; color:#94a3b8;" id="activity-log-count">0 events</span>
+                                </div>
                             </div>
                             <div id="activity-log-list" style="height:110px; overflow-y:auto; display:block; font-size:12px;">
                                 <div style="color:#94a3b8; text-align:center; padding:12px;">No events yet</div>
@@ -818,6 +821,14 @@
                         <div class="field-label" style="font-weight: 600; margin-bottom: 8px;">📋 Submission Management:</div>
                         <div id="submitted-actions-list" class="muted" style="font-size: 13px;">
                             Loading...
+                        </div>
+                    </div>
+                    
+                    <!-- Q&A Section -->
+                    <div id="vlm-qna-section" style="margin-top: 16px; padding: 12px; background: #0f172a; border-radius: 8px; border: 1px solid #1e3a5f; color: #f8fafc; display: none;">
+                        <div class="field-label" style="font-weight: 600; margin-bottom: 8px; color:#cbd5e1;">💬 State Q&A:</div>
+                        <div id="vlm-qna-list" style="display:flex; flex-direction:column; gap:12px; max-height:200px; overflow-y:auto; margin-bottom:8px;">
+                            <!-- populated by js -->
                         </div>
                     </div>
                 </div>
@@ -1910,6 +1921,38 @@
                 
                 countEl.textContent = `${data.total} events`;
                 
+                // We will re-render the entire list to properly pin unanswered QnA
+                // To keep it simple, we re-fetch all recent events if we must, but since we are incremental,
+                // actually we should just prepend. However, pinned items must ALWAYS stay at the top.
+                // Let's create a dedicated container for pinned questions if it doesn't exist.
+                let pinnedContainer = document.getElementById('pinned-qna-list');
+                if (!pinnedContainer) {
+                    pinnedContainer = document.createElement('div');
+                    pinnedContainer.id = 'pinned-qna-list';
+                    list.parentNode.insertBefore(pinnedContainer, list);
+                }
+                
+                // Render unanswered QnA into pinnedContainer
+                pinnedContainer.innerHTML = '';
+                if (data.unanswered_qna && data.unanswered_qna.length > 0) {
+                    for (const q of data.unanswered_qna) {
+                        const row = document.createElement('div');
+                        row.className = 'activity-entry type-qna_question';
+                        row.style.background = '#fef3c7'; // yellow tint for pinned
+                        row.style.borderLeft = '3px solid #f59e0b';
+                        row.innerHTML = `
+                            <span class="activity-badge qna_question" style="background:#f59e0b;">Q&A</span>
+                            <span class="activity-text" style="font-weight:bold;">[UNANSWERED] ep${q.episode_id} s${q.state_id} — ${q.asked_by}</span>
+                            <span class="activity-meta">Pinned</span>
+                        `;
+                        row.title = `Question: ${q.question}\nClick to answer`;
+                        row.addEventListener('click', () => {
+                            activityNavigateToState({episode_id: q.episode_id, state_id: q.state_id});
+                        });
+                        pinnedContainer.appendChild(row);
+                    }
+                }
+
                 if (data.events.length === 0) return; // No new events
                 
                 // Clear placeholder on first events
@@ -2974,6 +3017,55 @@
                 } else {
                     displaySubmittedActions(details.submitted_actions || []);
                 }
+                // === NEW: FETCH Q&A for this state ===
+                const qnaSection = document.getElementById('vlm-qna-section');
+                const qnaListElement = document.getElementById('vlm-qna-list');
+                qnaSection.style.display = 'block';
+                qnaListElement.innerHTML = '<span class="muted" style="font-size:12px;">Loading Q&A...</span>';
+                
+                try {
+                    const qnaResp = await fetch(`${API_BASE_URL}/api/qna/list?episode_id=${episodeId}&state_id=${stateId}&text_prompt=${encodeURIComponent(currentText)}`, { headers:{ 'Accept':'application/json' }});
+                    if (qnaResp.ok) {
+                        const qnaData = await qnaResp.json();
+                        if (qnaData.status === 'ok') {
+                            if (qnaData.qna_list && qnaData.qna_list.length > 0) {
+                                qnaListElement.innerHTML = '';
+                                qnaData.qna_list.forEach(q => {
+                                    const isAnswered = !!q.answer;
+                                    const qHtml = document.createElement('div');
+                                    qHtml.style.background = '#1e293b';
+                                    qHtml.style.padding = '10px';
+                                    qHtml.style.borderRadius = '6px';
+                                    qHtml.style.border = '1px solid #334155';
+                                    
+                                    qHtml.innerHTML = `
+                                        <div style="font-size:12px; color:#94a3b8; font-weight:600; margin-bottom:4px;">${q.asked_by} ASKED:</div>
+                                        <div style="font-size:13px; color:#f8fafc; font-style:italic; margin-bottom:8px;">"${q.question}"</div>
+                                        <div style="margin-top:8px;">
+                                            <div style="font-size:12px; color:#94a3b8; font-weight:600; margin-bottom:4px;">YOUR REPLY:</div>
+                                            <textarea id="qna-reply-${q.id}" class="textarea" rows="2" placeholder="Type answer here..." style="font-size:13px; margin-bottom:6px;">${isAnswered ? q.answer : ''}</textarea>
+                                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                                <select id="qna-scope-${q.id}" class="select-el" style="max-width:180px; font-size:11px; padding:4px;">
+                                                    <option value="prompt_text" ${q.scope === 'prompt_text' ? 'selected' : ''}>Global (Text Prompt)</option>
+                                                    <option value="exact_state" ${q.scope === 'exact_state' ? 'selected' : ''}>Only this State</option>
+                                                </select>
+                                                <button class="btn btn-primary" onclick="window.submitInlineQnaAnswer('${q.id}')" style="padding:4px 10px; font-size:11px; background:#3b82f6; border:none;">Save Reply</button>
+                                            </div>
+                                        </div>
+                                    `;
+                                    qnaListElement.appendChild(qHtml);
+                                });
+                            } else {
+                                qnaListElement.innerHTML = '<span class="muted" style="font-size:12px;">No Q&A recorded for this prompt/state.</span>';
+                            }
+                        }
+                    } else {
+                        qnaListElement.innerHTML = '<span class="muted" style="font-size:12px; color:#fca5a5;">Failed to load Q&A.</span>';
+                    }
+                } catch(e) {
+                    qnaListElement.innerHTML = '<span class="muted" style="font-size:12px; color:#fca5a5;">Error loading Q&A.</span>';
+                }
+
             } catch (e) {
                 console.error('Error in openVlmModal:', e);
                 showToast('Failed to load VLM details.');
@@ -4575,6 +4667,248 @@
         window.preExecRobotRenderer.loadRobot().catch(err => {
             console.error('Failed to preload robot:', err);
         });
+
+        // ================= GALLERY OFFLINE RENDERING =================
+        window.prerenderAllGallery = async function() {
+            const btn = document.querySelector('button[onclick="prerenderAllGallery()"]');
+            const originalText = btn.textContent;
+            btn.textContent = "Fetching config...";
+            btn.disabled = true;
+
+            // ---- Sim.html-style gold robot renderer ----
+            // Full robot: gripper links fully opaque gold, everything else ghost-gold (opacity 0.42)
+            const GOLD_HEX          = 0xffc83d;
+            const GOLD_EMISSIVE_HEX = 0x6a4b00;
+            const GHOST_OPACITY     = 0.42;
+            const MINIMAL_LINKS     = ['link_6', 'gripper_left', 'gripper_right'];
+
+            function applyGoldTintToMat(mat, isGhost) {
+                if (mat.color)    mat.color.setHex(GOLD_HEX);
+                if (mat.emissive) { mat.emissive.setHex(GOLD_EMISSIVE_HEX); mat.emissiveIntensity = isGhost ? 0.65 : 0.40; }
+                if ('metalness' in mat) mat.metalness = 0.6;
+                if ('roughness' in mat) mat.roughness = isGhost ? 0.55 : 0.35;
+                mat.needsUpdate = true;
+            }
+
+            function styleRobotSimMode(robotClone) {
+                // Identify minimal (gripper) root objects
+                const minRoots = new Set(
+                    MINIMAL_LINKS.map(n => robotClone.getObjectByName(n)).filter(Boolean)
+                );
+                function underMin(obj) { let p = obj; while (p) { if (minRoots.has(p)) return true; p = p.parent; } return false; }
+
+                robotClone.traverse(obj => {
+                    if (!obj.isMesh) return;
+                    obj.visible = true;  // show all meshes
+                    const isMin = underMin(obj);
+                    const mats = Array.isArray(obj.material) ? obj.material.map(m => m.clone()) : [obj.material.clone()];
+                    mats.forEach(m => {
+                        applyGoldTintToMat(m, !isMin);
+                        if (!isMin) {
+                            m.transparent = true;
+                            m.opacity = GHOST_OPACITY;
+                            m.depthWrite = false;
+                        }
+                    });
+                    obj.material = Array.isArray(obj.material) ? mats : mats[0];
+                });
+            }
+
+            function renderOneView(robotBase, jointPositions, backgroundImg, cameraPose, cameraModel) {
+                const w = backgroundImg.naturalWidth  || 640;
+                const h = backgroundImg.naturalHeight || 480;
+
+                // WebGL canvas for robot
+                const webglCanvas = document.createElement('canvas');
+                webglCanvas.width = w; webglCanvas.height = h;
+
+                // Build scene
+                const scene = new THREE.Scene();
+                const rendInst = window.preExecRobotRenderer;
+                const camera   = rendInst.createCamera('gallery', cameraModel, cameraPose, w, h);
+
+                scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
+                const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+                dir.position.set(2, 4, 2);
+                scene.add(dir);
+
+                // Clone robot, set joints, apply sim.html gold style
+                const goalRobot = robotBase.clone();
+                const robotGroup = new THREE.Group();
+                robotGroup.position.z = 0.005;
+                robotGroup.add(goalRobot);
+                scene.add(robotGroup);
+
+                rendInst.setRobotJoints(goalRobot, jointPositions);
+                goalRobot.updateMatrixWorld(true);
+                styleRobotSimMode(goalRobot);
+
+                // --- Red cross at end effector ---
+                const eeVis = goalRobot.getObjectByName('ee_gripper_link');
+                const eePos = new THREE.Vector3();
+                const eeQuat = new THREE.Quaternion();
+                if (eeVis) { eeVis.getWorldPosition(eePos); eeVis.getWorldQuaternion(eeQuat); }
+                const crossMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false });
+                const CROSS_LEN = 0.10; const CROSS_THICK = 0.005;
+                const crossGroup = new THREE.Group();
+                crossGroup.renderOrder = 1001;
+                crossGroup.add(new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_THICK, CROSS_LEN), crossMat));
+                crossGroup.add(new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_LEN, CROSS_THICK), crossMat));
+                crossGroup.position.copy(eePos);
+                crossGroup.quaternion.copy(eeQuat);
+                scene.add(crossGroup);
+
+                // --- Yellow finger-drop lines ---
+                const tipCalib = rendInst.gripperTipCalib;
+                if (tipCalib) {
+                    const lineRad = 0.0025; const lineLen = 1.0; const floorZ = 0.0;
+                    const fingerLineMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.95 });
+                    function makeDownLine() {
+                        const m = new THREE.Mesh(new THREE.CylinderGeometry(lineRad, lineRad, lineLen, 8, 1, true), fingerLineMat);
+                        m.rotation.x = Math.PI / 2;
+                        return m;
+                    }
+                    function placeFingerLine(link, localTip) {
+                        if (!link) return null;
+                        link.updateMatrixWorld(true);
+                        const tipWorld = new THREE.Vector3(localTip.x, localTip.y, localTip.z).applyMatrix4(link.matrixWorld);
+                        const len = tipWorld.z - floorZ;
+                        if (len <= 0) return null;
+                        const line = makeDownLine();
+                        line.scale.y = len / lineLen;
+                        line.position.set(tipWorld.x, tipWorld.y, floorZ + 0.5 * len);
+                        scene.add(line);
+                        return line;
+                    }
+                    placeFingerLine(goalRobot.getObjectByName('gripper_left'),  tipCalib.left);
+                    placeFingerLine(goalRobot.getObjectByName('gripper_right'), tipCalib.right);
+                }
+
+                // Render robot overlay
+                const renderer = new THREE.WebGLRenderer({ canvas: webglCanvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+                renderer.setClearColor(0x000000, 0);
+                renderer.setSize(w, h);
+                renderer.render(scene, camera);
+
+                // Composite: background + robot
+                const composite = document.createElement('canvas');
+                composite.width = w; composite.height = h;
+                const ctx = composite.getContext('2d');
+                ctx.drawImage(backgroundImg, 0, 0, w, h);
+                ctx.drawImage(webglCanvas, 0, 0);
+
+                renderer.dispose();
+                return composite.toDataURL('image/jpeg', 0.92);
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/gallery/unrendered`, { headers: { 'X-Monitor-Token': monitorToken } });
+                const data = await response.json();
+                if (data.status !== "ok") throw new Error("Failed fetching unrendered items");
+
+                const items = data.items;
+                if (!items || items.length === 0) {
+                    btn.textContent = "Up to date!";
+                    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+                    return;
+                }
+
+                const rendererInstance = window.preExecRobotRenderer;
+                await rendererInstance.loadRobot();
+                await rendererInstance.loadCalibration();
+
+                const viewNames = ['front', 'left', 'right', 'top', 'webcam_front', 'webcam_left'];
+
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    btn.textContent = `Prerendering... (${i+1}/${items.length})`;
+
+                    if (!item.view_urls || Object.keys(item.view_urls).length === 0) continue;
+
+                    const imagesPayload = {};
+
+                    for (const viewName of viewNames) {
+                        const dataUrl = item.view_urls[viewName];
+                        if (!dataUrl) continue;
+
+                        const cameraPose  = item.camera_poses[`${viewName}_pose`];
+                        const cameraModel = item.camera_models[viewName];
+                        if (!cameraPose || !cameraModel) {
+                            // No calibration for this view — store raw image as-is
+                            imagesPayload[viewName] = dataUrl;
+                            continue;
+                        }
+
+                        try {
+                            // Load background image
+                            const img = new Image();
+                            img.src = dataUrl;
+                            await new Promise(r => { img.complete ? r() : (img.onload = r, img.onerror = r); });
+
+                            imagesPayload[viewName] = renderOneView(
+                                rendererInstance.robot,
+                                item.action,
+                                img,
+                                cameraPose,
+                                cameraModel
+                            );
+                        } catch (e) {
+                            console.error(`Gallery render error for ${viewName} ep${item.episode_id} st${item.state_id}:`, e);
+                        }
+                    }
+
+                    if (Object.keys(imagesPayload).length > 0) {
+                        try {
+                            await fetch(`${API_BASE_URL}/api/gallery/save-cache`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-Monitor-Token': monitorToken },
+                                body: JSON.stringify({ episode_id: item.episode_id, state_id: item.state_id, images: imagesPayload })
+                            });
+                        } catch (e) {
+                            console.error(`Cache push failed for ep${item.episode_id} st${item.state_id}:`, e);
+                        }
+                    }
+                }
+
+                btn.textContent = "Done!";
+                setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+            } catch (err) {
+                console.error("Prerender failed:", err);
+                btn.textContent = "Error!";
+                setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+            }
+        };
+        // ================= Q&A OFFLINE RENDERING =================
+        window.submitInlineQnaAnswer = async function(qId) {
+            const answerEl = document.getElementById(`qna-reply-${qId}`);
+            const scopeEl = document.getElementById(`qna-scope-${qId}`);
+            
+            if (!answerEl) return;
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/qna/answer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Monitor-Token': monitorToken },
+                    body: JSON.stringify({
+                        q_id: qId,
+                        answer: answerEl.value,
+                        scope: scopeEl ? scopeEl.value : 'prompt_text',
+                        answered_by: 'admin'
+                    })
+                });
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    showToast("Answer saved successfully!");
+                    // Refresh events log slightly
+                    fetchAdminEventsLog();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Connection error');
+            }
+        };
     </script>
 </body>
 </html>

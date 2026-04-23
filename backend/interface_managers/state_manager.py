@@ -205,6 +205,32 @@ class StateManager:
             self.async_user_logger = AsyncUserLogger(log_dir)
             print(f"📊 Async logs will be written to: {log_dir}/async_user_submissions.jsonl")
 
+        # QnA storage
+        self.qna_db = []
+        self.qna_file_path = None
+        if self.dataset_manager and hasattr(self.dataset_manager, 'dataset') and self.dataset_manager.dataset:
+            try:
+                # Resolve the actual path
+                from py_os import Path # type: ignore
+                pass
+            except Exception:
+                pass
+            self.qna_file_path = Path(self.dataset_manager.dataset.root) / "meta" / "qna.json"
+            if self.qna_file_path.exists():
+                try:
+                    with open(self.qna_file_path, "r", encoding="utf-8") as f:
+                        self.qna_db = json.load(f)
+                except Exception as e:
+                    print(f"Failed to load QnA DB: {e}")
+            else:
+                self.qna_file_path.parent.mkdir(parents=True, exist_ok=True)
+                # write empty arr
+                try:
+                    with open(self.qna_file_path, "w", encoding="utf-8") as f:
+                        json.dump([], f)
+                except Exception:
+                    pass
+
         # Callbacks for external operations
         self._persist_views_callback = persist_views_callback
         self._persist_obs_callback = persist_obs_callback
@@ -4638,3 +4664,70 @@ class StateManager:
             "banned_ips": checkpoint.get("banned_ips", []),
         }
 
+    # =========================
+    # Q&A API
+    # =========================
+    def save_qna_db(self):
+        if self.qna_file_path:
+            try:
+                import json
+                import os
+                import tempfile
+                
+                # Use atomic save to prevent corruption on crash
+                temp_fd, temp_path = tempfile.mkstemp(dir=self.qna_file_path.parent, prefix="qna_tmp_", suffix=".json")
+                with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                    json.dump(self.qna_db, f, indent=2)
+                
+                os.replace(temp_path, self.qna_file_path)
+            except Exception as e:
+                print(f"Failed to save QnA: {e}")
+
+    def add_qna(self, ep: int, st: int, text_prompt: str, question: str, asked_by: str, scope: str = "prompt_text") -> dict:
+        import uuid
+        import time
+        q_id = str(uuid.uuid4())
+        ts = time.time()
+        
+        qna_obj = {
+            "id": q_id,
+            "timestamp": ts,
+            "episode_id": ep,
+            "state_id": st,
+            "text_prompt": text_prompt,
+            "question": question,
+            "answer": "",
+            "asked_by": asked_by,
+            "answered_by": "",
+            "scope": scope
+        }
+        self.qna_db.append(qna_obj)
+        self.save_qna_db()
+        return qna_obj
+
+    def answer_qna(self, q_id: str, answer: str, answered_by: str) -> dict:
+        for q in self.qna_db:
+            if q.get("id") == q_id:
+                q["answer"] = answer
+                q["answered_by"] = answered_by
+                self.save_qna_db()
+                return q
+        return None
+
+    def get_qna_list(self, text_prompt: str, episode_id: int, state_id: int) -> list:
+        results = []
+        for q in self.qna_db:
+            if q.get("scope") == "exact_state":
+                if q.get("episode_id") == episode_id and q.get("state_id") == state_id:
+                    results.append(q)
+            else:
+                # default is prompt_text
+                if q.get("text_prompt") == text_prompt:
+                    results.append(q)
+        # sort newest first
+        results.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return results
+
+    def get_unanswered_qna(self) -> list:
+        # Returns all unanswered QnA
+        return [q for q in self.qna_db if not q.get("answer")]

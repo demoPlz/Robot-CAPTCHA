@@ -1140,27 +1140,69 @@
     box-shadow:none;
   }
 
-/* Hints panel on the right side of the main UI */
+/* Sidebar panel on the right side of the main UI */
 .hints-panel {
   position: relative;
-  display: inline-block;
-  width: 300px;
+  display: inline-flex;
+  flex-direction: column;
+  width: 320px;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  padding: 16px;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   opacity: 0;
   transition: opacity 0.3s ease-in;
   vertical-align: top;
   margin-left: 20px;
   white-space: normal;
-  /* Position will be set dynamically by JS to maintain relative position to viewport */
+  overflow: hidden;
+  height: 100%;
 }
 
 .hints-panel.visible {
   opacity: 1;
+}
+
+.sidebar-tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f1f5f9;
+}
+
+.sidebar-tab-btn {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: 0.2s;
+}
+
+.sidebar-tab-btn:hover {
+  color: #334155;
+  background: #e2e8f0;
+}
+
+.sidebar-tab-btn.active {
+  color: #3b82f6;
+  border-bottom-color: #3b82f6;
+  background: #fff;
+}
+
+.sidebar-tab-content {
+  display: none;
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+}
+
+.sidebar-tab-content.active {
+  display: block;
 }
 
 .hints-panel h3 {
@@ -1185,6 +1227,62 @@
 .hints-panel li:last-child {
   margin-bottom: 0;
 }
+
+/* Gallery Styles */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.gallery-item {
+  position: relative;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #000;
+  aspect-ratio: 4/3;
+}
+.gallery-item:hover {
+  border-color: #3b82f6;
+}
+.gallery-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.gallery-badge {
+  position: absolute;
+  bottom: 4px; right: 4px;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.gallery-modal {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0,0,0,0.9);
+  display: none; flex-direction: column;
+}
+.gallery-modal-header {
+  padding: 16px; color: #fff; display: flex; justify-content: space-between;
+  border-bottom: 1px solid #333;
+}
+.gallery-full-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 20px; flex: 1; overflow-y: auto;
+}
+.gallery-full-grid img { width: 100%; border-radius: 4px; }
+
+/* Q&A Styles */
+.qna-feed { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.qna-card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; background: #fff; }
+.qna-card.scope-exact { border-left: 3px solid #f59e0b; }
+.qna-card.scope-prompt { border-left: 3px solid #3b82f6; }
+.qna-q { font-size: 13px; font-weight: 600; color: #1e293b; margin-bottom: 6px; }
+.qna-a { font-size: 13px; color: #475569; background: #f8fafc; padding: 8px; border-radius: 4px; border: 1px solid #f1f5f9; }
+.qna-unanswered { font-size: 11px; color: #b45309; font-style: italic; }
+.qna-meta { font-size: 10px; color: #94a3b8; margin-top: 6px; display: flex; justify-content: space-between; }
 
 /* Confirm bar: place Animate to the left of Confirm with a little space */
 #viewport .confirm-bar{
@@ -1916,6 +2014,11 @@ function applyStateHeader(state) {
       e.stopPropagation();
       showAcceptanceCriteria();
     };
+  }
+
+  // Trigger refreshing Q&A and Gallery tabs
+  if (window.refreshSidebarData) {
+    window.refreshSidebarData(state);
   }
 
   return currentInstructionId;
@@ -3442,15 +3545,55 @@ if (isMTurkMode) {
   hintsPanel.style.display = 'none'; // Hide in MTurk mode
 }
 hintsPanel.innerHTML = `
-  <h3>Hints</h3>
-  <ol>
-    <li>Use the UI to suggest the <b>goal position</b> for the robot to travel to according the specified <b>Task</b>.</li>
-    <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
-    <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and
-      adjust accordingly if necessary.</li>
-    <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
-    <li>Click the <b>ⓘ</b> button to view <b>detailed acceptance criteria</b>.</li>
-  </ol>
+  <div class="sidebar-tabs">
+    <button class="sidebar-tab-btn active" id="tab-btn-hints" onclick="switchSidebarTab('hints')">Hints</button>
+    <button class="sidebar-tab-btn" id="tab-btn-gallery" onclick="switchSidebarTab('gallery')">Gallery</button>
+    <button class="sidebar-tab-btn" id="tab-btn-qna" onclick="switchSidebarTab('qna')">Q&A</button>
+  </div>
+  
+  <div class="sidebar-tab-content active" id="tab-content-hints">
+    <h3>Hints</h3>
+    <ol>
+      <li>Use the UI to suggest the <b>goal position</b> for the robot to travel to according the specified <b>Task</b>.</li>
+      <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
+      <li>After specifying a goal and before submitting, <b>use the "Simulate" button to check if your suggestion causes unwanted collisions</b>, and adjust accordingly if necessary.</li>
+      <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
+      <li>Click the <b>ⓘ</b> button to view <b>detailed acceptance criteria</b>.</li>
+    </ol>
+  </div>
+  
+  <div class="sidebar-tab-content" id="tab-content-gallery">
+    <h3>Reference Gallery</h3>
+    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Example Valid Submissions</div>
+    <div id="gallery-grid" class="gallery-grid">
+      <div style="grid-column: 1 / -1; color: #94a3b8; font-size: 13px; text-align: center; padding: 20px;">Loading gallery...</div>
+    </div>
+  </div>
+  
+  <div class="sidebar-tab-content" id="tab-content-qna">
+    <h3>Task Q&A</h3>
+    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Ask questions or clear up ambiguities about this task. Admins will reply here.</div>
+    
+    <div style="background:#fff; border:1px solid #e2e8f0; border-radius:6px; padding:10px; margin-bottom:12px;">
+      <textarea id="qna-new-input" rows="3" placeholder="Type your question..." style="width:100%; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:4px; padding:8px; font-family:inherit; font-size:13px; resize:vertical; margin-bottom:8px;"></textarea>
+      <div style="display:flex; justify-content:flex-end;">
+        <button onclick="postQnaQuestion()" style="background:#3b82f6; color:#fff; border:none; border-radius:4px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer;">Ask Question</button>
+      </div>
+    </div>
+    
+    <div id="qna-feed" class="qna-feed">
+      <div style="color: #94a3b8; font-size: 13px; text-align: center; padding: 20px;">Loading Q&A...</div>
+    </div>
+  </div>
+
+  <!-- Fullscreen Gallery Modal -->
+  <div id="gallery-modal" class="gallery-modal">
+    <div class="gallery-modal-header">
+      <h3 style="margin:0; font-size:16px;">Expert Action Views</h3>
+      <button onclick="document.getElementById('gallery-modal').style.display='none'" style="background:none; border:none; color:#94a3b8; font-size:20px; cursor:pointer;">&times;</button>
+    </div>
+    <div class="gallery-full-grid" id="gallery-modal-grid"></div>
+  </div>
 `;
 document.getElementById('page-wrapper').appendChild(hintsPanel);
 
@@ -8339,6 +8482,162 @@ window.addEventListener('pagehide', () => {
   if (CanvasRecording.isActive()) CanvasRecording.stop(); 
 });
 
+// ================= SIDEBAR TABS & GALLERY LOGIC =================
+window.switchSidebarTab = function(tabName) {
+  document.querySelectorAll('.sidebar-tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.sidebar-tab-content').forEach(c => c.classList.remove('active'));
+  
+  const btn = document.getElementById(`tab-btn-${tabName}`);
+  const content = document.getElementById(`tab-content-${tabName}`);
+  if (btn) btn.classList.add('active');
+  if (content) content.classList.add('active');
+};
+
+let lastGalleryPrompt = null;
+let lastQnaPrompt = null;
+
+window.refreshSidebarData = async function(state) {
+  if (!state) return;
+  const promptText = state.prompt || "";
+  if (!promptText) return;
+
+  const ep = state.episode_id;
+  const st = state.state_id;
+
+  // Refresh Gallery (Cached heavily)
+  if (promptText !== lastGalleryPrompt) {
+    lastGalleryPrompt = promptText;
+    const grid = document.getElementById('gallery-grid');
+    if (grid) {
+      grid.innerHTML = '<div style="grid-column:1/-1; color:#94a3b8; text-align:center; padding:20px;">Fetching cache...</div>';
+      try {
+        const resp = await fetch(`${API_BASE_URL}/api/gallery/same-prompt?text_prompt=${encodeURIComponent(promptText)}`);
+        const data = await resp.json();
+        if (data.status === 'ok' && data.gallery) {
+           grid.innerHTML = '';
+           if (data.gallery.length === 0) {
+              grid.innerHTML = '<div style="grid-column:1/-1; color:#94a3b8; text-align:center; padding:20px; font-size:12px;">No pre-rendered expert tasks found yet.</div>';
+           } else {
+              data.gallery.forEach(item => {
+                 const primaryCam = item.view_paths['front'] || item.view_paths['webcam_front'] || Object.values(item.view_paths)[0];
+                 // primaryCam might be relative, absolutize it!
+                 const absCamUrl = primaryCam.startsWith('http') ? primaryCam : `${API_BASE_URL}${primaryCam}`;
+                 const div = document.createElement('div');
+                 div.className = 'gallery-item';
+                 div.innerHTML = `
+                    <img src="${absCamUrl}" class="gallery-thumb" loading="lazy">
+                    <div class="gallery-badge">Episode ${item.episode_id}</div>
+                 `;
+                 
+                 // Deep clone the item and ensure view_paths are fully absolute for the modal!
+                 const absItem = JSON.parse(JSON.stringify(item));
+                 for (let k in absItem.view_paths) {
+                     absItem.view_paths[k] = absItem.view_paths[k].startsWith('http') ? absItem.view_paths[k] : `${API_BASE_URL}${absItem.view_paths[k]}`;
+                 }
+                 div.onclick = () => window.openGalleryModal(absItem);
+                 grid.appendChild(div);
+              });
+           }
+        }
+      } catch (e) { console.error('Gallery err:', e); }
+    }
+  }
+
+  // Refresh Q&A
+  if (true) { // always refresh Q&A to check for new answers
+    lastQnaPrompt = promptText;
+    const feed = document.getElementById('qna-feed');
+    if (feed) {
+      try {
+        const resp = await fetch(`${API_BASE_URL}/api/qna/list?episode_id=${ep}&state_id=${st}&text_prompt=${encodeURIComponent(promptText)}`);
+        const data = await resp.json();
+        if (data.status === 'ok' && data.qna_list) {
+           feed.innerHTML = '';
+           if (data.qna_list.length === 0) {
+              feed.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">No Q&A recorded yet.</div>';
+           } else {
+              data.qna_list.forEach(q => {
+                 const isAnswered = !!q.answer;
+                 const scopeClass = q.scope === 'exact_state' ? 'scope-exact' : 'scope-prompt';
+                 const scopeLabel = q.scope === 'exact_state' ? 'STATE-SPECIFIC' : 'PROMPT-WIDE';
+                 
+                 let aHtml = '';
+                 if (isAnswered) {
+                    aHtml = `<div class="qna-a"><b>Admin (${q.answered_by}):</b> ${q.answer}</div>`;
+                 } else {
+                    aHtml = `<div class="qna-unanswered">Awaiting admin reply...</div>`;
+                 }
+
+                 feed.innerHTML += `
+                    <div class="qna-card ${scopeClass}">
+                       <div class="qna-q">Q: ${q.question}</div>
+                       ${aHtml}
+                    </div>
+                 `;
+              });
+           }
+        }
+      } catch (e) { console.error('Qna err:', e); }
+    }
+  }
+};
+
+window.openGalleryModal = function(item) {
+  const grid = document.getElementById('gallery-modal-grid');
+  grid.innerHTML = '';
+  const order = ['front', 'left', 'right', 'top', 'webcam_front', 'webcam_left'];
+  order.forEach(cam => {
+    if (item.view_paths[cam]) {
+       const img = document.createElement('img');
+       img.src = item.view_paths[cam];
+       grid.appendChild(img);
+    }
+  });
+  document.getElementById('gallery-modal').style.display = 'flex';
+};
+
+window.postQnaQuestion = async function() {
+  const input = document.getElementById('qna-new-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  const st = window.__INIT_STATE;
+  if (!st || typeof st.episode_id === 'undefined') {
+     alert("Cannot post Q&A: state not fully loaded!"); return;
+  }
+
+  // Get user info if available
+  let userStr = "worker";
+  const userStrData = localStorage.getItem('crowd_ui_user_identity');
+  if (userStrData) {
+     try { const j = JSON.parse(userStrData); if (j.name) userStr = j.name; } catch(e){}
+  }
+
+  try {
+     const resp = await fetch(`${API_BASE_URL}/api/qna/post`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            episode_id: st.episode_id,
+            state_id: st.state_id,
+            text_prompt: st.prompt || "",
+            question: text,
+            asked_by: userStr
+        })
+     });
+     const data = await resp.json();
+     if (data.status === 'ok') {
+        input.value = '';
+        window.refreshSidebarData(window.__INIT_STATE); // reload list
+     } else {
+        alert("Failed to ask: " + data.message);
+     }
+  } catch (e) {
+     console.error(e);
+     alert("Connection error posting Q&A");
+  }
+};
+
 </script>
 
 <div id="recPreflight" aria-hidden="true">
@@ -8369,5 +8668,5 @@ window.addEventListener('pagehide', () => {
     <button id="userIdentitySubmit" class="user-identity-submit">Continue</button>
   </div>
 </div>
-
+</div>
 </body></html>
