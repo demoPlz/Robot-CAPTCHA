@@ -1277,8 +1277,9 @@
 /* Q&A Styles */
 .qna-feed { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
 .qna-card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; background: #fff; }
-.qna-card.scope-exact { border-left: 3px solid #f59e0b; }
+.qna-card.scope-exact  { border-left: 3px solid #f59e0b; }
 .qna-card.scope-prompt { border-left: 3px solid #3b82f6; }
+.qna-card.scope-all    { border-left: 3px solid #10b981; }
 .qna-q { font-size: 13px; font-weight: 600; color: #1e293b; margin-bottom: 6px; }
 .qna-a { font-size: 13px; color: #475569; background: #f8fafc; padding: 8px; border-radius: 4px; border: 1px solid #f1f5f9; }
 .qna-unanswered { font-size: 11px; color: #b45309; font-style: italic; }
@@ -3572,7 +3573,7 @@ hintsPanel.innerHTML = `
   
   <div class="sidebar-tab-content" id="tab-content-qna">
     <h3>Task Q&A</h3>
-    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Ask questions about this task. Admins will reply here.</div>
+    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Ask any questions. Admins will reply here.</div>
     
     <div style="background:#fff; border:1px solid #e2e8f0; border-radius:6px; padding:10px; margin-bottom:12px;">
       <textarea id="qna-new-input" rows="3" placeholder="Type your question..." style="width:100%; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:4px; padding:8px; font-family:inherit; font-size:13px; resize:vertical; margin-bottom:8px;"></textarea>
@@ -8575,8 +8576,12 @@ window.refreshSidebarData = async function(state) {
            } else {
               data.qna_list.forEach(q => {
                  const isAnswered = !!q.answer;
-                 const scopeClass = q.scope === 'exact_state' ? 'scope-exact' : 'scope-prompt';
-                 const scopeLabel = q.scope === 'exact_state' ? 'STATE-SPECIFIC' : 'PROMPT-WIDE';
+                 const scopeClass = q.scope === 'exact_state' ? 'scope-exact'
+                                  : q.scope === 'all_states'  ? 'scope-all'
+                                  : 'scope-prompt';
+                 const scopeLabel = q.scope === 'exact_state' ? 'STATE-SPECIFIC'
+                                  : q.scope === 'all_states'  ? 'GLOBAL'
+                                  : 'PROMPT-WIDE';
                  
                  let aHtml = '';
                  if (isAnswered) {

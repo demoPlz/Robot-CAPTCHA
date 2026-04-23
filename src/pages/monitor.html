@@ -3047,6 +3047,7 @@
                                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                                 <select id="qna-scope-${q.id}" class="select-el" style="max-width:180px; font-size:11px; padding:4px;">
                                                     <option value="prompt_text" ${q.scope === 'prompt_text' ? 'selected' : ''}>Global (Text Prompt)</option>
+                                                    <option value="all_states" ${q.scope === 'all_states' ? 'selected' : ''}>Global (All States)</option>
                                                     <option value="exact_state" ${q.scope === 'exact_state' ? 'selected' : ''}>Only this State</option>
                                                 </select>
                                                 <button class="btn btn-primary" onclick="window.submitInlineQnaAnswer('${q.id}')" style="padding:4px 10px; font-size:11px; background:#3b82f6; border:none;">Save Reply</button>

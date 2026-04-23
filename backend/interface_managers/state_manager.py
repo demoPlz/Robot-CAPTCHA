@@ -4717,11 +4717,15 @@ class StateManager:
     def get_qna_list(self, text_prompt: str, episode_id: int, state_id: int) -> list:
         results = []
         for q in self.qna_db:
-            if q.get("scope") == "exact_state":
+            scope = q.get("scope", "prompt_text")
+            if scope == "exact_state":
                 if q.get("episode_id") == episode_id and q.get("state_id") == state_id:
                     results.append(q)
+            elif scope == "all_states":
+                # Shown to every worker regardless of prompt or state
+                results.append(q)
             else:
-                # default is prompt_text
+                # default: prompt_text
                 if q.get("text_prompt") == text_prompt:
                     results.append(q)
         # sort newest first
