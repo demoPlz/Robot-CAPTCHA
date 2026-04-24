@@ -28,11 +28,23 @@ if [ -z "$1" ]; then
 fi
 
 CHECKPOINT_PATH="$1"
+shift
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then
     echo "❌ Error: Checkpoint file not found: $CHECKPOINT_PATH"
     exit 1
 fi
+
+# Parse bash-level flags
+ARGS=()
+for arg in "$@"; do
+  if [ "$arg" == "--netlify-backup" ]; then
+    export NETLIFY_SITE_ID="c5cc0ab4-1d06-483a-b2b7-c2d744477b16"
+    echo "🌐 Using alternate Netlify site: robot-captcha-backup.netlify.app"
+  else
+    ARGS+=("$arg")
+  fi
+done
 
 # Auto-cleanup zombie processes from previous runs
 echo "🧹 Running cleanup..."
@@ -61,4 +73,4 @@ conda run -n csui --no-capture-output python backend/collect_data.py \
   --control.num_episodes=1 \
   --control.push_to_hub=false \
   --show-demo-videos \
-  "${@:2}"
+  "${ARGS[@]}"

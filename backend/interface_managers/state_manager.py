@@ -3965,52 +3965,75 @@ class StateManager:
                     obs_copy_stats["skipped"] += 1
             return result
         
+        def snapshot_pool(pool):
+            """Quickly snapshot a state pool so we can release the lock during slow serialization."""
+            snapshot = {}
+            for ep, states in pool.items():
+                snapshot[ep] = {}
+                for sid, s in states.items():
+                    scopy = s.copy()
+                    # Copy mutable collections that teleop thread might touch while we serialize
+                    for k in ["actions", "execution_history", "view_paths", "sim_config", "prompts"]:
+                        if k in scopy and isinstance(scopy[k], (list, dict, set)):
+                            scopy[k] = scopy[k].copy()
+                    snapshot[ep][str(sid)] = scopy
+            return snapshot
+        
         with self._phase1_checkpoint_lock:
+            # 1. Very quickly snapshot current state (< 1ms)
             with self.state_lock:
-                checkpoint = {
-                    "version": 1,
-                    "saved_at": time.time(),
-                    "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
-                    # Dataset config for recreation in Phase 2
-                    "dataset_config": dataset_config,
-                    # State data (pass checkpoint_dir to copy obs files)
-                    "pending_states_by_episode": {
-                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                        for ep, states in self.pending_states_by_episode.items()
-                    },
-                    "completed_states_by_episode": {
-                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                        for ep, states in self.completed_states_by_episode.items()
-                    },
-                    "completed_states_buffer_by_episode": {
-                        ep: {str(sid): serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
-                        for ep, states in self.completed_states_buffer_by_episode.items()
-                    },
-                    # Episode metadata
-                    "episode_start_times": dict(self.episode_start_times),
-                    "episode_start_times_iso": dict(self.episode_start_times_iso),
-                    "episodes_marked_as_end": list(self.episodes_marked_as_end),
-                    "next_state_id": self.next_state_id,
-                    # Config values needed for Phase 2
-                    "config": {
-                        "required_responses_per_state": self.required_responses_per_state,
-                        "required_responses_per_critical_state": self.required_responses_per_critical_state,
-                        "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
-                        "asynchronous_mode": self.asynchronous_mode,
-                        "async_admin_responses_per_state": self.async_admin_responses_per_state,
-                        "task_text": self.task_text,
-                    },
+                snapshot_pending = snapshot_pool(self.pending_states_by_episode)
+                snapshot_completed = snapshot_pool(self.completed_states_by_episode)
+                snapshot_completed_buf = snapshot_pool(self.completed_states_buffer_by_episode)
+                
+                ep_start = dict(self.episode_start_times)
+                ep_start_iso = dict(self.episode_start_times_iso)
+                ep_marked = list(self.episodes_marked_as_end)
+                next_sid = self.next_state_id
+                
+                config_snapshot = {
+                    "required_responses_per_state": self.required_responses_per_state,
+                    "required_responses_per_critical_state": self.required_responses_per_critical_state,
+                    "required_approvals_per_critical_state": self.required_approvals_per_critical_state,
+                    "asynchronous_mode": self.asynchronous_mode,
+                    "async_admin_responses_per_state": self.async_admin_responses_per_state,
+                    "task_text": self.task_text,
                 }
+            
+            # 2. Safely perform slow serialization (file copies, JSON dumps) OUTSIDE the lock
+            checkpoint = {
+                "version": 1,
+                "saved_at": time.time(),
+                "saved_at_iso": __import__("datetime").datetime.now().isoformat(),
+                "dataset_config": dataset_config,
+                "pending_states_by_episode": {
+                    ep: {sid: serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in snapshot_pending.items()
+                },
+                "completed_states_by_episode": {
+                    ep: {sid: serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in snapshot_completed.items()
+                },
+                "completed_states_buffer_by_episode": {
+                    ep: {sid: serialize_with_tracking(s, checkpoint_dir) for sid, s in states.items()}
+                    for ep, states in snapshot_completed_buf.items()
+                },
+                "episode_start_times": ep_start,
+                "episode_start_times_iso": ep_start_iso,
+                "episodes_marked_as_end": ep_marked,
+                "next_state_id": next_sid,
+                "config": config_snapshot,
+            }
 
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-                # Atomic write: write to a unique temp file, then rename (os.replace is atomic on Linux)
-                import os
-                import uuid
-                tmp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-                with open(tmp_path, "w") as f:
-                    json.dump(checkpoint, f, indent=2)
-                os.replace(tmp_path, checkpoint_path)
+            # Atomic write: write to a unique temp file, then rename (os.replace is atomic on Linux)
+            import os
+            import uuid
+            tmp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            with open(tmp_path, "w") as f:
+                json.dump(checkpoint, f, indent=2)
+            os.replace(tmp_path, checkpoint_path)
         
         # Print copy stats
         print(f"   📊 Obs copy stats: {obs_copy_stats['success']} success, {obs_copy_stats['failed']} failed, {obs_copy_stats['skipped']} skipped")

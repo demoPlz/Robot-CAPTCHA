@@ -453,13 +453,13 @@ def control_robot(cfg: ControlPipelineConfig):
     # --- Attempt 1: cloudflared quick tunnel ---
     print(f"🚇 Starting cloudflared tunnel for port {port}...")
     subprocess.Popen(
-        ["pkill", "-f", "cloudflared.*tunnel.*url"],
+        ["pkill", "-f", f"cloudflared.*localhost:{port}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     ).wait()
     time.sleep(0.5)
     
-    tunnel_log = Path("/tmp/cloudflared.log")
+    tunnel_log = Path(f"/tmp/cloudflared_{port}.log")
     tunnel_log.unlink(missing_ok=True)
     
     tunnel_process = subprocess.Popen(
@@ -487,15 +487,15 @@ def control_robot(cfg: ControlPipelineConfig):
     # --- Attempt 2: ngrok fallback ---
     if not tunnel_url:
         print("🔄 Falling back to ngrok...")
-        # Kill any existing ngrok
+        # Kill any existing ngrok running on this port specifically (ngrok creates HTTP tunnels)
         subprocess.Popen(
-            ["pkill", "-f", "ngrok"],
+            ["pkill", "-f", f"ngrok.*{port}"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         ).wait()
         time.sleep(0.5)
         
-        ngrok_log = Path("/tmp/ngrok.log")
+        ngrok_log = Path(f"/tmp/ngrok_{port}.log")
         ngrok_log.unlink(missing_ok=True)
         
         tunnel_process = subprocess.Popen(

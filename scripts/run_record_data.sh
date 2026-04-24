@@ -18,6 +18,10 @@ echo "📌 Auto-detected Task Name: ${TASK_NAME}"
 echo "📝 Auto-detected Task Text: ${TASK_TEXT}"
 echo ""
 
+# Phase 1 defaults to the backup site
+export NETLIFY_SITE_ID="c5cc0ab4-1d06-483a-b2b7-c2d744477b16"
+echo "🌐 Auto-routing Phase 1 deployment to backup Netlify site (robot-captcha-backup)"
+
 python backend/collect_data.py \
   --robot.type=trossen_ai_single_arm \
   --robot.use_depth_main_camera=true \
