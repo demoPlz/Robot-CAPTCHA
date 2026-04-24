@@ -41,14 +41,15 @@ for arg in "$@"; do
   if [ "$arg" == "--netlify-backup" ]; then
     export NETLIFY_SITE_ID="c5cc0ab4-1d06-483a-b2b7-c2d744477b16"
     echo "🌐 Using alternate Netlify site: robot-captcha-backup.netlify.app"
+    ARGS+=("--no-sim")
   else
     ARGS+=("$arg")
   fi
 done
 
-# Auto-cleanup zombie processes from previous runs
-echo "🧹 Running cleanup..."
-./scripts/cleanup_zombies.sh
+# Auto-cleanup removed to allow multiple endpoints to run concurrently
+# Disable pose workers for Phase 2 to prevent IPC clashes with Phase 1
+export SKIP_POSE_WORKERS=1
 
 echo ""
 echo "🚀 Starting Phase 2 (async user labeling only)..."

@@ -1,9 +1,7 @@
 #!/bin/bash
 # Quick launch script for record data collection
 
-# Auto-cleanup zombie processes from previous runs
-echo "🧹 Running cleanup..."
-./scripts/cleanup_zombies.sh
+# Auto-cleanup removed to allow multiple endpoints to run concurrently
 
 echo ""
 echo "🚀 Starting data collection..."

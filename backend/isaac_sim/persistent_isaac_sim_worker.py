@@ -342,6 +342,17 @@ def main():
     global simulation_app
     simulation_app = SimulationApp({
         "headless": True,
+        
+        # Omniverse multi-instance process isolation (prevents SIGTERM interference)
+        "/persistent/appDataDir": os.path.abspath(f"{args.output_dir}/ov_data"),
+        "/exts/omni.services.transport.server.http/port": 10000 + (os.getpid() % 10000),
+        "/app/livestream/webrtc/port": 10000 + (os.getpid() % 10000) + 1,
+        
+        # Disable singletons that use hardcoded sockets
+        "/app/fastCache/enabled": False,
+        "/telemetry/enabled": False,
+        "/app/crashreporter/enabled": False,
+        
         # Carb settings for multi-GPU timeout handling
         "/rtx/hydra/device/timeout": 120000,  # Increase GPU timeout to 120s (default is ~60s)
         "/rtx/hydra/mdl/searchPaths/templates": "",

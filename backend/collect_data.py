@@ -300,6 +300,7 @@ def record(robot: Robot, crowd_interface: CrowdInterface, cfg: RecordControlConf
                 except Exception as e:
                     print(f"⚠️  Failed to auto-checkpoint after episode {ep_idx}: {e}")
             
+            print(f"🔄 Initiating background checkpoint save for episode {current_episode_index}...")
             t = Thread(target=_bg_checkpoint, args=(current_episode_index,), daemon=True, name=f"checkpoint-{current_episode_index}")
             t.start()
 
@@ -559,6 +560,9 @@ def control_robot(cfg: ControlPipelineConfig):
             print("⚠️  Netlify deployment failed (you can deploy manually with: ./scripts/deploy_with_tunnel.sh)")
             if deploy_result.stderr:
                 print(f"   Error: {deploy_result.stderr[:200]}")
+        
+        # Always print the local development URL for easy access
+        print(f"🌐 Local Development URL: http://localhost:5173/pages/monitor.html?port={port}")
     else:
         print("⚠️  Could not detect tunnel URL from cloudflared or ngrok")
     print()

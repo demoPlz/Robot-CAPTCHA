@@ -291,7 +291,8 @@ class CrowdInterfaceConfig:
         )
 
         # Simulation
-        parser.add_argument("--use-sim", action="store_true", help="Enable Isaac Sim integration")
+        parser.add_argument("--use-sim", action="store_true", help="Enable Isaac Sim integration (default)")
+        parser.add_argument("--no-sim", action="store_true", help="Disable Isaac Sim integration")
         parser.add_argument("--use-gpu-physics", action="store_true", help="Use GPU physics in Isaac Sim (faster but uses more VRAM)")
         parser.add_argument(
             "--max-animation-users",
@@ -461,6 +462,8 @@ class CrowdInterfaceConfig:
             config.clear_ui_demo_videos_dir = True
         if args.use_sim:
             config.use_sim = True
+        if args.no_sim:
+            config.use_sim = False
         if args.use_gpu_physics:
             config.use_gpu_physics = True
         if args.max_animation_users is not None:

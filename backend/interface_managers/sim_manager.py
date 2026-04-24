@@ -122,7 +122,7 @@ class SimManager:
 
             self.isaac_manager = PersistentWorkerManager(
                 isaac_sim_path=isaac_sim_path,
-                output_base_dir=str(self.obs_cache_root / "persistent_isaac"),
+                output_base_dir=str(self.obs_cache_root / f"persistent_isaac_{os.getpid()}"),
                 max_animation_users=self.max_animation_users,
             )
 

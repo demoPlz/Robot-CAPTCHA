@@ -108,7 +108,7 @@ class PoseEstimationManager:
             self._generate_random_fixed_poses()
         else:
             # Disk-backed job queue shared with any6d env workers
-            self.pose_jobs_root = (obs_cache_root / "pose_jobs").resolve()
+            self.pose_jobs_root = (obs_cache_root / f"pose_jobs_{os.getpid()}").resolve()
             self.pose_inbox = self.pose_jobs_root / "inbox"
             self.pose_outbox = self.pose_jobs_root / "outbox"
             self.pose_tmp = self.pose_jobs_root / "tmp"
@@ -227,7 +227,7 @@ class PoseEstimationManager:
             return
 
         obs_cache_root = Path(obs_cache_root).resolve()
-        self.pose_jobs_root = obs_cache_root / "pose_jobs"
+        self.pose_jobs_root = obs_cache_root / f"pose_jobs_{os.getpid()}"
         self.pose_inbox = self.pose_jobs_root / "inbox"
         self.pose_outbox = self.pose_jobs_root / "outbox"
         self.pose_tmp = self.pose_jobs_root / "tmp"

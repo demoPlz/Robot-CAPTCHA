@@ -1341,9 +1341,8 @@ class CrowdInterface:
             except Exception as e:
                 print(f"⚠️  Error shutting down MTurk manager: {e}")
         
-        # Kill any orphaned workers that might have been missed
-        print("Scanning for orphaned worker processes...")
-        self._kill_orphaned_workers()
+        # REMOVED: Scanning for orphaned worker processes...
+        # self._kill_orphaned_workers() - This was aggressively killing active workers of other concurrent phases!
         
         self._shutdown_complete = True
         print("✅ CrowdInterface shutdown complete\\n")

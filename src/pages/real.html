@@ -1412,7 +1412,15 @@ import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
 // Simple API Configuration - use Flask backend directly
 async function getCurrentCloudflaredUrl() {
   try {
-    // For local development, read port from backend-config.json (Flask writes it)
+    // 1. Check if port is explicitly provided via URL param (allows multiple concurrent dev instances)
+    const urlParams = new URLSearchParams(window.location.search);
+    const portParam = urlParams.get('port');
+    if (portParam) {
+      console.log('[DEV] Using URL parameter port:', portParam);
+      return `http://127.0.0.1:${portParam}`;
+    }
+
+    // 2. For local development, read port from backend-config.json (Flask writes it)
     if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
       try {
         const response = await fetch('/backend-config.json');

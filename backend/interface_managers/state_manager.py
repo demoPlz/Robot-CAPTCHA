@@ -3832,14 +3832,18 @@ class StateManager:
                     try:
                         src_size = src_path.stat().st_size
                         
-                        # Copy with explicit binary read/write
-                        with open(src_path, "rb") as sf:
-                            data = sf.read()
-                        with open(dst_path, "wb") as df:
-                            df.write(data)
-                            df.flush()
-                            import os
-                            os.fsync(df.fileno())
+                        # Optimization: Skip expensive copy if exact file is already in checkpoint
+                        if dst_path.exists() and dst_path.stat().st_size == src_size:
+                            pass # File exists and size matches, no need to recopy
+                        else:
+                            # Copy with explicit binary read/write
+                            with open(src_path, "rb") as sf:
+                                data = sf.read()
+                            with open(dst_path, "wb") as df:
+                                df.write(data)
+                                df.flush()
+                                import os
+                                os.fsync(df.fileno())
                         
                         # Verify destination exists and has same size
                         if dst_path.exists():

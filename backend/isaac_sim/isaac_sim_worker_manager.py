@@ -103,6 +103,18 @@ class PersistentWorkerManager:
             ]
             clean_env["PATH"] = ":".join(clean_path_parts)
 
+        # ---------------------------------------------------------
+        # CRITICAL: Strict Omniverse/Carbonite process isolation
+        # ---------------------------------------------------------
+        # If we do not isolate these, the background C++ Carb subsystem 
+        # will detect subsequent instances and gracefully SIGTERM them.
+        ov_sandbox = os.path.join(self.output_base_dir, "ov_sandbox")
+        os.makedirs(ov_sandbox, exist_ok=True)
+        clean_env["OMNI_USER_CONFIG"] = os.path.join(ov_sandbox, "config")
+        clean_env["OMNI_DATA_PATH"] = os.path.join(ov_sandbox, "data")
+        clean_env["OMNI_DOCUMENTS"] = os.path.join(ov_sandbox, "documents")
+        clean_env["CARB_APP_PATH"] = os.path.join(ov_sandbox, "carb")
+
         print(f"Starting Isaac Sim worker with clean environment...")
         print(f"Command: {' '.join(cmd)}")
 
