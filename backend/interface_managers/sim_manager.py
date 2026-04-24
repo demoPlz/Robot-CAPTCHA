@@ -11,6 +11,7 @@ Handles:
 import base64
 import os
 import queue
+import shutil
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -297,6 +298,36 @@ class SimManager:
             print(f"⚠️ Isaac Sim capture failed: {e}")
             return False
 
+    def get_inherited_views(self, episode_id: str, state_id: int, state_info: dict, inherit_data: dict) -> bool:
+        """Fast path: copy inherited sim renders and capture fresh webcam views."""
+        try:
+            src_state_id = inherit_data.get("state_id")
+            src_view_paths = inherit_data.get("view_paths", {})
+            src_sim_config = inherit_data.get("sim_config", {})
+            
+            # 1. Copy Isaac Sim renders to this state's path
+            copied_sim_views = self.copy_inherited_sim_views(
+                src_view_paths, episode_id, state_id
+            )
+            
+            # 2. Capture fresh physical webcam snapshots
+            if self.webcam_manager:
+                webcam_views = self._capture_and_persist_webcam_views(episode_id, state_id)
+                copied_sim_views.update(webcam_views)
+            
+            if copied_sim_views:
+                state_info["view_paths"] = copied_sim_views
+                if src_sim_config:
+                    state_info["sim_config"] = dict(src_sim_config)
+                print(f"✓ Inherited sim UI from state {src_state_id} and captured fresh webcam for state {state_id}")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ Failed to inherit sim views: {e}")
+            return False
+
     # =========================
     # Animation Management
     # =========================
@@ -491,6 +522,7 @@ class SimManager:
     # =========================
     # Webcam View Capture
     # =========================
+
 
     def _capture_and_persist_webcam_views(self, episode_id: str, state_id: int) -> dict[str, str]:
         """Capture webcam views (left and front) and persist them to disk.

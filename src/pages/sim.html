@@ -4772,7 +4772,7 @@ loader.load(
         state_id: state.state_id,
         video_prompt: state?.video_prompt,
         hasFlexVideo: hasFlexVideo,
-        rawExampleUrl: rawExampleUrl
+        rawExampleUrl: exampleUrls[0] ?? null
       });
       // Ensure full-width prompt text:
       mount.classList.remove('has-example');

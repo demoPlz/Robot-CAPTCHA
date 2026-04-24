@@ -722,8 +722,54 @@ class StateManager:
             info = ep[latest_state_id]
 
             if self.use_sim and poses_ready:
-                info["sim_ready"] = False  # Mark as not ready initially
-                self.sim_manager.enqueue_sim_capture(latest_episode_id, latest_state_id, info)
+                if info.get("skip_pose_estimation", False):
+                    # Find previous sim data
+                    all_pools = [
+                        self.pending_states_by_episode.get(latest_episode_id, {}),
+                        self.completed_states_buffer_by_episode.get(latest_episode_id, {}),
+                        self.completed_states_by_episode.get(latest_episode_id, {}),
+                    ]
+                    prev_sim_state = None
+                    for pool in all_pools:
+                        for sid, sinfo in pool.items():
+                            if sid < latest_state_id and sinfo.get("critical") and sinfo.get("sim_ready"):
+                                if prev_sim_state is None or sid > prev_sim_state[0]:
+                                    prev_sim_state = (sid, sinfo)
+
+                    if prev_sim_state is not None:
+                        import shutil
+                        from pathlib import Path
+                        
+                        src_sid, src_info = prev_sim_state
+                        dst_dir = self.sim_manager.obs_cache_root / "persistent_isaac" / f"ep_{latest_episode_id}_state_{latest_state_id}"
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+
+                        ISAAC_SIM_KEYS = {"front", "left", "right", "top"}
+                        new_views = dict(info.get("view_paths", {}))
+                        
+                        # 1. Copy previous sim views exactly as if produced for this state
+                        for k, v in src_info.get("view_paths", {}).items():
+                            if k in ISAAC_SIM_KEYS and Path(v).exists():
+                                dst_path = dst_dir / Path(v).name
+                                shutil.copy2(v, dst_path)
+                                new_views[k] = str(dst_path)
+
+                        # 2. Capture real-world webcam views fresh
+                        webcam_views = self.sim_manager._capture_and_persist_webcam_views(latest_episode_id, latest_state_id)
+                        new_views.update(webcam_views)
+
+                        info["view_paths"] = new_views
+                        if "sim_config" in src_info:
+                            info["sim_config"] = dict(src_info["sim_config"])
+                        info["sim_ready"] = True
+                        print(f"⏭️  Skipping sim capture: duplicated sim views from state {src_sid}")
+                    else:
+                        print(f"⚠️  No previous sim-ready state found; falling back to full sim capture for state {latest_state_id}")
+                        info["sim_ready"] = False
+                        self.sim_manager.enqueue_sim_capture(latest_episode_id, latest_state_id, info)
+                else:
+                    info["sim_ready"] = False  # Mark as not ready initially
+                    self.sim_manager.enqueue_sim_capture(latest_episode_id, latest_state_id, info)
             else:
                 # Not using sim, or poses not ready within timeout
                 info["sim_ready"] = not self.use_sim
@@ -731,6 +777,7 @@ class StateManager:
                     print(
                         f"⏭️  Skipping/deferring sim capture: poses not ready for ep={latest_episode_id}, state={latest_state_id}"
                     )
+
 
     def get_latest_state(self, user_email: str = None, user_name: str = None, page_load: bool = False) -> dict:
         """Get a pending state from current serving episode. 
