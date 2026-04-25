@@ -40,6 +40,7 @@ ARGS=()
 for arg in "$@"; do
   if [ "$arg" == "--netlify-backup" ]; then
     export NETLIFY_SITE_ID="c5cc0ab4-1d06-483a-b2b7-c2d744477b16"
+    unset ISAAC_SIM_PATH  # Prevent Isaac Sim worker from starting on backup
     echo "🌐 Using alternate Netlify site: robot-captcha-backup.netlify.app"
     ARGS+=("--no-sim")
   else

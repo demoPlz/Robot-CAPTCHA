@@ -430,7 +430,15 @@ def control_robot(cfg: ControlPipelineConfig):
         }, f, indent=2)
     print(f"📝 Updated {config_file} with port {port}")
     
-    crowd_interface = CrowdInterface(**_CROWD_CONFIG.to_crowd_interface_kwargs())
+    crowd_kwargs = _CROWD_CONFIG.to_crowd_interface_kwargs()
+    # Phase 2 serves pre-rendered sim views from Phase 1, so we always need sim
+    # calibrations (camera models/poses keyed as 'front', 'left', 'top', 'right').
+    # --no-sim should only skip launching the Isaac Sim worker, not change which
+    # calibrations are loaded.  Force use_sim=True for calibration; the SimManager
+    # will gracefully no-op if ISAAC_SIM_PATH is unset.
+    if _CROWD_CONFIG.phase2_only:
+        crowd_kwargs["use_sim"] = True
+    crowd_interface = CrowdInterface(**crowd_kwargs)
     crowd_interface._phase2_only = bool(_CROWD_CONFIG.phase2_only)
     # Skip camera init in Phase 2-only mode — all images are served from disk
     # and webcams must be free for control_robot.py policy rollout
