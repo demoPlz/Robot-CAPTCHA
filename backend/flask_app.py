@@ -943,11 +943,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             data = request.json
             episode_id = data.get("episode_id")
             state_id = data.get("state_id")
+            feedback = (data.get("feedback") or "").strip() or None
 
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
 
-            success = crowd_interface.state_manager.approve_pre_execution(episode_id, state_id)
+            success = crowd_interface.state_manager.approve_pre_execution(episode_id, state_id, feedback=feedback)
 
             if not success:
                 return jsonify({"status": "error", "message": "No matching pending pre-execution approval"}), 400
@@ -968,11 +969,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             data = request.json
             episode_id = data.get("episode_id")
             state_id = data.get("state_id")
+            feedback = (data.get("feedback") or "").strip() or None
 
             if episode_id is None or state_id is None:
                 return jsonify({"status": "error", "message": "Missing episode_id or state_id"}), 400
 
-            success = crowd_interface.state_manager.reject_pre_execution(episode_id, state_id)
+            success = crowd_interface.state_manager.reject_pre_execution(episode_id, state_id, feedback=feedback)
 
             if not success:
                 return jsonify({"status": "error", "message": "No matching pending pre-execution approval"}), 400
@@ -1866,6 +1868,128 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             import traceback
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/user/submission-history", methods=["GET"])
+    def get_user_submission_history():
+        """Get submission history for a specific user across all states.
+        
+        Returns a list of the user's submissions with approval status,
+        optional admin feedback, and view images as base64 data URLs
+        (same format as pre-exec approval). Persists via checkpoint.
+        """
+        try:
+            import base64 as b64mod
+            user_email = request.args.get("user_email")
+            if not user_email:
+                return jsonify({"status": "error", "message": "user_email required"}), 400
+            
+            sm = crowd_interface.state_manager
+            submissions = []
+            
+            def load_view_urls(state_info):
+                """Load view images as base64 data URLs from state's view_paths."""
+                view_urls = {}
+                raw_vp = state_info.get("view_paths", {})
+                for cam, fpath in raw_vp.items():
+                    try:
+                        if Path(fpath).exists():
+                            with open(fpath, 'rb') as f:
+                                view_urls[cam] = f"data:image/jpeg;base64,{b64mod.b64encode(f.read()).decode()}"
+                    except Exception:
+                        pass
+                return view_urls
+            
+            with sm.state_lock:
+                seen = set()  # (episode_id, state_id, entry_index) dedup
+                
+                def scan_state(ep_id, st_id, state_info):
+                    """Scan a single state's execution_history for user submissions."""
+                    exec_history = state_info.get("execution_history", [])
+                    for idx, entry in enumerate(exec_history):
+                        if (ep_id, st_id, idx) in seen:
+                            continue
+                        
+                        # Check if this user submitted this entry
+                        submitted_by = entry.get("submitted_by", [])
+                        user_match = any(
+                            u.get("email") == user_email 
+                            for u in submitted_by
+                        )
+                        if not user_match:
+                            continue
+                        
+                        seen.add((ep_id, st_id, idx))
+                        
+                        view_urls = load_view_urls(state_info)
+                        
+                        sub = {
+                            "episode_id": ep_id,
+                            "state_id": st_id,
+                            "entry_index": idx,
+                            "approval": entry.get("approval"),  # 1, -1, or None
+                            "text_prompt": state_info.get("text_prompt", ""),
+                            "view_urls": view_urls,
+                        }
+                        if entry.get("feedback"):
+                            sub["feedback"] = entry["feedback"]
+                        submissions.append(sub)
+                
+                # Scan async_state_pool: keyed as (ep_id, st_id) -> state_info
+                for (ep_id, st_id), state_info in sm.async_state_pool.items():
+                    scan_state(ep_id, st_id, state_info)
+                
+                # Scan episodic dicts: keyed as ep_id -> {st_id -> state_info}
+                for pool in [sm.completed_states_by_episode, sm.pending_states_by_episode]:
+                    for ep_id, states in pool.items():
+                        for st_id, state_info in states.items():
+                            scan_state(ep_id, st_id, state_info)
+                
+                # Also scan user_submissions for pending entries not yet in execution_history.
+                # user_submissions tracks what the user submitted before admin reviews it.
+                seen_states = set()  # (ep_id, st_id) already found in execution_history
+                for s in submissions:
+                    seen_states.add((s["episode_id"], s["state_id"]))
+                
+                def scan_pending_submissions(ep_id, st_id, state_info):
+                    """Find user submissions that haven't been reviewed yet."""
+                    if (ep_id, st_id) in seen_states:
+                        return  # already have at least one execution_history entry for this state
+                    user_subs = state_info.get("user_submissions", [])
+                    user_match = any(
+                        u.get("email") == user_email
+                        for u in user_subs
+                    )
+                    if not user_match:
+                        return
+                    
+                    view_urls = load_view_urls(state_info)
+                    
+                    submissions.append({
+                        "episode_id": ep_id,
+                        "state_id": st_id,
+                        "entry_index": -1,  # not in execution_history yet
+                        "approval": None,  # pending
+                        "text_prompt": state_info.get("text_prompt", ""),
+                        "view_urls": view_urls,
+                    })
+                
+                # Scan all pools for pending user_submissions
+                for (ep_id, st_id), state_info in sm.async_state_pool.items():
+                    scan_pending_submissions(ep_id, st_id, state_info)
+                for pool in [sm.completed_states_by_episode, sm.pending_states_by_episode]:
+                    for ep_id, states in pool.items():
+                        for st_id, state_info in states.items():
+                            scan_pending_submissions(ep_id, st_id, state_info)
+            
+            # Sort by most recent first (higher episode_id and state_id = more recent)
+            submissions.sort(key=lambda s: (s["episode_id"], s["state_id"], s["entry_index"]), reverse=True)
+            
+            return jsonify({"status": "ok", "submissions": submissions})
+        except Exception as e:
+            print(f"❌ Error getting user submission history: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/control/start-episode", methods=["POST"])
     @require_monitor_auth

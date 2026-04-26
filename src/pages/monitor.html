@@ -1112,7 +1112,11 @@
                     <!-- Views will be dynamically created here -->
                 </div>
             </div>
-            <div class="approval-modal-footer">
+            <div class="approval-modal-footer" style="flex-direction: column; gap: 10px;">
+                <div style="width: 100%; display: flex; gap: 8px; align-items: flex-start;">
+                    <label for="pre-exec-feedback-input" style="font-size: 12px; color: #94a3b8; white-space: nowrap; padding-top: 6px;">Feedback (optional):</label>
+                    <textarea id="pre-exec-feedback-input" placeholder="Add optional feedback for the worker..." rows="2" style="flex:1; resize:vertical; font-size:12px; padding:6px 8px; border:1px solid #334155; border-radius:4px; background:#1e293b; color:#f8fafc; font-family:inherit;"></textarea>
+                </div>
                 <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
                     <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
                         <span class="control-icon">❌</span> Reject & Resample
@@ -2633,6 +2637,9 @@
             }
             
             preExecutionModal.classList.add('show');
+            // Clear feedback input for new approval
+            const feedbackInput = document.getElementById('pre-exec-feedback-input');
+            if (feedbackInput) feedbackInput.value = '';
             console.log('🎯 Pre-execution approval modal shown with action:', data.action);
         }
 
@@ -2647,12 +2654,14 @@
                 preExecApproveBtn.disabled = true;
                 preExecRejectBtn.disabled = true;
                 
+                const feedbackVal = (document.getElementById('pre-exec-feedback-input')?.value || '').trim();
                 const response = await fetch(`${API_BASE_URL}/api/control/approve-pre-execution`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         episode_id: currentPreExecutionApproval.episode_id,
-                        state_id: currentPreExecutionApproval.state_id
+                        state_id: currentPreExecutionApproval.state_id,
+                        feedback: feedbackVal || undefined
                     })
                 });
                 
@@ -2679,12 +2688,14 @@
                 preExecApproveBtn.disabled = true;
                 preExecRejectBtn.disabled = true;
                 
+                const feedbackVal = (document.getElementById('pre-exec-feedback-input')?.value || '').trim();
                 const response = await fetch(`${API_BASE_URL}/api/control/reject-pre-execution`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         episode_id: currentPreExecutionApproval.episode_id,
-                        state_id: currentPreExecutionApproval.state_id
+                        state_id: currentPreExecutionApproval.state_id,
+                        feedback: feedbackVal || undefined
                     })
                 });
                 
@@ -3297,7 +3308,11 @@
                 const isPhase2 = document.body.classList.contains('phase2-only-mode');
                 const rejectLabel = isPhase2 ? 'Reject' : 'Reject &amp; Resample';
                 const approveLabel = isPhase2 ? 'Approve' : 'Approve &amp; Execute';
-                footer.innerHTML = `<div style="display:flex;justify-content:center;gap:16px;flex:1;">
+                footer.innerHTML = `<div style="width:100%;display:flex;gap:8px;align-items:flex-start;">
+                    <label for="pre-exec-feedback-input" style="font-size:12px;color:#94a3b8;white-space:nowrap;padding-top:6px;">Feedback (optional):</label>
+                    <textarea id="pre-exec-feedback-input" placeholder="Add optional feedback for the worker..." rows="2" style="flex:1;resize:vertical;font-size:12px;padding:6px 8px;border:1px solid #334155;border-radius:4px;background:#1e293b;color:#f8fafc;font-family:inherit;"></textarea>
+                </div>
+                <div style="display:flex;justify-content:center;gap:16px;flex:1;">
                     <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
                         <span class="control-icon">❌</span> ${rejectLabel}
                     </button>

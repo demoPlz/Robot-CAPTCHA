@@ -1849,7 +1849,7 @@ class StateManager:
                 "original_joint_positions": self.pending_pre_execution_approval.get("original_joint_positions", []),
             }
 
-    def approve_pre_execution(self, episode_id: int, state_id: int) -> bool:
+    def approve_pre_execution(self, episode_id: int, state_id: int, feedback: str | None = None) -> bool:
         """Approve a pending pre-execution action."""
         with self.pre_execution_approval_lock:
             if self.pending_pre_execution_approval is None:
@@ -1862,10 +1862,11 @@ class StateManager:
 
             # Atomically mark as approved - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = True
-            pass  # Approved
+            if feedback:
+                self.pending_pre_execution_approval["feedback"] = feedback
             return True
 
-    def reject_pre_execution(self, episode_id: int, state_id: int) -> bool:
+    def reject_pre_execution(self, episode_id: int, state_id: int, feedback: str | None = None) -> bool:
         """Reject a pending pre-execution action (will trigger resampling)."""
         with self.pre_execution_approval_lock:
             if self.pending_pre_execution_approval is None:
@@ -1878,7 +1879,8 @@ class StateManager:
 
             # Atomically mark as rejected - backend loop will detect and clear
             self.pending_pre_execution_approval["approved"] = False
-            pass  # Rejected
+            if feedback:
+                self.pending_pre_execution_approval["feedback"] = feedback
             return True
 
     def reject_critical_state(self, episode_id: int, state_id: int) -> bool:
@@ -2776,15 +2778,23 @@ class StateManager:
                             approved = self.pending_pre_execution_approval["approved"]
                             break
                         
-            # Record decision
+            # Record decision (including optional feedback from admin)
             approval_value = 1 if approved else -1
-            reviewed_actions.append({
+            feedback_text = None
+            if not (is_test_approved or is_test_rejected):
+                with self.pre_execution_approval_lock:
+                    if self.pending_pre_execution_approval:
+                        feedback_text = self.pending_pre_execution_approval.get("feedback")
+            reviewed_entry = {
                 "action": selected_action,
                 "propensity": true_propensity,  # Use propensity based on original submission counts
                 "selector_metadata": selection_metadata,
                 "approval": approval_value,
                 "submitted_by": action_users,  # Track who submitted this action
-            })
+            }
+            if feedback_text:
+                reviewed_entry["feedback"] = feedback_text
+            reviewed_actions.append(reviewed_entry)
             
             if approved:
                 num_approved += 1
@@ -4395,7 +4405,7 @@ class StateManager:
                     u.get("name", "").lower() == "admin" for u in submitted_by
                 )
             
-            entries.append({
+            serialized_entry = {
                 "index": i,
                 "action": action,
                 "approval": entry.get("approval"),  # 1, 0, or None
@@ -4405,7 +4415,10 @@ class StateManager:
                     {"name": u.get("name", "Unknown"), "email": u.get("email", "")}
                     for u in submitted_by
                 ],
-            })
+            }
+            if entry.get("feedback"):
+                serialized_entry["feedback"] = entry["feedback"]
+            entries.append(serialized_entry)
         
         num_approved = sum(1 for e in history if e.get("approval") == 1)
         num_rejected = sum(1 for e in history if e.get("approval") == 0)
@@ -4568,7 +4581,7 @@ class StateManager:
             for jn in JOINT_NAMES:
                 original_list.append(float(original_jp.get(jn, 0.0)))
             
-            return {
+            result = {
                 "episode_id": episode_id,
                 "state_id": state_id,
                 "index": index,
@@ -4581,6 +4594,9 @@ class StateManager:
                 "video_prompt": state_info.get("video_prompt"),
                 "approval": entry.get("approval"),
             }
+            if entry.get("feedback"):
+                result["feedback"] = entry["feedback"]
+            return result
 
     def load_phase2_checkpoint(self, checkpoint_path: Path) -> dict:
         """Load Phase 2 checkpoint and restore ALL async labeling progress.

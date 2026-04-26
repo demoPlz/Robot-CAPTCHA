@@ -1202,7 +1202,8 @@
 }
 
 .sidebar-tab-content.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
 }
 
 .hints-panel h3 {
@@ -1284,6 +1285,68 @@
 .qna-a { font-size: 13px; color: #475569; background: #f8fafc; padding: 8px; border-radius: 4px; border: 1px solid #f1f5f9; }
 .qna-unanswered { font-size: 11px; color: #b45309; font-style: italic; }
 .qna-meta { font-size: 10px; color: #94a3b8; margin-top: 6px; display: flex; justify-content: space-between; }
+
+/* History Tab Styles */
+.history-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; flex: 1; overflow-y: auto; }
+.history-entry {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.history-entry:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 1px 4px rgba(59,130,246,0.12);
+}
+.history-entry.status-approved  { border-left: 3px solid #22c55e; }
+.history-entry.status-rejected  { border-left: 3px solid #ef4444; }
+.history-entry.status-pending   { border-left: 3px solid #f59e0b; }
+.history-thumb {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #f1f5f9;
+  flex-shrink: 0;
+}
+.history-info { flex: 1; min-width: 0; }
+.history-status-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.history-status-badge.approved  { background: #22c55e; }
+.history-status-badge.rejected  { background: #ef4444; }
+.history-status-badge.pending   { background: #f59e0b; }
+.history-prompt {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-feedback {
+  font-size: 11px;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.history-feedback strong { color: #334155; }
 
 /* Confirm bar: place Animate to the left of Confirm with a little space */
 #viewport .confirm-bar{
@@ -3556,6 +3619,7 @@ if (isMTurkMode) {
 hintsPanel.innerHTML = `
   <div class="sidebar-tabs">
     <button class="sidebar-tab-btn active" id="tab-btn-hints" onclick="switchSidebarTab('hints')">Hints</button>
+    <button class="sidebar-tab-btn" id="tab-btn-history" onclick="switchSidebarTab('history')">History</button>
     <button class="sidebar-tab-btn" id="tab-btn-gallery" onclick="switchSidebarTab('gallery')">Gallery</button>
     <button class="sidebar-tab-btn" id="tab-btn-qna" onclick="switchSidebarTab('qna')">Q&A</button>
   </div>
@@ -3570,6 +3634,14 @@ hintsPanel.innerHTML = `
       <li>View more example valid submissions in the <b>"Gallery"</b> tab.</li>
       <li>View commonly asked questions in the <b>"Q&amp;A"</b> tab.</li>
     </ol>
+  </div>
+  
+  <div class="sidebar-tab-content" id="tab-content-history">
+    <h3>My Submissions</h3>
+    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Your submission history</div>
+    <div id="history-list" class="history-list">
+      <div style="color: #94a3b8; font-size: 13px; text-align: center; padding: 20px;">Loading history...</div>
+    </div>
   </div>
   
   <div class="sidebar-tab-content" id="tab-content-gallery">
@@ -8624,7 +8696,90 @@ window.refreshSidebarData = async function(state) {
       } catch (e) { console.error('Qna err:', e); }
     }
   }
+
+  // Refresh History tab (user's own submissions)
+  await refreshHistoryTab();
 };
+
+async function refreshHistoryTab() {
+  const historyList = document.getElementById('history-list');
+  if (!historyList) return;
+
+  const userEmail = window.userIdentity?.email;
+  if (!userEmail) {
+    historyList.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">Sign in to view your submission history.</div>';
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${API_BASE_URL}/api/user/submission-history?user_email=${encodeURIComponent(userEmail)}`);
+    const data = await resp.json();
+    if (data.status !== 'ok' || !data.submissions) {
+      historyList.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">Could not load history.</div>';
+      return;
+    }
+
+    if (data.submissions.length === 0) {
+      historyList.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">No submissions yet.</div>';
+      return;
+    }
+
+    historyList.innerHTML = '';
+    data.submissions.forEach(sub => {
+      let statusClass, statusLabel;
+      if (sub.approval === 1) {
+        statusClass = 'approved';
+        statusLabel = '✅ Approved';
+      } else if (sub.approval === -1) {
+        statusClass = 'rejected';
+        statusLabel = '❌ Rejected';
+      } else {
+        statusClass = 'pending';
+        statusLabel = '⏳ Pending';
+      }
+
+      const card = document.createElement('div');
+      card.className = `history-entry status-${statusClass}`;
+
+      // Use base64 data URL from view_urls for thumbnail (prefer front cam)
+      let thumbHtml = '';
+      const viewUrls = sub.view_urls || {};
+      const thumbDataUrl = viewUrls['front'] || viewUrls['webcam_front'] || Object.values(viewUrls)[0];
+      if (thumbDataUrl) {
+        thumbHtml = `<img class="history-thumb" src="${thumbDataUrl}" alt="Submission thumbnail">`;
+      } else {
+        thumbHtml = `<div class="history-thumb" style="display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;">No image</div>`;
+      }
+
+      const promptSnippet = sub.text_prompt ? sub.text_prompt.substring(0, 60) : 'No prompt';
+      let feedbackHtml = '';
+      if (sub.feedback) {
+        feedbackHtml = `<div class="history-feedback"><strong>Admin Feedback:</strong> ${sub.feedback}</div>`;
+      }
+
+      card.innerHTML = `
+        ${thumbHtml}
+        <div class="history-info">
+          <span class="history-status-badge ${statusClass}">${statusLabel}</span>
+          <div class="history-prompt" title="${sub.text_prompt || ''}">${promptSnippet}</div>
+          ${feedbackHtml}
+        </div>
+      `;
+
+      // Click to open gallery-style modal with all view images (data URLs)
+      card.onclick = () => {
+        if (Object.keys(viewUrls).length > 0) {
+          window.openGalleryModal({ view_paths: viewUrls });
+        }
+      };
+
+      historyList.appendChild(card);
+    });
+  } catch (e) {
+    console.error('History tab err:', e);
+    historyList.innerHTML = '<div style="color:#94a3b8; font-size:13px; text-align:center; padding:20px;">Error loading history.</div>';
+  }
+}
 
 window.openGalleryModal = function(item) {
   const grid = document.getElementById('gallery-modal-grid');
