@@ -1869,16 +1869,44 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/user/submission-views", methods=["GET"])
+    def get_submission_views():
+        """Retrieve view_urls (base64 images) for a specific state, used by history gallery modal."""
+        try:
+            import base64 as b64mod
+            ep_id = request.args.get("episode_id", type=int)
+            st_id = request.args.get("state_id", type=int)
+            if ep_id is None or st_id is None:
+                return jsonify({"status": "error", "message": "episode_id and state_id required"}), 400
+            
+            sm = crowd_interface.state_manager
+            state_info = sm._resolve_state(ep_id, st_id)
+            if not state_info:
+                return jsonify({"status": "error", "message": "State not found"}), 404
+            
+            view_urls = {}
+            raw_vp = state_info.get("view_paths", {})
+            for cam, fpath in raw_vp.items():
+                try:
+                    if Path(fpath).exists():
+                        with open(fpath, 'rb') as f:
+                            view_urls[cam] = f"data:image/jpeg;base64,{b64mod.b64encode(f.read()).decode()}"
+                except Exception:
+                    pass
+            
+            return jsonify({"status": "ok", "view_urls": view_urls})
+        except Exception as e:
+            print(f"❌ Error getting submission views: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.route("/api/user/submission-history", methods=["GET"])
     def get_user_submission_history():
         """Get submission history for a specific user across all states.
         
-        Returns a list of the user's submissions with approval status,
-        optional admin feedback, and view images as base64 data URLs
-        (same format as pre-exec approval). Persists via checkpoint.
+        Returns submissions with timestamp, action, and camera calibration.
+        Does NOT return heavy base64 view images (fetched lazily now).
         """
         try:
-            import base64 as b64mod
             user_email = request.args.get("user_email")
             if not user_email:
                 return jsonify({"status": "error", "message": "user_email required"}), 400
@@ -1886,18 +1914,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             sm = crowd_interface.state_manager
             submissions = []
             
-            def load_view_urls(state_info):
-                """Load view images as base64 data URLs from state's view_paths."""
-                view_urls = {}
-                raw_vp = state_info.get("view_paths", {})
-                for cam, fpath in raw_vp.items():
-                    try:
-                        if Path(fpath).exists():
-                            with open(fpath, 'rb') as f:
-                                view_urls[cam] = f"data:image/jpeg;base64,{b64mod.b64encode(f.read()).decode()}"
-                    except Exception:
-                        pass
-                return view_urls
+            # Camera calibration (same for all views)
+            cam_poses = crowd_interface.calibration.get_camera_poses()
+            cam_models = crowd_interface.calibration.get_camera_models()
+            
+            def serialize_action(action):
+                """Convert action tensor/list to plain list."""
+                if hasattr(action, "tolist"):
+                    return action.tolist()
+                elif isinstance(action, list):
+                    return action
+                return []
             
             with sm.state_lock:
                 seen = set()  # (episode_id, state_id, entry_index) dedup
@@ -1909,7 +1936,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         if (ep_id, st_id, idx) in seen:
                             continue
                         
-                        # Check if this user submitted this entry
                         submitted_by = entry.get("submitted_by", [])
                         user_match = any(
                             u.get("email") == user_email 
@@ -1920,15 +1946,19 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         
                         seen.add((ep_id, st_id, idx))
                         
-                        view_urls = load_view_urls(state_info)
+                        action = serialize_action(entry.get("action"))
+                        
+                        # Extract timestamp if available
+                        timestamp = state_info.get("user_timings", {}).get(user_email, {}).get("submitted_at_iso")
                         
                         sub = {
                             "episode_id": ep_id,
                             "state_id": st_id,
                             "entry_index": idx,
-                            "approval": entry.get("approval"),  # 1, -1, or None
+                            "approval": entry.get("approval"),
                             "text_prompt": state_info.get("text_prompt", ""),
-                            "view_urls": view_urls,
+                            "action": action,
+                            "timestamp": timestamp,
                         }
                         if entry.get("feedback"):
                             sub["feedback"] = entry["feedback"]
@@ -1944,36 +1974,46 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         for st_id, state_info in states.items():
                             scan_state(ep_id, st_id, state_info)
                 
-                # Also scan user_submissions for pending entries not yet in execution_history.
-                # user_submissions tracks what the user submitted before admin reviews it.
-                seen_states = set()  # (ep_id, st_id) already found in execution_history
+                # Scan user_submissions for pending entries not yet in execution_history.
+                seen_states = set()
                 for s in submissions:
                     seen_states.add((s["episode_id"], s["state_id"]))
                 
+                seen_pending = set()  # dedup pending across pools
+                
                 def scan_pending_submissions(ep_id, st_id, state_info):
-                    """Find user submissions that haven't been reviewed yet."""
-                    if (ep_id, st_id) in seen_states:
-                        return  # already have at least one execution_history entry for this state
+                    if (ep_id, st_id) in seen_states or (ep_id, st_id) in seen_pending:
+                        return
                     user_subs = state_info.get("user_submissions", [])
-                    user_match = any(
-                        u.get("email") == user_email
-                        for u in user_subs
-                    )
-                    if not user_match:
+                    # Find the user's submission and their action
+                    user_action_idx = None
+                    for u in user_subs:
+                        if u.get("email") == user_email:
+                            user_action_idx = u.get("action_index")
+                            break
+                    if user_action_idx is None:
                         return
                     
-                    view_urls = load_view_urls(state_info)
+                    seen_pending.add((ep_id, st_id))
+                    
+                    # Get action from state's actions list
+                    action = []
+                    actions = state_info.get("actions", [])
+                    if user_action_idx is not None and user_action_idx < len(actions):
+                        action = serialize_action(actions[user_action_idx])
+                    
+                    timestamp = state_info.get("user_timings", {}).get(user_email, {}).get("submitted_at_iso")
                     
                     submissions.append({
                         "episode_id": ep_id,
                         "state_id": st_id,
-                        "entry_index": -1,  # not in execution_history yet
-                        "approval": None,  # pending
+                        "entry_index": -1,
+                        "approval": None,
                         "text_prompt": state_info.get("text_prompt", ""),
-                        "view_urls": view_urls,
+                        "action": action,
+                        "timestamp": timestamp,
                     })
                 
-                # Scan all pools for pending user_submissions
                 for (ep_id, st_id), state_info in sm.async_state_pool.items():
                     scan_pending_submissions(ep_id, st_id, state_info)
                 for pool in [sm.completed_states_by_episode, sm.pending_states_by_episode]:
@@ -1981,10 +2021,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         for st_id, state_info in states.items():
                             scan_pending_submissions(ep_id, st_id, state_info)
             
-            # Sort by most recent first (higher episode_id and state_id = more recent)
             submissions.sort(key=lambda s: (s["episode_id"], s["state_id"], s["entry_index"]), reverse=True)
             
-            return jsonify({"status": "ok", "submissions": submissions})
+            return jsonify({
+                "status": "ok",
+                "submissions": submissions,
+                "camera_poses": cam_poses,
+                "camera_models": cam_models,
+            })
         except Exception as e:
             print(f"❌ Error getting user submission history: {e}")
             import traceback
