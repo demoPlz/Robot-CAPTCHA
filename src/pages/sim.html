@@ -3631,6 +3631,7 @@ hintsPanel.innerHTML = `
       <li>The arm will fulfill that goal by <b>travelling in a straight line</b>. You can use the "Simulate" button to see this in action.</li>
       <li>If the state in the simulated views does not match that in the real-life views, <b>the real-life views represent the true state.</b></li>
       <li>Click the <b>ⓘ</b> button to view <b>detailed acceptance criteria</b>.</li>
+      <li>View your submission history in the <b>"History"</b> tab.</li>
       <li>View more example valid submissions in the <b>"Gallery"</b> tab.</li>
       <li>View commonly asked questions in the <b>"Q&amp;A"</b> tab.</li>
     </ol>
@@ -3638,7 +3639,6 @@ hintsPanel.innerHTML = `
   
   <div class="sidebar-tab-content" id="tab-content-history">
     <h3>Submissions History</h3>
-    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">Your submission history</div>
     <div id="history-list" class="history-list">
       <div style="color: #94a3b8; font-size: 13px; text-align: center; padding: 20px;">Loading history...</div>
     </div>
@@ -8561,12 +8561,117 @@ loader.load(
     animate();
     
     // Show hints panel after viewport is fully loaded and positioned
+    // Show hints panel after viewport is fully loaded and positioned
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         updateHintsPosition();
         hintsPanel.classList.add('visible');
       });
     });
+
+    // ================= HISTORY VIEW RENDERING =================
+    // Singletons to avoid WebGL context exhaustion
+    let _histRenderer = null;
+    let _histScene = null;
+    let _histRobot = null;
+    
+    window.renderHistoryView = async function(viewName, dataUrl, action, camPose, camModel) {
+      if (!camPose || !camModel || !action || action.length === 0) return dataUrl;
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise(r => { img.complete ? r() : (img.onload = r, img.onerror = r); });
+      const w = img.naturalWidth || 640;
+      const h = img.naturalHeight || 480;
+
+      if (!_histRenderer) {
+          const webglCanvas = document.createElement('canvas');
+          _histRenderer = new THREE.WebGLRenderer({ canvas: webglCanvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+          _histRenderer.setClearColor(0x000000, 0);
+          
+          _histScene = new THREE.Scene();
+          _histScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
+          const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(2, 4, 2);
+          _histScene.add(dir);
+
+          _histRobot = robot.clone();
+          const MINIMAL = ['gripper_left', 'gripper_right', 'gripper_left_base', 'gripper_right_base'];
+          const minRoots = new Set(MINIMAL.map(n => _histRobot.getObjectByName(n)).filter(Boolean));
+          function underMin(obj) { let p = obj; while(p){ if(minRoots.has(p)) return true; p=p.parent; } return false; }
+          _histRobot.traverse(obj => {
+             if(!obj.isMesh) return;
+             obj.visible = true;
+             const isM = underMin(obj);
+             const mats = Array.isArray(obj.material) ? obj.material.map(m=>m.clone()) : [obj.material.clone()];
+             mats.forEach(m => {
+                 if (m.color) m.color.setHex(0xffc83d);
+                 if (m.emissive) { m.emissive.setHex(0x6a4b00); m.emissiveIntensity = 0.40; }
+                 if ('metalness' in m) m.metalness = 0.6;
+                 if ('roughness' in m) m.roughness = 0.35;
+                 if (!isM) { m.transparent = true; m.opacity = 0.3; m.depthWrite = false; }
+                 m.needsUpdate = true;
+             });
+             obj.material = Array.isArray(obj.material) ? mats : mats[0];
+          });
+          const rootGrp = new THREE.Group(); rootGrp.position.z = 0.005; rootGrp.add(_histRobot); _histScene.add(rootGrp);
+
+          const cM = new THREE.MeshBasicMaterial({color:0xff0000, transparent:true, opacity:0.85, depthTest:false, depthWrite:false});
+          const cGrp = new THREE.Group(); cGrp.name = 'ee_cross'; cGrp.renderOrder=1001;
+          cGrp.add(new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.005, 0.10), cM));
+          cGrp.add(new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.10, 0.005), cM));
+          _histScene.add(cGrp);
+      }
+      
+      _histRenderer.setSize(w, h);
+
+      // Camera
+      const isOrthographic = camModel && camModel.projection_type === 'orthographic';
+      const cam = isOrthographic ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100) : new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+      if (camPose && Array.isArray(camPose)) {
+        const mat = camPose;
+        const m = new THREE.Matrix4().set(mat[0][0], mat[0][1], mat[0][2], mat[0][3], mat[1][0], mat[1][1], mat[1][2], mat[1][3], mat[2][0], mat[2][1], mat[2][2], mat[2][3], mat[3][0], mat[3][1], mat[3][2], mat[3][3]);
+        const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scale = new THREE.Vector3();
+        m.decompose(pos, quat, scale);
+        cam.position.copy(pos); cam.quaternion.copy(quat); cam.updateMatrixWorld();
+      }
+      if (camModel && camModel.Knew) {
+         const K = camModel.Knew; const W = camModel.width || 640; const H = camModel.height || 480;
+         const sx = w / W; const sy = h / H;
+         if (isOrthographic) {
+             const oW = camModel.orthographic_width || 1.0; const oH = camModel.orthographic_height || 1.0;
+             const P = new THREE.Matrix4().makeOrthographic(-oW/2, oW/2, oH/2, -oH/2, cam.near, cam.far);
+             cam.projectionMatrix.copy(P); cam.projectionMatrixInverse.copy(P).invert(); cam.projectionMatrixAutoUpdate = false;
+         } else {
+             const fx = K[0][0]*sx; const fy = K[1][1]*sy; const cx = K[0][2]*sx; const cy = K[1][2]*sy;
+             const left = -cx*cam.near/fx; const right = (w-cx)*cam.near/fx; const top = cy*cam.near/fy; const bottom = -(h-cy)*cam.near/fy;
+             const P = new THREE.Matrix4().makePerspective(left, right, top, bottom, cam.near, cam.far);
+             cam.projectionMatrix.copy(P); cam.projectionMatrixInverse.copy(P).invert(); cam.projectionMatrixAutoUpdate = false;
+         }
+      }
+
+      const jN = ['joint_0','joint_1','joint_2','joint_3','joint_4','joint_5','left_carriage_joint'];
+      jN.forEach((n,i) => { if(action[i]!==undefined) _histRobot.setJointValue(n, action[i]); });
+      _histRobot.updateMatrixWorld(true);
+
+      const ee = _histRobot.getObjectByName('ee_gripper_link');
+      const cGrp = _histScene.getObjectByName('ee_cross');
+      if (ee && cGrp) {
+         const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
+         ee.getWorldPosition(pos); ee.getWorldQuaternion(quat);
+         cGrp.position.copy(pos); cGrp.quaternion.copy(quat);
+         cGrp.visible = true;
+      } else if (cGrp) {
+         cGrp.visible = false;
+      }
+
+      _histRenderer.render(_histScene, cam);
+
+      const comp = document.createElement('canvas'); comp.width=w; comp.height=h;
+      const ctx = comp.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      ctx.drawImage(_histRenderer.domElement, 0, 0);
+      return comp.toDataURL('image/jpeg', 0.92);
+    };
+
   },
   undefined, // progress callback (optional)
   error => {
@@ -8729,48 +8834,69 @@ async function refreshHistoryTab() {
       let statusClass, statusLabel;
       if (sub.approval === 1) {
         statusClass = 'approved';
-        statusLabel = '✅ Approved';
+        statusLabel = 'Approved';
       } else if (sub.approval === -1) {
         statusClass = 'rejected';
-        statusLabel = '❌ Rejected';
+        statusLabel = 'Rejected';
       } else {
         statusClass = 'pending';
-        statusLabel = '⏳ Pending';
+        statusLabel = 'Pending';
       }
 
       const card = document.createElement('div');
       card.className = `history-entry status-${statusClass}`;
-
-      // Use base64 data URL from view_urls for thumbnail (prefer front cam)
-      let thumbHtml = '';
-      const viewUrls = sub.view_urls || {};
-      const thumbDataUrl = viewUrls['front'] || viewUrls['webcam_front'] || Object.values(viewUrls)[0];
-      if (thumbDataUrl) {
-        thumbHtml = `<img class="history-thumb" src="${thumbDataUrl}" alt="Submission thumbnail">`;
+      
+      let timeLabel = "Unknown Time";
+      if (sub.timestamp) {
+         try {
+           const d = new Date(sub.timestamp);
+           timeLabel = d.toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+         } catch(e) {}
       } else {
-        thumbHtml = `<div class="history-thumb" style="display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;">No image</div>`;
+         timeLabel = `Submission ${sub.entry_index >= 0 ? '#' + (sub.entry_index + 1) : '(New)'}`;
       }
 
       const promptSnippet = sub.text_prompt ? sub.text_prompt.substring(0, 60) : 'No prompt';
       let feedbackHtml = '';
       if (sub.feedback) {
-        feedbackHtml = `<div class="history-feedback"><strong>Admin Feedback:</strong> ${sub.feedback}</div>`;
+        feedbackHtml = `<div class="history-feedback" style="margin-top:6px; font-size:12px; border-left:2px solid #94a3b8; padding-left:6px; color:#cbd5e1;"><strong>Admin Feedback:</strong> ${sub.feedback}</div>`;
       }
 
       card.innerHTML = `
-        ${thumbHtml}
-        <div class="history-info">
-          <span class="history-status-badge ${statusClass}">${statusLabel}</span>
-          <div class="history-prompt" title="${sub.text_prompt || ''}">${promptSnippet}</div>
+        <div class="history-info" style="margin-left: 0; width: 100%;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 4px;">
+            <div class="history-timestamp" style="font-size:12px; color:#94a3b8; font-weight:600;">${timeLabel}</div>
+            <span class="history-status-badge ${statusClass}" style="border-radius:4px; padding:2px 6px; font-size:11px; font-weight:bold;">${statusLabel}</span>
+          </div>
+          <div class="history-prompt" title="${sub.text_prompt || ''}" style="margin-top: 4px;">${promptSnippet}</div>
           ${feedbackHtml}
         </div>
       `;
 
-      // Click to open gallery-style modal with all view images (data URLs)
-      card.onclick = () => {
-        if (Object.keys(viewUrls).length > 0) {
-          window.openGalleryModal({ view_paths: viewUrls });
-        }
+      // Click to pop up gallery-style modal
+      card.onclick = async () => {
+         const modal = document.getElementById('gallery-modal');
+         const grid = document.getElementById('gallery-modal-grid');
+         grid.innerHTML = '<div style="color:white; padding:20px; font-size:14px;">Loading submission views...</div>';
+         modal.style.display = 'flex';
+         
+         try {
+             const vResp = await fetch(`${API_BASE_URL}/api/user/submission-views?episode_id=${sub.episode_id}&state_id=${sub.state_id}`);
+             const vData = await vResp.json();
+             if (vData.status === 'ok' && vData.view_urls) {
+                 window.openGalleryModal({ 
+                    view_paths: vData.view_urls,
+                    action: sub.action,
+                    camera_poses: data.camera_poses,
+                    camera_models: data.camera_models
+                 });
+             } else {
+                 grid.innerHTML = '<div style="color:#ef4444; padding:20px;">Failed to load views.</div>';
+             }
+         } catch(e) {
+             console.error('Submission view fetch err:', e);
+             grid.innerHTML = '<div style="color:#ef4444; padding:20px;">Connection error.</div>';
+         }
       };
 
       historyList.appendChild(card);
@@ -8786,10 +8912,18 @@ window.openGalleryModal = function(item) {
   grid.innerHTML = '';
   const order = ['front', 'left', 'right', 'top', 'webcam_front', 'webcam_left'];
   order.forEach(cam => {
-    if (item.view_paths[cam]) {
+    if (item.view_paths && item.view_paths[cam]) {
        const img = document.createElement('img');
        img.src = item.view_paths[cam];
        grid.appendChild(img);
+       
+       if (window.renderHistoryView && item.action && item.action.length > 0) {
+           const camPose = item.camera_poses?.[`${cam}_pose`] || item.camera_poses?.[cam];
+           const camModel = item.camera_models?.[cam];
+           window.renderHistoryView(cam, item.view_paths[cam], item.action, camPose, camModel)
+               .then(renderedUrl => { if (img) img.src = renderedUrl; })
+               .catch(e => console.error('Modal render err:', e));
+       }
     }
   });
   document.getElementById('gallery-modal').style.display = 'flex';
