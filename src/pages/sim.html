@@ -7329,14 +7329,14 @@ loader.load(
       // Check if user has already submitted for this state (Netlify only, except test_approved)
       const stateKey = `${state.episode_id}_${state.state_id}`;
       const isTestApproved = window.userName && window.userName.toLowerCase() === 'test_approved';
-      if (window.isFromNetlify && window.submittedStates.has(stateKey) && !isTestApproved) {
-        console.log('⚠️  User has already submitted for this state');
-        alert('You have already submitted an action for this state. Waiting for new states...');
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = 'Submit';
-        verifyButtonUsed = false;
-        return;
-      }
+      // if (window.isFromNetlify && window.submittedStates.has(stateKey) && !isTestApproved) {
+      //   console.log('⚠️  User has already submitted for this state');
+      //   alert('You have already submitted an action for this state. Waiting for new states...');
+      //   confirmBtn.disabled = false;
+      //   confirmBtn.textContent = 'Submit';
+      //   verifyButtonUsed = false;
+      //   return;
+      // }
 
       // 1) Use the intended goal pose
       const { pos: tgtPos, quat: tgtQuat } = getTargetPose();

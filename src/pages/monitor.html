@@ -2497,8 +2497,37 @@
 
         // --- Pre-Execution Approval Modal ---
         let currentPreExecutionApproval = null;
+        window.isPreExecPaused = false;
+        
+        const pauseIndicator = document.createElement('div');
+        pauseIndicator.id = 'pre-exec-pause-indicator';
+        pauseIndicator.style.cssText = `
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ef4444;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 9999px;
+            font-weight: bold;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 100000;
+            display: none;
+            pointer-events: none;
+        `;
+        pauseIndicator.innerHTML = '⏸ Pre-Exec Reviews PAUSED (Press "s" to resume)';
+        document.body.appendChild(pauseIndicator);
+        
+        function togglePreExecPause() {
+            window.isPreExecPaused = !window.isPreExecPaused;
+            pauseIndicator.style.display = window.isPreExecPaused ? 'block' : 'none';
+        }
 
         async function fetchPendingPreExecutionApproval() {
+            if (window.isPreExecPaused) return;
+            
             try {
                 const response = await fetch(`${API_BASE_URL}/api/control/pending-pre-execution-approval`, { headers:{ 'Accept':'application/json' }});
                 if (!response.ok) return;
@@ -3763,13 +3792,17 @@
             updateToggleUI();
             applyCriticalOnlyMode();
         });
-        // Keyboard shortcut: I toggles mode
+        // Keyboard shortcut: I toggles mode, S toggles pre-exec pause
         document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
             if (e.key && e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
                 criticalOnlyMode = !criticalOnlyMode;
                 updateToggleUI();
                 applyCriticalOnlyMode();
                 if (!criticalOnlyMode) hidePopover();
+            } else if (e.key && e.key.toLowerCase() === 's') {
+                togglePreExecPause();
             }
         });
 

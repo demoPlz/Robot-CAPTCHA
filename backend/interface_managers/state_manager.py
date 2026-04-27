@@ -3604,8 +3604,8 @@ class StateManager:
             
             for state_key, state_info in self.async_state_pool.items():
                 # Skip if user already submitted to this state (except test_approved)
-                if state_key in user_submitted and not is_test_approved:
-                    continue
+                # if state_key in user_submitted and not is_test_approved:
+                #     continue
                 
                 # Special handling for test_rejected: check if they've reached rejection limit
                 if user_name == "test_rejected":
