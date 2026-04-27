@@ -2873,7 +2873,9 @@ class StateManager:
                     
                     if user_email in state_info.get("user_timings", {}):
                         timing = state_info["user_timings"][user_email]
-                        duration_seconds = timing.get("duration_seconds", 0.0)
+                        duration_seconds = timing.get("duration_seconds")
+                        if duration_seconds is None:
+                            duration_seconds = 0.0
                         interaction_to_submit_seconds = timing.get("interaction_to_submit_seconds")
                     else:
                         interaction_to_submit_seconds = None
