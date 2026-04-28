@@ -1118,11 +1118,11 @@
                     <textarea id="pre-exec-feedback-input" placeholder="Add optional feedback for the worker..." rows="2" style="flex:1; resize:vertical; font-size:12px; padding:6px 8px; border:1px solid #334155; border-radius:4px; background:#1e293b; color:#f8fafc; font-family:inherit;"></textarea>
                 </div>
                 <div style="display: flex; justify-content: center; gap: 16px; flex: 1;">
-                    <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
-                        <span class="control-icon">❌</span> Reject & Resample
-                    </button>
                     <button class="approval-btn approval-btn-proceed" id="pre-exec-approve-btn">
-                        <span class="control-icon">✅</span> Approve & Execute
+                        <span class="control-icon">✅</span> Approve
+                    </button>
+                    <button class="approval-btn approval-btn-reject" id="pre-exec-reject-btn">
+                        <span class="control-icon">❌</span> Reject
                     </button>
                 </div>
             </div>
@@ -3792,9 +3792,36 @@
             updateToggleUI();
             applyCriticalOnlyMode();
         });
-        // Keyboard shortcut: I toggles mode, S toggles pre-exec pause
+        // Keyboard shortcut: I toggles mode, S toggles pre-exec pause, Arrow keys for pre-exec review
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // Pre-execution modal shortcuts
+            const preExecutionModal = document.getElementById('pre-execution-modal');
+            if (preExecutionModal && preExecutionModal.classList.contains('show')) {
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    const approveBtn = document.getElementById('pre-exec-approve-btn');
+                    if (approveBtn && !approveBtn.disabled && approveBtn.style.display !== 'none') approveBtn.click();
+                    return;
+                }
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    const rejectBtn = document.getElementById('pre-exec-reject-btn');
+                    if (rejectBtn && !rejectBtn.disabled && rejectBtn.style.display !== 'none') rejectBtn.click();
+                    return;
+                }
+
+                // If user starts typing a printable character, automatically route focus to the feedback input
+                if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    const fbInput = document.getElementById('pre-exec-feedback-input');
+                    if (fbInput) {
+                        fbInput.focus();
+                        // The native browser `keypress` and `input` events will trigger after this
+                        // keydown handler completes, seamlessly inserting the character into the textarea.
+                    }
+                }
+            }
 
             if (e.key && e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
                 criticalOnlyMode = !criticalOnlyMode;

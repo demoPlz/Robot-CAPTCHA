@@ -2021,7 +2021,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         for st_id, state_info in states.items():
                             scan_pending_submissions(ep_id, st_id, state_info)
             
-            submissions.sort(key=lambda s: (s["episode_id"], s["state_id"], s["entry_index"]), reverse=True)
+            submissions.sort(key=lambda s: (s.get("timestamp") or "", s["episode_id"], s["state_id"], s["entry_index"]), reverse=True)
             
             return jsonify({
                 "status": "ok",

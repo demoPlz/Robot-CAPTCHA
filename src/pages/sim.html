@@ -1478,7 +1478,7 @@
 
 /* Reset button styling (standalone, matching Animate and Confirm) */
 #viewport .reset-bar .reset-button{
-  background:#9ca3af; /* gray-400 - lighter gray */
+  background:#22c55e; /* green-500 - positive green */
   color:#fff;
   border:none;
   border-radius:6px;
@@ -8503,28 +8503,14 @@ loader.load(
         // Set which rotation wheels are visible for this view
         setWheelVisibilityForView(view);
 
-        // For top view: hide robot entirely or semi-transparent based on task config
+        // For top view: hide robot entirely for all tasks
         if (view.name === 'top') {
-          const hideRobotInTop = getTaskConfig().hideRobotInTopView;
-
-          if (hideRobotInTop) {
-            robot.visible = false;
-          } else {
-            robot.traverse(o => {
-              if (!o.isMesh) return;
-              applyGhostToMesh(o);
-            });
-          }
+          robot.visible = false;
           
           scene.background = null;
           view.renderer.render(scene, view.camera);
           
-          if (hideRobotInTop) {
-            robot.visible = true;
-          } else {
-            // Restore normal ghosting for other views (grippers opaque, body transparent)
-            setGhostMode(true);
-          }
+          robot.visible = true;
         } else {
           // Normal rendering for other sim views (grippers opaque, body semi-transparent)
           scene.background = null;

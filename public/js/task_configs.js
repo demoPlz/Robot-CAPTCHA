@@ -19,7 +19,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
     homeGripper: 1,    // 1 = open, -1 = closed
-    hideRobotInTopView: false,
   },
   drawer: {
     absLimits: {
@@ -36,7 +35,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
     homeGripper: 1,
-    hideRobotInTopView: false,
   },
   pour: {
     absLimits: {
@@ -53,7 +51,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
     homeGripper: 1,
-    hideRobotInTopView: false,
   },
   insertion: {
     absLimits: {
@@ -70,7 +67,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 100, 80, -67, 0, 0, -1],
     homeGripper: -1,
-    hideRobotInTopView: true,
   },
   switches: {
     absLimits: {
@@ -87,7 +83,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 100, 90, -78, 0, 0, -1],
     homeGripper: -1,
-    hideRobotInTopView: true,
   },
   sorting: {
     absLimits: {
@@ -104,7 +99,6 @@ const TASK_CONFIGS = {
     },
     homePositionDeg: [0, 60, 75, -60, 0, 0, 2],
     homeGripper: 1,
-    hideRobotInTopView: false,
     // Preset joint angles (degrees) for positioning above each container
     containerPresets: [
       { key: 'red',    color: '#ef4444', label: '', deg: [-62.6, 69.7, 83.3, -79.0, -38.9, -53.9, -1] },
