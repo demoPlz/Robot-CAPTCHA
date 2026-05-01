@@ -19,7 +19,7 @@ class CrowdInterfaceConfig:
 
     def __init__(self):
         # ========== Task Settings ==========
-        self.task_name: str = "sorting"  # Single-word identifier for the task
+        self.task_name: str = "switches"  # Single-word identifier for the task
         self.task_text: str = "Put the objects on the desk into the middle drawer" # Never change this. Policy language conditioning is irrelevant for this project
 
         # ========== Labeling Requirements ==========
