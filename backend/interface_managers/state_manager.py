@@ -971,7 +971,12 @@ class StateManager:
         
         with self.state_lock:
             state_id = response_data["state_id"]
+            if isinstance(state_id, str) and state_id.lstrip('-').isdigit():
+                state_id = int(state_id)
+            
             episode_id = response_data["episode_id"]
+            if isinstance(episode_id, str) and episode_id.lstrip('-').isdigit():
+                episode_id = int(episode_id)
 
             if (
                 episode_id not in self.pending_states_by_episode
